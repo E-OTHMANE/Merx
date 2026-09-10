@@ -1,0 +1,686 @@
+/*
+ * Machinerie du test d'isolation — docs/SPEC.md § 2.1, docs/BACKLOG.md E0-03.
+ *
+ * Deux couches. Aucun nom de table n'est écrit ici : une table ajoutée plus
+ * tard entre d'elle-même dans le balayage, et si elle n'a pas de policy, elle
+ * échoue d'elle-même.
+ *
+ *   1. Structurelle — la RLS est-elle activée, forcée, et les policies
+ *      sont-elles exactement celles attendues ? Lu dans le catalogue Postgres,
+ *      sur **toutes** les tables de `public`, enregistrées ou non. Une table
+ *      écrite sans passer par les conventions est justement celle qui risque
+ *      de n'avoir aucune policy : la chercher dans le registre des tables
+ *      conventionnées reviendrait à ne regarder que là où l'on est sûr de ne
+ *      rien trouver.
+ *
+ *   2. Comportementale — deux commerces sont peuplés pour de bon, puis les
+ *      quatre opérations sont tentées à travers la frontière. C'est la seule
+ *      couche qui prouve quelque chose : une policy peut exister et être
+ *      fausse. Elle part du registre, elle : fabriquer une ligne suppose les
+ *      colonnes standard, `tenant_id` le premier.
+ *
+ * La couche 2 fabrique ses lignes en lisant le schéma. Quand elle ne sait pas
+ * fabriquer une ligne, elle échoue en nommant la table et la colonne — elle ne
+ * saute jamais une table en silence. Un test qui s'esquive tout seul laisse la
+ * suite au vert sans avoir rien vérifié.
+ */
+
+import type { Client } from 'pg'
+
+import type { Violation } from './conventions'
+
+/* -------------------------------------------------------------------------- */
+/* Couche 1 — le catalogue                                                     */
+/* -------------------------------------------------------------------------- */
+
+/*
+ * Les expressions attendues, telles que Postgres les restitue. Elles sont
+ * comparées au texte près : une policy réécrite à la main, même équivalente,
+ * doit passer par `merx.apply_tenant_isolation()` pour rester uniforme.
+ */
+const TENANT_QUAL = '(tenant_id = merx.current_tenant_id())'
+const SUPER_ADMIN_QUAL = 'merx.is_super_admin()'
+
+/**
+ * La lettre de `pg_policy.polcmd`, dite en français. Le message d'infraction
+ * est ce qu'on lit à 8 h du matin devant une suite rouge : « porte sur insert
+ * seul » se comprend sans aller chercher ce que vaut `a`.
+ */
+const cmdLabel = (column: string): string => `case ${column}
+                  when '*' then 'les quatre opérations'
+                  when 'r' then 'select seul'
+                  when 'a' then 'insert seul'
+                  when 'w' then 'update seul'
+                  when 'd' then 'delete seul'
+                  else ${column} end`
+
+/*
+ * Toutes les tables de `public` — pas celles du registre.
+ *
+ * La nuance décide de ce que ces règles peuvent attraper. Partir du registre
+ * revient à ne contrôler que les tables déjà passées par
+ * `merx.apply_business_conventions()`, c'est-à-dire exactement celles qui ont
+ * reçu leurs policies par construction. Une table écrite en CREATE TABLE
+ * direct, sans helper, n'est pas au registre : elle serait invisible au
+ * balayage censé la débusquer.
+ *
+ * `public` ne contient que du métier (SPEC § 4) : toute table qui s'y trouve
+ * porte des données de commerce et doit donc être isolée, enregistrée ou non.
+ */
+const PUBLIC_TABLES = `
+  select c.oid, c.relname
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public'
+  where c.relkind = 'r'
+`
+
+/* SPEC § 2.1 : RLS sur toute table métier, sans exception. */
+const RLS_NOT_ENABLED = `
+  with business as (${PUBLIC_TABLES})
+  select t.relname as table_name,
+         case
+           when not c.relrowsecurity then 'RLS non activée'
+           else 'RLS activée mais non forcée — le propriétaire y échappe'
+         end as detail
+  from business t
+  join pg_class c on c.oid = t.oid
+  where not c.relrowsecurity or not c.relforcerowsecurity
+  order by 1
+`
+
+/*
+ * Les policies attendues, exactement : ni manquante, ni supplémentaire, ni
+ * altérée. Une policy de plus sur une table métier est une porte que personne
+ * n'a décidé d'ouvrir.
+ *
+ * Deux policies permissives sur toute table, plus — pour les seules tables
+ * inscrites au registre confidentiel (E0-05) — une troisième, **restrictive**.
+ * La distinction porte tout le raisonnement : une policy restrictive se combine
+ * en ET avec les permissives, elle ne peut donc qu'ajouter une condition. Une
+ * permissive de plus aurait été un OU, c'est-à-dire une porte ouverte à côté de
+ * la serrure. Le contrôle vérifie `polpermissive` case par case, précisément
+ * pour que l'une ne puisse pas se faire passer pour l'autre.
+ *
+ * Le registre décide, jamais une liste écrite ici : une relation confidentielle
+ * ajoutée en E2 entre d'elle-même dans le contrôle, et une policy restrictive
+ * posée sans passer par `merx.apply_capability_restriction()` — donc sans
+ * inscription au registre — est signalée comme inattendue.
+ */
+const POLICY_SET = `
+  with business as (${PUBLIC_TABLES}),
+  expected as (
+    select t.relname, e.polname, true as permissive, '*' as cmd, e.qual, e.withcheck
+    from business t
+    cross join (values
+      ('tenant_isolation', '${TENANT_QUAL}',      '${TENANT_QUAL}'),
+      ('super_admin_all',  '${SUPER_ADMIN_QUAL}', '${SUPER_ADMIN_QUAL}')
+    ) e(polname, qual, withcheck)
+
+    union all
+
+    select t.relname,
+           'capability_restriction',
+           false,
+           '*',
+           format('merx.can(%L::text)', c.capability),
+           format('merx.can(%L::text)', c.capability)
+    from business t
+    join merx.confidential_registry c on c.table_name = t.relname
+
+    union all
+
+    /*
+     * E1-05. Les tables dont l'écriture seule est réservée à une capacité :
+     * trois policies restrictives, une par opération d'écriture, la lecture
+     * laissée aux permissives d'isolation.
+     *
+     * Le registre décide, jamais une liste écrite ici — une table qui s'y
+     * inscrit est vérifiée sans qu'une ligne de ce fichier change. Les vides
+     * sont significatifs : un INSERT n'a pas de \`using\`, un DELETE pas de
+     * \`with check\`, et exiger le contraire laisserait passer une policy qui
+     * qualifie ce qu'elle ne devrait pas.
+     */
+    select t.relname, w.polname, false, w.cmd,
+           case when w.has_qual      then format('merx.can(%L::text)', c.capability) else '' end,
+           case when w.has_withcheck then format('merx.can(%L::text)', c.capability) else '' end
+    from business t
+    join merx.write_capability_registry c on c.table_name = t.relname
+    cross join (values
+      ('write_capability_insert', 'a', false, true),
+      ('write_capability_update', 'w', true,  true),
+      ('write_capability_delete', 'd', true,  false)
+    ) w(polname, cmd, has_qual, has_withcheck)
+  ),
+  actual as (
+    select t.relname,
+           p.polname,
+           p.polpermissive,
+           p.polcmd,
+           pg_get_expr(p.polqual, p.polrelid)      as qual,
+           pg_get_expr(p.polwithcheck, p.polrelid) as withcheck,
+           coalesce(
+             (select array_agg(pg_get_userbyid(oid)::text order by pg_get_userbyid(oid)::text)
+              from unnest(p.polroles) as oid
+              where oid <> 0),
+             array['public']
+           ) as roles
+    from business t
+    join pg_policy p on p.polrelid = t.oid
+  )
+  select e.relname as table_name,
+         format('policy %I absente', e.polname) as detail
+  from expected e
+  where not exists (
+    select 1 from actual a where a.relname = e.relname and a.polname = e.polname
+  )
+
+  union all
+
+  select a.relname as table_name,
+         format('policy %I inattendue — l''isolation passe par '
+                'merx.apply_tenant_isolation(), la confidentialité par '
+                'merx.apply_capability_restriction()', a.polname) as detail
+  from actual a
+  where not exists (
+    select 1 from expected e where e.relname = a.relname and e.polname = a.polname
+  )
+
+  union all
+
+  select a.relname as table_name,
+         format('policy %I : %s', a.polname,
+                case
+                  when a.polpermissive <> e.permissive
+                    then format('%s, attendue %s',
+                                case when a.polpermissive then 'permissive' else 'restrictive' end,
+                                case when e.permissive then 'permissive' else 'restrictive' end)
+                  when a.polcmd <> e.cmd
+                    then format('porte sur %s, attendue sur %s',
+                                ${cmdLabel('a.polcmd')}, ${cmdLabel('e.cmd')})
+                  when a.roles <> array['authenticated']
+                    then format('accordée à %s, attendue authenticated seul',
+                                array_to_string(a.roles, ', '))
+                  when coalesce(a.qual, '') <> e.qual
+                    then format('using %s, attendu %s', coalesce(a.qual, '(aucun)'), e.qual)
+                  else format('with check %s, attendu %s',
+                              coalesce(a.withcheck, '(aucun)'), e.withcheck)
+                end) as detail
+  from actual a
+  join expected e on e.relname = a.relname and e.polname = a.polname
+  where a.polpermissive <> e.permissive
+     or a.polcmd <> e.cmd
+     or a.roles <> array['authenticated']
+     or coalesce(a.qual, '') <> e.qual
+     or coalesce(a.withcheck, '') <> e.withcheck
+
+  order by 1, 2
+`
+
+/*
+ * Les ACL par défaut de Supabase accordent tout à `anon` sur chaque nouvelle
+ * table de `public`. Aucune policy ne vise `anon`, donc il ne lit rien — mais
+ * un privilège qu'aucune policy ne rattrape est un accident qui attend une
+ * policy trop large. Tout est derrière authentification (SPEC § 2.7).
+ */
+const ANON_PRIVILEGES = `
+  with business as (${PUBLIC_TABLES})
+  select t.relname as table_name,
+         format('%s détient %s', g.grantee,
+                string_agg(distinct g.privilege_type, ', ' order by g.privilege_type)) as detail
+  from business t
+  join information_schema.role_table_grants g
+    on g.table_schema = 'public' and g.table_name = t.relname
+  where g.grantee in ('anon', 'PUBLIC')
+  group by 1, g.grantee
+  order by 1, 2
+`
+
+export const ISOLATION_RULES = {
+  'RLS activée et forcée': RLS_NOT_ENABLED,
+  'les policies attendues, exactement': POLICY_SET,
+  'aucun privilège pour anon': ANON_PRIVILEGES,
+} as const
+
+export type IsolationRuleName = keyof typeof ISOLATION_RULES
+
+export async function isolationViolations(
+  client: Client,
+  rule: IsolationRuleName,
+): Promise<Violation[]> {
+  const result = await client.query<Violation>(ISOLATION_RULES[rule])
+  return result.rows
+}
+
+/* -------------------------------------------------------------------------- */
+/* Couche 2 — deux commerces, pour de bon                                      */
+/* -------------------------------------------------------------------------- */
+
+interface Column {
+  name: string
+  type: string
+  category: string
+  kind: string
+  notnull: boolean
+  hasdefault: boolean
+  generated: boolean
+  enum_labels: string[] | null
+  fk_table: string | null
+}
+
+const COLUMNS = `
+  select a.attname                              as name,
+         format_type(a.atttypid, a.atttypmod)   as type,
+         coalesce(bt.typcategory, t.typcategory) as category,
+         coalesce(bt.typtype, t.typtype)         as kind,
+         a.attnotnull                            as notnull,
+         a.atthasdef                             as hasdefault,
+         (a.attgenerated <> '')                  as generated,
+         (select array_agg(e.enumlabel::text order by e.enumsortorder)
+          from pg_enum e
+          where e.enumtypid = coalesce(nullif(t.typbasetype, 0), t.oid)) as enum_labels,
+         fk.reftable                             as fk_table
+  from pg_attribute a
+  join pg_type t on t.oid = a.atttypid
+  left join pg_type bt on bt.oid = nullif(t.typbasetype, 0)
+  left join lateral (
+    select cf.oid::regclass::text as reftable
+    from pg_constraint k
+    join pg_class cf on cf.oid = k.confrelid
+    where k.conrelid = a.attrelid
+      and k.contype = 'f'
+      and array_length(k.conkey, 1) = 1
+      and k.conkey[1] = a.attnum
+    limit 1
+  ) fk on true
+  where a.attrelid = $1::regclass
+    and a.attnum > 0
+    and not a.attisdropped
+  order by a.attnum
+`
+
+/** Les tables placées sous convention — c'est-à-dire toutes les tables métier. */
+export async function registeredTables(client: Client): Promise<string[]> {
+  const { rows } = await client.query<{ table_name: string }>(
+    'select table_name from merx.convention_registry order by table_name',
+  )
+  return rows.map((r) => r.table_name)
+}
+
+/** Comment s'écrit une ligne d'une table en ajout seul. E1-04. */
+export type WritePath = 'application' | 'helper'
+
+/**
+ * Les tables en ajout seul, et par quel chemin elles s'écrivent — lues au
+ * registre, jamais énumérées ici.
+ *
+ * Le balayage comportemental doit *inverser* son contrôle positif sur ces
+ * tables-là : ce qui prouve qu'une table ordinaire n'est pas simplement
+ * verrouillée pour tout le monde, c'est qu'un `owner` modifie et supprime sa
+ * propre ligne. Sur une table en ajout seul, c'est le contraire qui est vrai,
+ * et le contrôle positif devient l'insertion — pour `write_path = 'helper'`, où
+ * `authenticated` n'insère pas non plus, il reste la lecture.
+ *
+ * Le registre décide parce que `stock_movement` (E3) et le grand livre (E6)
+ * arriveront après : ils hériteront du balayage en s'inscrivant, sans qu'une
+ * ligne de ce fichier change.
+ */
+export async function appendOnlyTables(client: Client): Promise<Map<string, WritePath>> {
+  const { rows } = await client.query<{ table_name: string; write_path: WritePath }>(
+    'select table_name, write_path from merx.append_only_registry order by table_name',
+  )
+  return new Map(rows.map((r) => [r.table_name, r.write_path]))
+}
+
+/**
+ * Les tables lisibles par tout le commerce mais dont l'écriture exige une
+ * capacité, et laquelle — lues au registre, jamais énumérées ici. E1-05.
+ *
+ * `settings.test.ts` en dérive son balayage de comportement : la prochaine
+ * table à écriture restreinte (la grille de prix en E2-03, les plafonds de
+ * crédit en E6) sera éprouvée en s'inscrivant, sans qu'une ligne de test change.
+ */
+export async function writeCapabilityTables(client: Client): Promise<Map<string, string>> {
+  const { rows } = await client.query<{ table_name: string; capability: string }>(
+    'select table_name, capability from merx.write_capability_registry order by table_name',
+  )
+  return new Map(rows.map((r) => [r.table_name, r.capability]))
+}
+
+async function columnsOf(client: Client, table: string): Promise<Column[]> {
+  const { rows } = await client.query<Column>(COLUMNS, [`public.${table}`])
+  return rows
+}
+
+/**
+ * Une valeur SQL plausible pour une colonne, déduite de son type. Le but n'est
+ * pas d'être réaliste : c'est d'obtenir une ligne valide sans rien savoir de la
+ * table. Un type non couvert lève — jamais de table sautée en silence.
+ */
+function literalFor(table: string, column: Column, seed: number): string {
+  const cast = (value: string): string => `(${value})::${column.type}`
+
+  if (column.kind === 'e') {
+    const label = column.enum_labels?.[0]
+    if (label === undefined) {
+      throw new Error(`${table}.${column.name} : enum ${column.type} sans valeur`)
+    }
+    return cast(`'${label}'`)
+  }
+
+  switch (column.category) {
+    case 'S': // texte
+      return cast(`'probe-${seed}'`)
+    case 'B': // booléen
+      return cast('false')
+    case 'N': // numérique — couvre money_amount et quantity
+      return cast('1')
+    case 'D': // date et heure
+      return cast('now()')
+    case 'U': // uuid, jsonb, et autres types « utilisateur »
+      if (column.type === 'uuid') return 'gen_random_uuid()'
+      if (column.type === 'jsonb' || column.type === 'json') return cast(`'{}'`)
+      break
+    case 'A': // tableau
+      return cast(`'{}'`)
+  }
+
+  throw new Error(
+    `${table}.${column.name} : type ${column.type} non couvert par le générateur ` +
+      `de lignes. Étendre literalFor() dans supabase/tests/isolation.ts.`,
+  )
+}
+
+/**
+ * Ordonne les tables pour qu'une table soit toujours créée après celles dont
+ * ses colonnes obligatoires dépendent — `tenant_id` compris, même si sa valeur
+ * est résolue à part : c'est une vraie clé étrangère, et l'ordre inverse sert
+ * aussi à supprimer. Sans elle dans le graphe, `tenant` et `app_user`
+ * paraissent indépendants, et supprimer le commerce avant ses utilisateurs
+ * bute sur la clé étrangère.
+ *
+ * `created_by` est nullable, donc jamais rempli, donc jamais un cycle entre
+ * `tenant` et `app_user`.
+ */
+function topologicalOrder(dependencies: Map<string, Set<string>>): string[] {
+  const ordered: string[] = []
+  const pending = new Map(dependencies)
+
+  while (pending.size > 0) {
+    const ready = [...pending.entries()]
+      .filter(([, deps]) => [...deps].every((d) => ordered.includes(d)))
+      .map(([table]) => table)
+      .sort()
+
+    if (ready.length === 0) {
+      throw new Error(
+        `Cycle de clés étrangères obligatoires entre : ${[...pending.keys()].join(', ')}`,
+      )
+    }
+
+    for (const table of ready) {
+      ordered.push(table)
+      pending.delete(table)
+    }
+  }
+
+  return ordered
+}
+
+/** Les lignes d'un commerce : une par table, indexées par nom de table. */
+export type TenantRows = Map<string, string>
+
+export interface Seeded {
+  /** Table cible de la clé étrangère `tenant_id` — le commerce lui-même. */
+  tenantTable: string
+  tenants: { a: string; b: string }
+  rows: { a: TenantRows; b: TenantRows }
+  /** Tables dans l'ordre de création. Supprimer se fait dans l'ordre inverse. */
+  order: string[]
+  /**
+   * Fabrique l'ordre d'insertion d'une ligne de plus, sans l'exécuter — de quoi
+   * tenter une écriture dans le commerce d'en face.
+   */
+  insertSql: (table: string, tenant: string, rows: TenantRows) => string
+}
+
+/**
+ * Peuple deux commerces complets : une ligne par table métier, de chaque côté
+ * de la frontière. À exécuter en tant que `postgres`, qui porte BYPASSRLS.
+ *
+ * L'identité du commerce n'est pas devinée : elle est lue dans le schéma, en
+ * suivant la clé étrangère `tenant_id`.
+ */
+export async function seedTwoTenants(client: Client): Promise<Seeded> {
+  const tables = await registeredTables(client)
+  if (tables.length === 0) {
+    throw new Error('Registre de conventions vide : rien à vérifier.')
+  }
+
+  const columns = new Map<string, Column[]>()
+  for (const table of tables) {
+    columns.set(table, await columnsOf(client, table))
+  }
+
+  const tenantColumn = (table: string): Column => {
+    const found = columns.get(table)?.find((c) => c.name === 'tenant_id')
+    if (!found) throw new Error(`${table} : aucune colonne tenant_id`)
+    return found
+  }
+
+  const targets = new Set(
+    tables.map((t) => tenantColumn(t).fk_table).filter((t): t is string => t !== null),
+  )
+  if (targets.size !== 1) {
+    throw new Error(
+      'tenant_id doit pointer sur une seule et même table partout ; trouvé : ' +
+        `${[...targets].join(', ') || '(aucune clé étrangère)'}`,
+    )
+  }
+  const tenantTable = [...targets][0]!.replace(/^public\./, '')
+
+  /* Colonnes à renseigner : obligatoires et sans valeur par défaut. */
+  const required = (table: string): Column[] =>
+    (columns.get(table) ?? []).filter((c) => c.notnull && !c.hasdefault && !c.generated)
+
+  const dependencies = new Map<string, Set<string>>(
+    tables.map((table) => [
+      table,
+      new Set(
+        required(table)
+          .filter((c) => c.fk_table !== null)
+          .map((c) => c.fk_table!.replace(/^public\./, ''))
+          .filter((dep) => dep !== table),
+      ),
+    ]),
+  )
+
+  const order = topologicalOrder(dependencies)
+  let seed = 0
+
+  const insertSql = (table: string, tenant: string | null, rows: TenantRows): string => {
+    const names: string[] = []
+    const values: string[] = []
+
+    for (const column of required(table)) {
+      names.push(`"${column.name}"`)
+
+      if (column.name === 'tenant_id') {
+        // Pour la table `tenant` elle-même, le trigger réaligne sur `id` : la
+        // valeur posée ici est sans importance, la colonne reste obligatoire.
+        values.push(tenant === null ? 'gen_random_uuid()' : `'${tenant}'::uuid`)
+        continue
+      }
+
+      if (column.fk_table !== null) {
+        const parent = rows.get(column.fk_table.replace(/^public\./, ''))
+        if (parent === undefined) {
+          throw new Error(
+            `${table}.${column.name} pointe sur ${column.fk_table}, dont aucune ligne ` +
+              "n'a été créée. Vérifier l'ordre topologique.",
+          )
+        }
+        values.push(`'${parent}'::uuid`)
+        continue
+      }
+
+      values.push(literalFor(table, column, (seed += 1)))
+    }
+
+    return (
+      `insert into public."${table}" (${names.join(', ')})` +
+      ` values (${values.join(', ')}) returning id`
+    )
+  }
+
+  const insert = async (table: string, tenant: string | null, rows: TenantRows): Promise<string> => {
+    const { rows: inserted } = await client.query<{ id: string }>(insertSql(table, tenant, rows))
+    const id = inserted[0]?.id
+    if (id === undefined) throw new Error(`${table} : insertion sans identifiant rendu`)
+    return id
+  }
+
+  const seedOne = async (): Promise<{ tenant: string; rows: TenantRows }> => {
+    const rows: TenantRows = new Map()
+
+    // Le commerce d'abord : son identifiant est le tenant de tout le reste.
+    const tenant = await insert(tenantTable, null, rows)
+    rows.set(tenantTable, tenant)
+
+    for (const table of order) {
+      if (table === tenantTable) continue
+      rows.set(table, await insert(table, tenant, rows))
+    }
+
+    return { tenant, rows }
+  }
+
+  const a = await seedOne()
+  const b = await seedOne()
+
+  return {
+    tenantTable,
+    tenants: { a: a.tenant, b: b.tenant },
+    rows: { a: a.rows, b: b.rows },
+    order,
+    insertSql,
+  }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Sessions                                                                    */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Se fait passer pour un utilisateur, le temps de la transaction : claims du
+ * JWT posés comme Supabase les pose, puis bascule sur le rôle `authenticated`.
+ * Aucun raccourci — c'est exactement l'état dans lequel une requête PostgREST
+ * arrive.
+ */
+export async function actAs(
+  client: Client,
+  claims: Record<string, unknown> | null,
+  postgresRole: 'authenticated' | 'anon' = 'authenticated',
+): Promise<void> {
+  await client.query('reset role')
+  await client.query('select set_config($1, $2, true)', [
+    'request.jwt.claims',
+    claims === null ? '' : JSON.stringify(claims),
+  ])
+  await client.query(`set local role ${postgresRole}`)
+
+  if (postgresRole !== 'authenticated') return
+
+  /*
+   * On vérifie que la base voit bien le tenant qu'on croit lui avoir donné.
+   *
+   * Sans ce contrôle, une erreur d'usurpation — un claim mal placé, un jeton
+   * construit à côté de `tokenFor()` — produirait une session sans tenant, et
+   * *toutes* les assertions négatives passeraient : rien n'est lisible, rien
+   * n'est modifiable, donc rien ne fuit. Le test serait au vert en n'ayant
+   * mesuré que sa propre erreur. C'est le même piège que celui qu'il traque
+   * dans les policies, un étage plus haut.
+   */
+  const expected = extractTenant(claims)
+  const { rows } = await client.query<{ tenant: string | null }>(
+    'select merx.current_tenant_id() as tenant',
+  )
+
+  if ((rows[0]?.tenant ?? null) !== expected) {
+    throw new Error(
+      "L'usurpation n'a pas pris : la base voit le tenant " +
+        `${rows[0]?.tenant ?? 'NULL'}, attendu ${expected ?? 'NULL'}.`,
+    )
+  }
+}
+
+/** Le `tenant_id` que le jeton porte réellement — NULL s'il n'en porte pas. */
+function extractTenant(claims: Record<string, unknown> | null): string | null {
+  const metadata = claims?.['app_metadata']
+  if (typeof metadata !== 'object' || metadata === null) return null
+
+  const tenant = (metadata as Record<string, unknown>)['tenant_id']
+  return typeof tenant === 'string' && tenant !== '' ? tenant : null
+}
+
+/** Le jeton que `merx.custom_access_token()` produit pour un utilisateur. */
+export function tokenFor(tenant: string, role: string): Record<string, unknown> {
+  return { role: 'authenticated', app_metadata: { tenant_id: tenant, role } }
+}
+
+/*
+ * Les formes qu'un jeton peut prendre quand le tenant n'y est pas — compte sans
+ * fiche `app_user`, fiche désactivée, jeton émis avant la pose du hook, ou
+ * simplement forgé par quelqu'un qui essaie.
+ *
+ * Aucune ne doit ouvrir quoi que ce soit. C'est le mode de défaillance qui
+ * compte : une policy présente mais permissive parce que l'expression compare
+ * quelque chose à NULL avec la mauvaise opération se lit exactement comme une
+ * policy correcte, et laisse tout sortir.
+ */
+export const EMPTY_CLAIMS: ReadonlyArray<{ label: string; claims: Record<string, unknown> | null }> =
+  [
+    { label: 'aucun claim', claims: null },
+    { label: 'sans app_metadata', claims: { role: 'authenticated' } },
+    { label: 'app_metadata vide', claims: { role: 'authenticated', app_metadata: {} } },
+    {
+      label: 'tenant_id null',
+      claims: { role: 'authenticated', app_metadata: { tenant_id: null, role: 'owner' } },
+    },
+    {
+      label: 'tenant_id vide',
+      claims: { role: 'authenticated', app_metadata: { tenant_id: '', role: 'owner' } },
+    },
+    {
+      label: 'rôle métier seul, sans tenant',
+      claims: { role: 'authenticated', app_metadata: { role: 'owner' } },
+    },
+    {
+      // Le `role` de premier niveau est le rôle Postgres. Le confondre avec le
+      // rôle métier donnerait le super-admin à toute session authentifiée.
+      label: 'super_admin au premier niveau du jeton',
+      claims: { role: 'super_admin', app_metadata: {} },
+    },
+  ]
+
+/**
+ * Exécute une requête en isolant son échec : une erreur SQL avorte la
+ * transaction, or le test en enchaîne beaucoup dans une seule.
+ */
+export async function attempt(
+  client: Client,
+  sql: string,
+): Promise<{ ok: true; rowCount: number } | { ok: false; code: string; message: string }> {
+  await client.query('savepoint attempt')
+  try {
+    const result = await client.query(sql)
+    await client.query('release savepoint attempt')
+    return { ok: true, rowCount: result.rowCount ?? 0 }
+  } catch (error) {
+    await client.query('rollback to savepoint attempt')
+    const { code, message } = error as { code?: string; message: string }
+    return { ok: false, code: code ?? '(sans code)', message }
+  }
+}
+
+/** Le code SQLSTATE d'un refus par RLS ou par privilège manquant. */
+export const INSUFFICIENT_PRIVILEGE = '42501'

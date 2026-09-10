@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Merx">
+  <rect width="64" height="64" fill="#2B3C99" />
+  <path
+    d="M17.9 17.9 L46.1 46.1 M46.1 17.9 L17.9 46.1"
+    stroke="#FFFFFF"
+    stroke-width="9.6"
+    stroke-linecap="butt"
+  />
+</svg>

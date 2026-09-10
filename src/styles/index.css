@@ -1,0 +1,186 @@
+/*
+ * Jetons de conception Merx — source unique.
+ * Toutes les valeurs viennent de docs/BRAND-UI.md. Ne rien inventer ici :
+ * une couleur, une taille ou un espacement absent de ce document n'existe pas.
+ */
+
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@import '@fontsource/ibm-plex-sans/400.css';
+@import '@fontsource/ibm-plex-sans/500.css';
+@import '@fontsource/ibm-plex-sans/600.css';
+@import '@fontsource/ibm-plex-sans-arabic/400.css';
+@import '@fontsource/ibm-plex-sans-arabic/500.css';
+@import '@fontsource/ibm-plex-sans-arabic/600.css';
+
+@theme {
+  /*
+   * BRAND-UI § 5 : « Six couleurs au total. Encre, rouge, vert, ambre, neutres,
+   * blanc. Rien d'autre. » La palette Tailwind par défaut est donc supprimée —
+   * `bg-emerald-500` ne compile pas, et la dérive de palette devient impossible.
+   */
+  --color-*: initial;
+
+  --color-transparent: transparent;
+  --color-current: currentColor;
+  --color-white: #ffffff;
+  --color-black: #101216;
+
+  /* Encre — primaire. Le bleu du stylo bille. */
+  --color-ink-950: #0e1440;
+  --color-ink-900: #16205c;
+  --color-ink-800: #1e2b75;
+  --color-ink-700: #24338a;
+  --color-ink-600: #2b3c99;
+  --color-ink-500: #3a4eb8;
+  --color-ink-400: #6274d1;
+  --color-ink-300: #96a3e3;
+  --color-ink-200: #c4cbf0;
+  --color-ink-100: #e3e7f9;
+  --color-ink-50: #f2f4fd;
+
+  /* Rouge — dette et danger. Jamais décoratif. */
+  --color-red-700: #9b1c15;
+  --color-red-600: #c0271e;
+  --color-red-500: #d9433a;
+  --color-red-100: #fbe5e3;
+
+  /* Papier — neutres, volontairement légèrement froids. */
+  --color-paper-950: #101216;
+  --color-paper-900: #1c1f25;
+  --color-paper-800: #2e323b;
+  --color-paper-700: #434955;
+  --color-paper-600: #5a6170;
+  --color-paper-500: #767e8e;
+  --color-paper-400: #9ba3b2;
+  --color-paper-300: #c3c9d4;
+  --color-paper-200: #dde1e8;
+  --color-paper-100: #edeff3;
+  --color-paper-50: #f7f8fa;
+
+  /* Fonctionnels. */
+  --color-valid: #107c4f;
+  --color-valid-bg: #e3f4ec;
+  --color-warn: #b45309;
+  --color-warn-bg: #fdf0dc;
+  --color-sync: #3a4eb8;
+
+  /* BRAND-UI § 6 — une seule famille, deux écritures. */
+  --font-sans:
+    'IBM Plex Sans', 'IBM Plex Sans Arabic', ui-sans-serif, system-ui, sans-serif;
+
+  /* BRAND-UI § 6 — échelle typographique. Rien en dessous de 13 px. */
+  --text-amount: 40px;
+  --text-amount--line-height: 44px;
+  --text-amount--font-weight: 600;
+  --text-amount-sm: 28px;
+  --text-amount-sm--line-height: 32px;
+  --text-amount-sm--font-weight: 600;
+  --text-title: 22px;
+  --text-title--line-height: 28px;
+  --text-title--font-weight: 600;
+  --text-subtitle: 18px;
+  --text-subtitle--line-height: 26px;
+  --text-subtitle--font-weight: 500;
+  --text-body: 16px;
+  --text-body--line-height: 24px;
+  --text-body--font-weight: 400;
+  --text-label: 14px;
+  --text-label--line-height: 20px;
+  --text-label--font-weight: 500;
+  --text-note: 13px;
+  --text-note--line-height: 18px;
+  --text-note--font-weight: 400;
+
+  /* BRAND-UI § 7 — base de 4 px, cibles tactiles. */
+  --spacing: 4px;
+  --spacing-touch: 48px;
+  --spacing-button: 56px;
+  --spacing-field: 56px;
+  --spacing-row: 64px;
+
+  /* BRAND-UI § 7 — « une seule valeur partout est un défaut de conception ». */
+  --radius-*: initial;
+  --radius-none: 0px;
+  --radius-field: 8px;
+  --radius-card: 8px;
+  --radius-button: 10px;
+  --radius-full: 9999px;
+
+  /* BRAND-UI § 5 — une seule ombre portée, celle des éléments flottants. */
+  --shadow-*: initial;
+  --shadow-floating: 0 2px 8px rgb(16 18 22 / 0.12);
+}
+
+/*
+ * Couche sémantique attendue par shadcn/ui, câblée sur les jetons de marque.
+ * Pas de bloc `.dark` : le mode sombre est hors V1 (BRAND-UI § 11).
+ */
+@theme inline {
+  --color-background: var(--color-paper-50);
+  --color-foreground: var(--color-paper-950);
+  --color-card: var(--color-white);
+  --color-card-foreground: var(--color-paper-950);
+  --color-popover: var(--color-white);
+  --color-popover-foreground: var(--color-paper-950);
+  --color-primary: var(--color-ink-600);
+  --color-primary-foreground: var(--color-white);
+  --color-secondary: var(--color-white);
+  --color-secondary-foreground: var(--color-ink-700);
+  --color-muted: var(--color-paper-100);
+  --color-muted-foreground: var(--color-paper-700);
+  --color-accent: var(--color-ink-100);
+  --color-accent-foreground: var(--color-ink-900);
+  --color-destructive: var(--color-red-600);
+  --color-destructive-foreground: var(--color-white);
+  --color-border: var(--color-paper-300);
+  --color-input: var(--color-paper-300);
+  --color-ring: var(--color-ink-600);
+  /*
+   * L'échelle sm/md/lg/xl de shadcn n'est pas une échelle chez nous : chaque
+   * cran pointe sur le rayon que BRAND-UI § 7 impose au composant qui l'emploie.
+   * `rounded-lg` est le rayon des boutons, `rounded-xl` celui des cartes.
+   */
+  --radius-sm: var(--radius-field);
+  --radius-md: var(--radius-field);
+  --radius-lg: var(--radius-button);
+  --radius-xl: var(--radius-card);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    /* BRAND-UI § 6 — corps 16 px, plancher absolu pour toute donnée. */
+    font-size: 16px;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans text-body antialiased;
+  }
+
+  /* BRAND-UI § 6 — « les chiffres sont le sujet ». */
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* BRAND-UI § 12 — focus clavier visible. */
+  :focus-visible {
+    @apply outline-ring outline-2 outline-offset-2;
+  }
+
+  /* BRAND-UI § 10 — `prefers-reduced-motion` respecté partout. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
