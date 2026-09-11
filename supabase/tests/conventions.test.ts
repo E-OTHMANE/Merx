@@ -166,12 +166,194 @@ describe('les règles attrapent une table fautive', () => {
       'aucun flottant',
       'aucun numeric nu',
       'aucune date sans fuseau',
+      'tenant_id par défaut du jeton',
     ]
 
     for (const rule of expected) {
       const found = onProbe(await violations(client, rule), 'rogue_probe')
       expect(found.length, `règle non déclenchée : ${rule}`).toBeGreaterThan(0)
     }
+  })
+
+  /*
+   * E2-01, SPEC § 4. La même table témoin porte une clé fautive et une clé
+   * conforme vers la même cible : la règle doit désigner la première, et
+   * seulement elle. Sans le second volet, une règle qui signalerait toute clé
+   * étrangère passerait ce test aussi.
+   */
+  it('signale une clé étrangère entre tables métier qui ne porte pas tenant_id', async () => {
+    await client.query('begin')
+    await client.query(`
+      create table public.fk_probe (id uuid primary key default gen_random_uuid());
+      select merx.apply_reference_conventions('public.fk_probe');
+      alter table public.fk_probe
+        add column loose_user  uuid constraint fk_probe_loose_user  references public.app_user (id),
+        add column scoped_user uuid,
+        add constraint fk_probe_scoped_user
+          foreign key (tenant_id, scoped_user) references public.app_user (tenant_id, id);
+    `)
+
+    const found = onProbe(await violations(client, 'clés étrangères composites sur tenant_id'), 'fk_probe')
+    expect(describeViolations(found)).toContain('fk_probe_loose_user')
+    expect(describeViolations(found)).not.toContain('fk_probe_scoped_user')
+    // `created_by`, posé par les conventions, est conforme lui aussi.
+    expect(found).toHaveLength(1)
+  })
+
+  /*
+   * E2-01, SPEC § 2.3. Les deux formes de référence au produit : la clé
+   * étrangère, et la colonne nue qui échappe à tout contrôle de contrainte. Le
+   * contrôle positif est la table qui fait ce que la RÈGLE demande — pointer
+   * sur la variante.
+   */
+  it('signale toute référence au produit hors de variant, et laisse passer variant_id', async () => {
+    await client.query('begin')
+    await client.query(`
+      create table public.stock_probe (id uuid primary key default gen_random_uuid());
+      select merx.apply_business_conventions('public.stock_probe');
+      alter table public.stock_probe
+        add column product_id uuid,
+        add constraint stock_probe_product_fkey
+          foreign key (tenant_id, product_id) references public.product (tenant_id, id);
+
+      create table public.bare_probe (id uuid primary key default gen_random_uuid(), product_id uuid);
+      select merx.apply_business_conventions('public.bare_probe');
+
+      create table public.line_probe (id uuid primary key default gen_random_uuid());
+      select merx.apply_business_conventions('public.line_probe');
+      alter table public.line_probe
+        add column variant_id uuid,
+        add constraint line_probe_variant_fkey
+          foreign key (tenant_id, variant_id) references public.variant (tenant_id, id);
+    `)
+
+    const found = await violations(client, 'aucune référence à product hors de variant')
+
+    expect(describeViolations(onProbe(found, 'stock_probe'))).toContain('stock_probe_product_fkey')
+    expect(describeViolations(onProbe(found, 'stock_probe'))).toContain('colonne product_id')
+    expect(describeViolations(onProbe(found, 'bare_probe'))).toContain('colonne product_id')
+    expect(onProbe(found, 'line_probe')).toEqual([])
+  })
+
+  /*
+   * E2-03, SPEC § 3 — RÈGLE de placement des coûts. `variant_cost` est la
+   * relation du prix d'achat, passée à `merx.apply_capability_restriction(...,
+   * 'view_cost')` ; le jour où un `cost_price` apparaît sur `variant` — la table
+   * que tout le commerce lit —, le balayage le nomme. Le contrôle positif est
+   * l'état réel du schéma : aucune infraction, `variant_cost` comprise.
+   */
+  it('tient variant_cost pour la relation du coût, et signale un cost_price posé sur variant', async () => {
+    const { rows } = await client.query<{ capability: string }>(
+      "select capability from merx.confidential_registry where table_name = 'variant_cost'",
+    )
+    expect(rows).toEqual([{ capability: 'view_cost' }])
+
+    const rule: RuleName = 'coûts et marges sur relation restreinte'
+    expect(describeViolations(await violations(client, rule))).toBe('')
+
+    await client.query('begin')
+    await client.query('alter table public.variant add column cost_price public.money_amount')
+    const found = onProbe(await violations(client, rule), 'variant')
+    expect(describeViolations(found)).toContain('cost_price')
+  })
+
+  /*
+   * E2-02. Le contrôle positif est la table que les conventions fabriquent ;
+   * le négatif, la même privée de son défaut.
+   */
+  it('signale une table dont tenant_id ne vient plus du jeton', async () => {
+    await client.query('begin')
+    await client.query(`
+      create table public.tenant_default_probe (id uuid primary key default gen_random_uuid());
+      select merx.apply_business_conventions('public.tenant_default_probe');
+    `)
+
+    const rule: RuleName = 'tenant_id par défaut du jeton'
+    expect(onProbe(await violations(client, rule), 'tenant_default_probe')).toEqual([])
+
+    await client.query('alter table public.tenant_default_probe alter column tenant_id drop default')
+    const found = onProbe(await violations(client, rule), 'tenant_default_probe')
+    expect(describeViolations(found)).toContain('défaut (aucun)')
+  })
+
+  /*
+   * E2-02, SPEC § 2.6. Une table de formulaire conforme, puis chacune des trois
+   * façons de rendre obligatoire autre chose que le nom — chacune doit être
+   * nommée, et une colonne NOT NULL pourvue d'un vrai défaut ne doit pas
+   * l'être.
+   */
+  describe('seul le nom est obligatoire à la création', () => {
+    const rule: RuleName = 'seul le nom est obligatoire à la création'
+
+    const createFormProbe = async (): Promise<void> => {
+      await client.query('begin')
+      await client.query(`
+        create table public.form_probe (
+          id        uuid    primary key default gen_random_uuid(),
+          label     text    not null,
+          note      text,
+          is_active boolean not null default true
+        );
+        select merx.apply_reference_conventions('public.form_probe');
+        select merx.register_creation_form('public.form_probe', 'label');
+      `)
+    }
+
+    it('laisse passer une table dont seul le nom est obligatoire', async () => {
+      await createFormProbe()
+      expect(describeViolations(onProbe(await violations(client, rule), 'form_probe'))).toBe('')
+    })
+
+    it('signale une colonne NOT NULL sans défaut', async () => {
+      await createFormProbe()
+      await client.query('alter table public.form_probe add column brand text not null')
+
+      const found = onProbe(await violations(client, rule), 'form_probe')
+      expect(describeViolations(found)).toContain('brand : obligatoire sans défaut')
+      expect(found).toHaveLength(1)
+    })
+
+    it('signale une colonne NOT NULL dont le défaut est NULL', async () => {
+      await createFormProbe()
+      await client.query('alter table public.form_probe add column unit text not null default null')
+
+      const found = onProbe(await violations(client, rule), 'form_probe')
+      expect(describeViolations(found)).toContain('unit : obligatoire sans défaut')
+    })
+
+    it('signale une contrainte check qui exige une valeur', async () => {
+      await createFormProbe()
+      await client.query(`
+        alter table public.form_probe
+          add constraint form_probe_note_required check (note is not null)
+      `)
+
+      const found = onProbe(await violations(client, rule), 'form_probe')
+      expect(describeViolations(found)).toContain('form_probe_note_required')
+    })
+
+    it('signale un tenant_id privé de son défaut — la base le réclamerait', async () => {
+      await createFormProbe()
+      await client.query('alter table public.form_probe alter column tenant_id drop default')
+
+      const found = onProbe(await violations(client, rule), 'form_probe')
+      expect(describeViolations(found)).toContain('tenant_id : obligatoire sans défaut')
+    })
+
+    it('signale une colonne de nom devenue facultative', async () => {
+      await createFormProbe()
+      await client.query('alter table public.form_probe alter column label drop not null')
+
+      const found = onProbe(await violations(client, rule), 'form_probe')
+      expect(describeViolations(found)).toContain('colonne de nom label absente ou nullable')
+    })
+
+    it('refuse d’inscrire une colonne de nom qui n’existe pas', async () => {
+      await createFormProbe()
+      await expect(
+        client.query("select merx.register_creation_form('public.form_probe', 'nom')"),
+      ).rejects.toThrow('Colonne de nom inconnue : form_probe.nom')
+    })
   })
 
   it('signale une entrée de registre sans table', async () => {

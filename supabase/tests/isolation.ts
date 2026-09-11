@@ -265,8 +265,31 @@ interface Column {
   generated: boolean
   enum_labels: string[] | null
   fk_table: string | null
+  /** Membre d'une clé étrangère composite d'une forme que le générateur ne sait pas remplir. */
+  fk_unsupported: boolean
 }
 
+/*
+ * La clé étrangère d'une colonne, lue dans le catalogue sous ses deux formes :
+ *
+ *   — à une colonne, `(x) references t (id)` ;
+ *   — composite sur le commerce, `(tenant_id, x) references t (tenant_id, id)` —
+ *     SPEC § 4, RÈGLE des clés étrangères composites, posée en E2-01. C'est la
+ *     forme de toute clé entre tables métier désormais.
+ *
+ * Les deux se remplissent de la même façon : avec l'identifiant de la ligne
+ * cible *du même commerce*, que le peuplement a déjà créée. La forme composite
+ * est reconnue à sa structure — deux colonnes, dont `tenant_id` — et jamais à
+ * un nom de table : une table ajoutée en E3 ou en E8 en hérite sans qu'une
+ * ligne de ce fichier change.
+ *
+ * `tenant_id` lui-même participe à toutes ces clés composites ; seule sa clé à
+ * une colonne, vers le commerce, le décrit. D'où l'exclusion.
+ *
+ * Une colonne prise dans une clé composite d'une autre forme est signalée
+ * (`fk_unsupported`) : le générateur y écrirait un uuid au hasard, la clé
+ * refuserait, et l'échec se lirait comme une policy fautive.
+ */
 const COLUMNS = `
   select a.attname                              as name,
          format_type(a.atttypid, a.atttypmod)   as type,
@@ -278,18 +301,33 @@ const COLUMNS = `
          (select array_agg(e.enumlabel::text order by e.enumsortorder)
           from pg_enum e
           where e.enumtypid = coalesce(nullif(t.typbasetype, 0), t.oid)) as enum_labels,
-         fk.reftable                             as fk_table
+         fk.reftable                             as fk_table,
+         (fk.reftable is null and exists (
+            select 1 from pg_constraint k
+            where k.conrelid = a.attrelid
+              and k.contype = 'f'
+              and a.attnum = any (k.conkey)
+              and a.attname <> 'tenant_id'
+          ))                                     as fk_unsupported
   from pg_attribute a
   join pg_type t on t.oid = a.atttypid
   left join pg_type bt on bt.oid = nullif(t.typbasetype, 0)
+  left join pg_attribute ta
+    on ta.attrelid = a.attrelid and ta.attname = 'tenant_id' and not ta.attisdropped
   left join lateral (
     select cf.oid::regclass::text as reftable
     from pg_constraint k
     join pg_class cf on cf.oid = k.confrelid
     where k.conrelid = a.attrelid
       and k.contype = 'f'
-      and array_length(k.conkey, 1) = 1
-      and k.conkey[1] = a.attnum
+      and (
+        k.conkey = array[a.attnum]
+        or (a.attname <> 'tenant_id'
+            and array_length(k.conkey, 1) = 2
+            and a.attnum = any (k.conkey)
+            and ta.attnum = any (k.conkey))
+      )
+    order by array_length(k.conkey, 1)
     limit 1
   ) fk on true
   where a.attrelid = $1::regclass
@@ -373,7 +411,14 @@ function literalFor(table: string, column: Column, seed: number): string {
     case 'B': // booléen
       return cast('false')
     case 'N': // numérique — couvre money_amount et quantity
-      return cast('1')
+      /*
+       * Jamais 1. Depuis E2-03, un trigger pose d'office une ligne à la valeur
+       * naturelle — le palier `min_qty = 1` de toute variante — et un 1 écrit
+       * ici heurtait l'unicité des paliers (`23505`) : l'échec se serait lu
+       * comme une policy fautive. `seed + 1` vaut au moins 2, et change d'une
+       * colonne à l'autre.
+       */
+      return cast(String(seed + 1))
     case 'D': // date et heure
       return cast('now()')
     case 'U': // uuid, jsonb, et autres types « utilisateur »
@@ -478,9 +523,20 @@ export async function seedTwoTenants(client: Client): Promise<Seeded> {
   }
   const tenantTable = [...targets][0]!.replace(/^public\./, '')
 
-  /* Colonnes à renseigner : obligatoires et sans valeur par défaut. */
+  /*
+   * Colonnes à renseigner : obligatoires et sans valeur par défaut — plus
+   * `tenant_id`, toujours.
+   *
+   * Depuis E2-02, `tenant_id` a pour défaut `merx.current_tenant_id()`, le
+   * commerce du jeton. Le peuplement tourne en `postgres`, sans jeton : laissé
+   * au défaut, `tenant_id` vaudrait NULL et toute la base refuserait (`23502`,
+   * constaté en retirant cette exception). Le générateur dit donc lui-même de
+   * quel commerce il s'agit, comme tout chemin hors session doit le faire.
+   */
   const required = (table: string): Column[] =>
-    (columns.get(table) ?? []).filter((c) => c.notnull && !c.hasdefault && !c.generated)
+    (columns.get(table) ?? []).filter(
+      (c) => c.name === 'tenant_id' || (c.notnull && !c.hasdefault && !c.generated),
+    )
 
   const dependencies = new Map<string, Set<string>>(
     tables.map((table) => [
@@ -509,6 +565,14 @@ export async function seedTwoTenants(client: Client): Promise<Seeded> {
         // valeur posée ici est sans importance, la colonne reste obligatoire.
         values.push(tenant === null ? 'gen_random_uuid()' : `'${tenant}'::uuid`)
         continue
+      }
+
+      if (column.fk_unsupported) {
+        throw new Error(
+          `${table}.${column.name} appartient à une clé étrangère composite qui n'est pas ` +
+            'de la forme (tenant_id, x) → (tenant_id, id) — SPEC § 4. Le générateur ne sait ' +
+            'pas la remplir ; étendre COLUMNS dans supabase/tests/isolation.ts.',
+        )
       }
 
       if (column.fk_table !== null) {

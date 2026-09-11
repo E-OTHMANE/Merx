@@ -29,6 +29,7 @@ export function HomeScreen() {
   const canManageDevices = useCan('manage_devices')
   const canViewAuditLog = useCan('view_audit_log')
   const canManageSettings = useCan('manage_settings')
+  const canViewCatalogue = useCan('view_catalogue')
 
   return (
     <main className="min-h-dvh px-4 py-6">
@@ -64,6 +65,17 @@ export function HomeScreen() {
             className="flex h-button items-center justify-center rounded-button bg-ink-600 text-body text-white hover:bg-ink-700 active:bg-ink-800"
           >
             Commerces
+          </Link>
+        )}
+
+        {/* E2-02 : le catalogue, lisible par tout le commerce. L'employé voit
+            la liste ; seul le patron ouvre les fiches. */}
+        {canViewCatalogue && (
+          <Link
+            to="/products"
+            className="flex h-button items-center justify-center rounded-button bg-ink-600 text-body text-white hover:bg-ink-700 active:bg-ink-800"
+          >
+            Produits
           </Link>
         )}
 

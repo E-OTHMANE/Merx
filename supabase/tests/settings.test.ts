@@ -136,14 +136,88 @@ beforeAll(async () => {
     [authUsers.worker, tenant],
   )
 
+  await seedCatalogue()
+
   for (const role of ['owner', 'worker'] as const) {
     tokens[role] = (await sessionFor(emails[role], PASSWORD)).accessToken
   }
 }, 60_000)
 
+/*
+ * La ligne que le balayage d'écriture restreinte éprouve, table par table,
+ * désignée par la préparation elle-même — par son identifiant.
+ *
+ * Aucune requête ne la choisit, et c'est tout le point. Certaines tables
+ * portent des lignes posées d'office par un trigger et gardées par lui : la
+ * variante par défaut, la ligne `min_qty = 1` de chaque variante (E2-03). Le
+ * balayage supprime sa ligne pour éprouver le droit du patron ; s'il tombait
+ * sur l'une de celles-là, c'est le garde qui refuserait (`23514`), et le
+ * balayage mesurerait le garde au lieu de la policy. Un critère de requête —
+ * l'ordre des identifiants, l'ordre de création — ne dit pas quelle ligne est
+ * gardée ; il tombe juste un jour, faux le lendemain, et personne ne le voit.
+ * Une table au registre sans ligne désignée ici fait échouer le balayage.
+ */
+const sweptRows = new Map<string, string>()
+
+/*
+ * E2-01. Le balayage d'écriture restreinte, plus bas, exige une ligne de chaque
+ * table inscrite au registre dans le commerce du test — le catalogue y est
+ * entré. La préparation est minimale ; ce qui compte est la ligne qu'elle
+ * désigne pour chaque table :
+ *
+ *   — `variant` : une **seconde** variante, ajoutée à la main. Ni la variante
+ *     par défaut, ni la dernière du produit : le garde « un produit garde
+ *     toujours au moins une variante » (SPEC § 2.3) ne peut pas la défendre ;
+ *   — `price_break` : un palier à `min_qty = 10`. Pas la ligne `min_qty = 1`
+ *     posée d'office sur chaque variante, que ses gardes défendent (RÈGLE M1-2,
+ *     E2-03).
+ */
+async function seedCatalogue(): Promise<void> {
+  const { rows: categories } = await client.query<{ id: string }>(
+    "insert into public.category (tenant_id, name_fr) values ($1, 'Soins') returning id",
+    [tenant],
+  )
+  sweptRows.set('category', categories[0]!.id)
+
+  // Le trigger de la RÈGLE M1-1 crée la variante par défaut, sous l'identifiant
+  // du produit — et celui de la RÈGLE M1-2, sa ligne `min_qty = 1`.
+  const { rows: products } = await client.query<{ id: string }>(
+    `insert into public.product (tenant_id, name_fr, code, category_id)
+     values ($1, 'Crème de jour', 'REG-1', $2) returning id`,
+    [tenant, categories[0]!.id],
+  )
+  const product = products[0]!.id
+  sweptRows.set('product', product)
+
+  const { rows: variants } = await client.query<{ id: string }>(
+    `insert into public.variant (tenant_id, product_id, sku) values ($1, $2, 'REG-1-B')
+     returning id`,
+    [tenant, product],
+  )
+  sweptRows.set('variant', variants[0]!.id)
+
+  const { rows: breaks } = await client.query<{ id: string }>(
+    `insert into public.price_break (tenant_id, variant_id, min_qty, unit_price)
+     values ($1, $2, 10, '25.00') returning id`,
+    [tenant, product],
+  )
+  sweptRows.set('price_break', breaks[0]!.id)
+
+  // Les réglages sont posés par `create_tenant()` ; aucun garde ne les défend,
+  // mais la ligne est désignée comme les autres, par sa clé.
+  const { rows: settings } = await client.query<{ id: string }>(
+    "select id from public.tenant_setting where tenant_id = $1 and key = 'print_header'",
+    [tenant],
+  )
+  sweptRows.set('tenant_setting', settings[0]!.id)
+}
+
 afterAll(async () => {
   if (client !== undefined && tenant !== undefined) {
     await client.query('reset role')
+    // La cascade emporte variantes et paliers ; la catégorie part ensuite.
+    await client.query('delete from public.product where tenant_id = $1', [tenant])
+    await client.query('delete from public.category where tenant_id = $1', [tenant])
     await client.query('delete from public.tenant_setting where tenant_id = $1', [tenant])
     await client.query('delete from public.device where tenant_id = $1', [tenant])
     await client.query('delete from public.warehouse where tenant_id = $1', [tenant])
@@ -434,20 +508,17 @@ describe.each(WRITE_RESTRICTED)('%s, écriture réservée à %s', (table, capabi
     allowed = matrix.map((r) => r.role)
     denied = ['owner', 'worker'].filter((role) => !allowed.includes(role))
 
-    const { rows } = await client.query<{ id: string }>(
-      `select id from public."${table}" where tenant_id = $1 order by id limit 1`,
-      [tenant],
-    )
-    if (rows[0] === undefined) {
+    const designated = sweptRows.get(table)
+    if (designated === undefined) {
       // Jamais de table sautée en silence : un balayage qui s'esquive laisse la
       // suite au vert sans avoir rien vérifié.
       throw new Error(
-        `${table} est au registre des écritures restreintes mais le commerce du ` +
-          'test n’en a aucune ligne. Ajouter sa préparation dans le `beforeAll` ' +
-          'de supabase/tests/settings.test.ts.',
+        `${table} est au registre des écritures restreintes mais la préparation ` +
+          'n’y désigne aucune ligne. L’ajouter à `sweptRows` dans `seedCatalogue()` ' +
+          'de supabase/tests/settings.test.ts — une ligne qu’aucun garde ne défend.',
       )
     }
-    row = rows[0].id
+    row = designated
   })
 
   it('la matrice donne bien la capacité à l’un et pas à l’autre', () => {
@@ -509,38 +580,74 @@ describe.each(WRITE_RESTRICTED)('%s, écriture réservée à %s', (table, capabi
   })
 
   it.each(['owner', 'worker'])('%s — insère si et seulement si la matrice le permet', async (role) => {
+    const before = await snapshot()
+
     await client.query('begin')
     try {
-      await actAs(client, tokenFor(tenant, role))
-
       /*
        * L'INSERT, lui, lève : `with check` refuse la ligne au lieu de n'en
-       * trouver aucune. Le code est asserté — un refus par contrainte
-       * d'unicité (23505) ou par clé étrangère (23503) prendrait sinon le
-       * crédit du refus par capacité (E1-01, même piège).
+       * trouver aucune. Le code est asserté — mais un code n'est probant que si
+       * rien d'autre que la policy ne pouvait refuser.
+       *
+       * La charge est donc une ligne **valide**. La ligne existante est retirée
+       * (en `postgres`, dans cette transaction annulée), puis réinsérée telle
+       * quelle sous le rôle testé, avec un nouvel `id` : toutes les colonnes
+       * obligatoires sont remplies, aucune unicité n'est heurtée, aucune clé
+       * étrangère ne manque — sans que le test ait à connaître la table.
+       *
+       * Avec une charge incomplète, le `42501` de l'employé ne tenait qu'à
+       * l'ordre dans lequel Postgres évalue ses refus — `with check` de la RLS
+       * avant `NOT NULL` — et sous sabotage il devenait `23502` : la contrainte
+       * refusait à la place de la policy. La branche du patron, elle, acceptait
+       * n'importe quel échec. Ici le patron **doit réussir** : c'est la preuve
+       * que la charge passe toutes les contraintes, donc que le refus opposé à
+       * l'employé ne peut venir que de la policy. Policy retirée, l'employé
+       * insère, et le test tombe sur l'insertion elle-même.
        */
+      await client.query(`delete from public."${table}" where id = $1`, [row])
+
+      await actAs(client, tokenFor(tenant, role))
+
       const written = await attempt(
         client,
-        `insert into public."${table}" (tenant_id) values ('${tenant}'::uuid)`,
+        `insert into public."${table}"
+           select * from jsonb_populate_record(
+             null::public."${table}",
+             $payload$${before}$payload$::jsonb || jsonb_build_object('id', gen_random_uuid()))`,
       )
 
       if (allowed.includes(role)) {
-        // Le rôle autorisé bute au pire sur une colonne obligatoire, jamais sur
-        // un privilège : c'est ce qui distingue « pas le droit » de « pas de
-        // valeur ».
-        if (!written.ok) {
-          expect(written.code, `refus par la capacité alors qu’elle est accordée`).not.toBe(
-            INSUFFICIENT_PRIVILEGE,
-          )
-        }
+        expect(
+          written.ok,
+          `insertion légitime refusée : ${written.ok ? '' : `${written.code} ${written.message}`}`,
+        ).toBe(true)
         return
       }
 
       expect(written.ok, 'FUITE — une ligne a été insérée sans la capacité').toBe(false)
-      if (!written.ok) expect(written.code).toBe(INSUFFICIENT_PRIVILEGE)
+      if (!written.ok) {
+        expect(written.code, `refusée, mais pas par la policy : ${written.message}`).toBe(
+          INSUFFICIENT_PRIVILEGE,
+        )
+        /*
+         * Le code ne dit pas *quelle* policy a refusé. Un trigger qui écrit
+         * ailleurs répond le même `42501` sous le nom de son autre table :
+         * insérer une variante pose sa ligne à l'unité (E2-03), et la policy
+         * de `price_break` refusait l'employé à la place de celle de
+         * `variant`. Constaté par sabotage — policy d'insertion de `variant`
+         * retirée, ce test restait vert. Le message nomme la table.
+         */
+        expect(written.message, 'refusée, mais par la policy d’une autre table').toContain(
+          `table "${table}"`,
+        )
+      }
     } finally {
       await client.query('rollback')
     }
+
+    // La ligne retirée pour faire place à la charge est revenue avec
+    // l'annulation : les tests suivants retrouvent le commerce intact.
+    expect(await snapshot(), 'la ligne n’a pas été rétablie par l’annulation').toBe(before)
   })
 })
 

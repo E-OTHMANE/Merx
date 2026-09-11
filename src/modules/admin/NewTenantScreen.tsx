@@ -15,7 +15,7 @@ import { Link, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { normalizePhone } from '@/lib/phone'
-import { Field } from '@/modules/admin/Field'
+import { Field } from '@/components/Field'
 import { createTenant } from '@/modules/admin/api'
 
 export function NewTenantScreen() {

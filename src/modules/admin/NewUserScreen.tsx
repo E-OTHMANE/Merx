@@ -18,7 +18,7 @@ import { Link, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { normalizePhone } from '@/lib/phone'
-import { Field } from '@/modules/admin/Field'
+import { Field } from '@/components/Field'
 import { createWorker } from '@/modules/admin/users'
 
 export function NewUserScreen() {

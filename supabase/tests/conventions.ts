@@ -375,6 +375,163 @@ const AUDIT_DIRECT_WRITE = `
   order by 1
 `
 
+/*
+ * SPEC § 4, RÈGLE des clés étrangères composites (E2-01) — toute clé étrangère
+ * entre tables de `public` porte `tenant_id`, à la même position des deux
+ * côtés : `(tenant_id, x) references t (tenant_id, id)`.
+ *
+ * Une clé étrangère ne passe pas par la RLS. Sans `tenant_id` dans la clé, un
+ * commerce rattache ses lignes à celles du voisin — et une cascade chez le
+ * voisin détruit ses données, ou une clé sans cascade l'empêche de supprimer
+ * les siennes. Le balayage lit toutes les tables, enregistrées ou non : la clé
+ * fautive est justement celle qu'on a écrite à la main.
+ *
+ * Seule exception, par nature : l'ancre `tenant_id → tenant (id)`.
+ */
+const TENANT_SCOPED_FOREIGN_KEYS = `
+  select c.relname as table_name,
+         format('clé étrangère %s vers %s sans tenant_id des deux côtés — '
+                'SPEC § 4 : (tenant_id, x) references t (tenant_id, id)',
+                k.conname, k.confrelid::regclass) as detail
+  from pg_constraint k
+  join pg_class c on c.oid = k.conrelid
+  join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public'
+  join pg_class cf on cf.oid = k.confrelid
+  join pg_namespace nf on nf.oid = cf.relnamespace and nf.nspname = 'public'
+  left join pg_attribute src
+    on src.attrelid = k.conrelid and src.attname = 'tenant_id' and not src.attisdropped
+  left join pg_attribute dst
+    on dst.attrelid = k.confrelid and dst.attname = 'tenant_id' and not dst.attisdropped
+  where k.contype = 'f'
+    -- L'ancre : la colonne tenant_id seule, vers le commerce.
+    and not (k.conkey = array[src.attnum] and cf.relname = 'tenant')
+    and not (
+      array_length(k.conkey, 1) >= 2
+      and exists (
+        select 1
+        from generate_subscripts(k.conkey, 1) as i
+        where k.conkey[i] = src.attnum and k.confkey[i] = dst.attnum
+      )
+    )
+  order by 1, 2
+`
+
+/*
+ * SPEC § 2.3, RÈGLE — le stock, les prix et les lignes de vente pointent sur
+ * `variant_id`, jamais sur `product_id`. E2-01 : « aucune table ne référence
+ * `product_id` pour du stock ou du prix ».
+ *
+ * La règle vise ce qui n'existe pas encore : `stock_level` (E3), `sale_line`
+ * (E4), `goods_receipt_line` (E8). Le jour où l'une d'elles pointe sur un
+ * produit, le pack de déclinaisons devient une migration de tout le stock —
+ * et rien de visible ne le signale. Ici, le test échoue en nommant la table.
+ *
+ * Deux formes sont attrapées : la clé étrangère vers `product`, et la colonne
+ * `product_id` sans clé — la seconde est la plus sournoise, elle échappe à
+ * tout contrôle de contrainte.
+ *
+ * `variant` est la seule exception, et elle est écrite ici plutôt que déduite :
+ * une autre table qui aurait une raison de viser le produit (un pack, SPEC
+ * § 2.2) s'ajoute à cette liste par une décision, jamais par un motif.
+ */
+const PRODUCT_REFERENCES = `
+  with allowed(table_name) as (values ('variant'))
+  select c.relname as table_name,
+         format('%s — SPEC § 2.3 : stock, prix et ventes pointent sur variant_id, '
+                'jamais sur product_id', what) as detail
+  from (
+    select k.conrelid as relid,
+           format('clé étrangère %s vers product', k.conname) as what
+    from pg_constraint k
+    where k.contype = 'f' and k.confrelid = 'public.product'::regclass
+    union
+    select a.attrelid,
+           'colonne product_id'
+    from pg_attribute a
+    where a.attname = 'product_id' and a.attnum > 0 and not a.attisdropped
+  ) ref
+  join pg_class c on c.oid = ref.relid and c.relkind = 'r'
+  join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public'
+  where c.relname not in (select table_name from allowed)
+  order by 1, 2
+`
+
+/*
+ * E2-02 — `tenant_id` a pour défaut le commerce du jeton, sur toute table
+ * conventionnée. L'application n'écrit aucun `tenant_id` ; une table qui
+ * perdrait ce défaut ferait échouer en `23502` chaque écran qui y insère, et le
+ * symptôme se lirait comme un champ manquant.
+ *
+ * `left join` sur la colonne : une table sans `tenant_id` est aussi signalée
+ * ici, et pas seulement par la règle des colonnes standard.
+ */
+const TENANT_DEFAULT = `
+  select c.relname as table_name,
+         format('tenant_id : défaut %s, attendu merx.current_tenant_id() — E2-02',
+                coalesce(pg_get_expr(d.adbin, d.adrelid), '(aucun)')) as detail
+  from merx.convention_registry r
+  join pg_class c on c.relname = r.table_name
+  join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public'
+  left join pg_attribute a
+    on a.attrelid = c.oid and a.attname = 'tenant_id' and a.attnum > 0 and not a.attisdropped
+  left join pg_attrdef d on d.adrelid = c.oid and d.adnum = a.attnum
+  where coalesce(pg_get_expr(d.adbin, d.adrelid), '') <> 'merx.current_tenant_id()'
+  order by 1
+`
+
+/*
+ * SPEC § 2.6, RÈGLE — principe directeur : le seul champ obligatoire d'un
+ * formulaire de création est le nom. E2-02, E11-03.
+ *
+ * Ce contrôle ne vérifie pas un écran. Il vérifie qu'aucune colonne ne peut
+ * devenir obligatoire sans qu'on le voie : l'écran le plus accommodant du monde
+ * échoue quand même si la base réclame ce qu'il n'envoie pas. Il vaut pour
+ * toute table inscrite par `merx.register_creation_form()` — `product`
+ * aujourd'hui, `client` (E6) et `supplier` (E8) demain — sans en nommer aucune.
+ *
+ * Trois façons de rendre une colonne obligatoire, trois volets :
+ *   — NOT NULL sans défaut. Un défaut littéralement NULL n'en est pas un ;
+ *   — une contrainte `check` qui exige `IS NOT NULL` : elle refuse l'absence
+ *     aussi sûrement que NOT NULL, et elle ne se voit pas dans `attnotnull` ;
+ *   — la colonne de nom elle-même absente, ou nullable : le registre
+ *     parlerait alors d'une règle que la table n'applique plus.
+ */
+const CREATION_FORM_REQUIRED = `
+  with form as (
+    select f.table_name, f.name_column, c.oid
+    from merx.creation_form_registry f
+    left join pg_namespace n on n.nspname = 'public'
+    left join pg_class c on c.relname = f.table_name and c.relnamespace = n.oid and c.relkind = 'r'
+  )
+  select f.table_name,
+         format('%s : obligatoire sans défaut — SPEC § 2.6, seul le nom (%s) peut l''être',
+                a.attname, f.name_column) as detail
+  from form f
+  join pg_attribute a on a.attrelid = f.oid and a.attnum > 0 and not a.attisdropped
+  left join pg_attrdef d on d.adrelid = f.oid and d.adnum = a.attnum
+  where a.attnotnull
+    and a.attgenerated = ''
+    and a.attname <> f.name_column
+    and coalesce(pg_get_expr(d.adbin, d.adrelid), 'NULL') ~* '^\\(?null\\)?(::.*)?$'
+  union all
+  select f.table_name,
+         format('contrainte %s : %s — SPEC § 2.6, seul le nom (%s) peut être exigé',
+                k.conname, pg_get_constraintdef(k.oid), f.name_column)
+  from form f
+  join pg_constraint k on k.conrelid = f.oid and k.contype = 'c'
+  where pg_get_constraintdef(k.oid) ~* 'is not null'
+  union all
+  select f.table_name,
+         format('colonne de nom %s absente ou nullable', f.name_column)
+  from form f
+  where not exists (
+    select 1 from pg_attribute a
+    where a.attrelid = f.oid and a.attname = f.name_column
+      and a.attnum > 0 and not a.attisdropped and a.attnotnull
+  )
+  order by 1, 2
+`
+
 export const RULES = {
   'table non enregistrée': UNREGISTERED,
   'registre périmé': STALE_REGISTRY,
@@ -390,6 +547,10 @@ export const RULES = {
   'gardes de l\'ajout seul': APPEND_ONLY_GUARDS,
   'aucun ajout seul hors registre': UNREGISTERED_APPEND_ONLY,
   'aucune écriture directe dans audit_log': AUDIT_DIRECT_WRITE,
+  'clés étrangères composites sur tenant_id': TENANT_SCOPED_FOREIGN_KEYS,
+  'aucune référence à product hors de variant': PRODUCT_REFERENCES,
+  'tenant_id par défaut du jeton': TENANT_DEFAULT,
+  'seul le nom est obligatoire à la création': CREATION_FORM_REQUIRED,
 } as const
 
 export type RuleName = keyof typeof RULES

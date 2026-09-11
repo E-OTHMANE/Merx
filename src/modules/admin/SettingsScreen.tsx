@@ -23,7 +23,7 @@
 import { useCallback, useEffect, useId, useState, type FormEvent } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Field } from '@/modules/admin/Field'
+import { Field } from '@/components/Field'
 import { loadSettings, saveSettings, type Settings } from '@/modules/admin/settings'
 import { LANGUAGES, type Language } from '@/modules/admin/settingKeys'
 

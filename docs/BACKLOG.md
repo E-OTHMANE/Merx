@@ -235,14 +235,18 @@ L'épique la plus déterminante pour l'adoption.
 **En tant que** patron, **je veux** ajouter un produit en quelques secondes, **afin de** ne pas passer ma soirée à saisir.
 
 **Critères d'acceptation**
-- [ ] **Le seul champ obligatoire est le nom.** Enregistrer avec le seul nom fonctionne.
-- [ ] Champs facultatifs : `code`, nom arabe, catégorie, marque, photo, `unit_label`, `pieces_per_carton`
-- [ ] Aucun champ vide n'affiche d'avertissement, de rouge, ni de rappel
-- [ ] Photo prise directement depuis l'appareil, redimensionnée avant envoi
-- [ ] Suppression douce via `deleted_at` ; un produit supprimé disparaît des recherches mais reste dans l'historique
-- [ ] Formulaire utilisable au doigt, sur téléphone
+- [x] **Le seul champ obligatoire est le nom.** Enregistrer avec le seul nom fonctionne.
+- [x] Champs facultatifs : `code`, nom arabe, catégorie, marque, photo, `unit_label`, `pieces_per_carton`
+- [x] Aucun champ vide n'affiche d'avertissement, de rouge, ni de rappel
+- [ ] Photo prise directement depuis l'appareil, redimensionnée avant envoi — *code et compartiment testés ; la prise de vue réelle reste à vérifier sur une tablette*
+- [x] Suppression douce via `deleted_at` ; un produit supprimé disparaît des recherches mais reste dans l'historique
+- [ ] Formulaire utilisable au doigt, sur téléphone — *à vérifier à la main, sur un Android d'entrée de gamme*
 
 **Notes** — `SPEC.md` § 2.6. Chaque champ obligatoire ajouté est un commerçant perdu.
+
+**Tranché — `tenant_id` à l'insertion** (relevé en E2-01). Défaut posé dans les conventions : `tenant_id` vaut `merx.current_tenant_id()` sur toutes les tables, existantes par migration additive (`product_form`). L'application n'envoie jamais `tenant_id` ; la policy refuse toujours une valeur étrangère explicite. Le générateur de `supabase/tests/isolation.ts` pose `tenant_id` lui-même, défaut ou pas — sans cela le peuplement en `postgres` écrivait NULL (constaté : `23502`). Voir SPEC § 4.
+
+**Tranché aussi en E2-02** — le SKU de la variante par défaut suit la référence tant qu'il n'en a pas divergé (SPEC § 6) ; photos dans un compartiment Storage privé (SPEC § 6) ; catégorie proposée parmi celles qui existent, champ absent s'il n'y en a aucune — elles arrivent par l'import (E2-05) ; registre des formulaires de création contrôlé par `conventions.test.ts` (SPEC § 2.6).
 
 ---
 
@@ -252,15 +256,19 @@ L'épique la plus déterminante pour l'adoption.
 **En tant que** patron, **je veux** un prix qui baisse à la quantité, **afin de** vendre en gros sans recalculer de tête.
 
 **Critères d'acceptation**
-- [ ] Saisie de plusieurs `price_break` par variante : `min_qty` et `unit_price`
-- [ ] Une ligne `min_qty = 1` est obligatoire et créée par défaut
-- [ ] Résolution : prendre le plus grand `min_qty` inférieur ou égal à la quantité demandée
-- [ ] `floor_price` saisissable, `owner` seul
-- [ ] `cost_price` saisissable, `owner` seul, sur `variant_cost` — jamais une colonne de `variant`
-- [ ] `variant_cost` créée par `merx.apply_capability_restriction(..., 'view_cost')` ; le balayage de `conventions.test.ts` le vérifie
-- [ ] Test unitaire de résolution couvrant les bornes exactes (9, 10, 99, 100)
+- [x] Saisie de plusieurs `price_break` par variante : `min_qty` et `unit_price`
+- [x] Une ligne `min_qty = 1` est obligatoire et créée par défaut
+- [x] Résolution : prendre le plus grand `min_qty` inférieur ou égal à la quantité demandée
+- [x] `floor_price` saisissable, `owner` seul
+- [x] `cost_price` saisissable, `owner` seul, sur `variant_cost` — jamais une colonne de `variant`
+- [x] `variant_cost` créée par `merx.apply_capability_restriction(..., 'view_cost')` ; le balayage de `conventions.test.ts` le vérifie
+- [x] Test unitaire de résolution couvrant les bornes exactes (9, 10, 99, 100)
 
 **Notes** — `SPEC.md` RÈGLE M1-2, et RÈGLE de placement des coûts § 3. Le mécanisme de restriction est livré par E0-05 ; E2 ne fait que l'appeler.
+
+**Tranché en E2-03** — `unit_price` nullable, « prix non renseigné », jamais 0 par défaut ; une quantité sous le plus petit `min_qty` ne résout aucun palier ; grille sur un écran à part, `/products/:id/prices` ; la ligne à l'unité porte l'identifiant de sa variante ; `variant_cost` n'a qu'un garde, la policy `view_cost` (SPEC § 6).
+
+**Vérifié par sabotage** (14 cas, chacun seul sur une base fraîche, suite base complète) : trigger de la ligne à l'unité, G1, G2, unicité des paliers, les trois policies d'écriture de `price_break` et de `variant`, la policy restrictive de `variant_cost`, un `cost_price` posé sur `variant`, l'unicité de `variant_cost`, `apply_capability_restriction` retirée. Chacun fait tomber son test, code et nom de contrainte assertés. Deux tests corrigés en chemin : précondition « ligne à l'unité présente » (`price-grid.test.ts`), et le balayage d'insertion (`settings.test.ts`) qui asserte désormais la table nommée dans le `42501` — un trigger faisait refuser par la policy d'une autre table.
 
 ---
 

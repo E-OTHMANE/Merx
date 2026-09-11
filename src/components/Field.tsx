@@ -1,5 +1,13 @@
 /*
- * Un champ de formulaire d'administration. E1-01, extrait en E1-02.
+ * Un champ de formulaire. E1-01, extrait en E1-02, partagé en E2-02.
+ *
+ * Né dans le module d'administration, sorti vers `src/components` quand la
+ * fiche produit en a eu besoin : un module n'importe pas les internes d'un
+ * autre (CLAUDE.md), et un champ n'appartient à aucun module.
+ *
+ * Il n'a pas d'état d'erreur, et ce n'est pas un oubli : SPEC § 2.6 — aucun
+ * champ ne se marque en rouge. Une erreur d'enregistrement se dit sous le
+ * formulaire, en une phrase, pas sur un champ.
  *
  * BRAND-UI § 8 : « Le libellé est au-dessus, jamais un simple placeholder — le
  * placeholder disparaît à la saisie et l'utilisateur ne sait plus ce qu'il
@@ -20,11 +28,16 @@ export interface FieldProps {
   value: string
   onChange: (value: string) => void
   type?: string
-  inputMode?: 'text' | 'tel'
+  inputMode?: 'text' | 'tel' | 'numeric' | 'decimal'
   autoComplete?: string
   /** Précision sous le champ, reliée par `aria-describedby`. */
   hint?: string
   className?: string
+  /** `rtl` pour une saisie en arabe dans un écran français (BRAND-UI § 9). */
+  dir?: 'ltr' | 'rtl'
+  lang?: string
+  autoFocus?: boolean
+  maxLength?: number
 }
 
 export function Field({
@@ -37,6 +50,10 @@ export function Field({
   autoComplete = 'off',
   hint,
   className,
+  dir,
+  lang,
+  autoFocus,
+  maxLength,
 }: FieldProps): ReactElement {
   const hintId = `${id}-hint`
 
@@ -58,6 +75,10 @@ export function Field({
         onChange={(event) => onChange(event.target.value)}
         {...(hint === undefined ? {} : { 'aria-describedby': hintId })}
         {...(className === undefined ? {} : { className })}
+        {...(dir === undefined ? {} : { dir })}
+        {...(lang === undefined ? {} : { lang })}
+        {...(autoFocus === undefined ? {} : { autoFocus })}
+        {...(maxLength === undefined ? {} : { maxLength })}
       />
       {hint !== undefined && (
         <p id={hintId} className="text-note text-paper-600">

@@ -101,6 +101,8 @@ La base locale est la source de vérité quand l'appareil est hors-ligne. Le ser
 
 Tout autre champ est facultatif. Une fonctionnalité privée de sa donnée se désactive silencieusement : ni avertissement, ni champ en rouge, ni rappel.
 
+La règle est tenue par la base autant que par l'écran : un formulaire qui ne réclame rien échoue quand même si une colonne est passée NOT NULL. Toute table qui reçoit un formulaire de création s'inscrit par `merx.register_creation_form(table, colonne_de_nom)`, et `supabase/tests/conventions.test.ts` refuse, sur chacune, toute autre colonne obligatoire — NOT NULL sans défaut, ou `check (... is not null)`. `product` y est inscrit depuis E2-02 ; `client` (E6) et `supplier` (E8) le seront à leur création.
+
 **RÈGLE** — Rien ne bloque une vente. Ni un stock à zéro, ni une donnée manquante. Le système signale, il n'interdit pas.
 
 Un vendeur à qui l'outil réclame des informations retourne au carnet.
@@ -197,12 +199,17 @@ Sans cela, la protection de `variant_cost` ne vaut rien : un employé qui lit le
 - Dates : `timestamptz`, UTC en base, affichage `Africa/Casablanca`.
 - Suppression : `deleted_at` sur les tables de référence. Documents et mouvements jamais supprimés, seulement annulés.
 - Toute table porte `created_at`, `updated_at`, `created_by`, `device_id`.
+- `tenant_id` a pour défaut `merx.current_tenant_id()`, le commerce du jeton, sur toute table conventionnée. L'application n'écrit jamais `tenant_id` ; une valeur étrangère envoyée explicitement reste refusée par le `with check` de `tenant_isolation`. Hors session (migration, peuplement de test), le défaut vaut NULL et la valeur doit être donnée. Arbitré en E2-02 ; contrôlé par `conventions.test.ts`.
 
 **RÈGLE — domaines nommés.** Tout montant se déclare `money_amount`, toute quantité se déclare `quantity`. Ces deux domaines sont définis dans `public` par la migration initiale. Un `numeric` nu dans une table métier est une infraction, au même titre qu'un flottant : la précision ne doit dépendre d'aucune recopie à la main.
 
 **RÈGLE — placement des schémas.** `public` ne contient que le métier : les tables exposées par l'API, et les deux domaines ci-dessus. Tout ce qui outille le schéma — registre des conventions, fonctions `apply_*_conventions()`, trigger `set_updated_at()` — vit dans le schéma `merx`, qui n'est jamais exposé par l'API. Une table métier ne se crée jamais dans `merx` ; un helper ne se crée jamais dans `public`.
 
 Toute table de `public` doit être déclarée par `merx.apply_business_conventions()` ou `merx.apply_reference_conventions()`. Une table qui échappe à ces fonctions échappe aux conventions, et `supabase/tests/conventions.test.ts` la signale.
+
+**RÈGLE — clés étrangères composites.** Toute clé étrangère entre tables métier porte `tenant_id` des deux côtés : `(tenant_id, x) references t (tenant_id, id)`. La table cible porte à cette fin une unicité sur `(tenant_id, id)`. Seule exception : l'ancre `tenant_id → tenant (id)`.
+
+Une clé étrangère ne passe pas par la RLS : Postgres vérifie l'existence de la cible sans policy. Sans `tenant_id` dans la clé, un commerce rattache ses lignes à celles d'un autre ; une cascade chez le voisin détruit alors ses données, et une clé sans cascade empêche le voisin de supprimer les siennes. Avec lui, la ligne visée appartient forcément au même commerce — c'est la contrainte, pas une vérification à ne pas oublier. `created_by` y est soumis comme les autres. Posée en E2-01 ; E3, E4, E6 et E8 en dépendent. `supabase/tests/conventions.test.ts` refuse toute clé qui y déroge, et le générateur de lignes de `supabase/tests/isolation.ts` sait remplir cette forme sans connaître la table.
 
 ---
 
@@ -233,11 +240,16 @@ Toute table de `public` doit être déclarée par `merx.apply_business_conventio
 
 - `code` : référence interne, saisie libre, unique par tenant.
 - `pieces_per_carton` : entier nullable. Utilisé **uniquement** en réception et inventaire. Jamais à l'écran de vente.
+- `photo_url` : le chemin de l'objet dans le compartiment Storage **privé** `product-photo`, `{product_id}/{uuid}.jpg` — pas une URL ; l'affichage signe le chemin. Photo réduite par l'appareil à 800 px au plus grand côté, JPEG 0,8 ; le compartiment n'accepte que du JPEG, 1 Mio au plus. Lecture : le produit du dossier doit être visible (RLS de `product`) ; dépôt : la même condition plus `manage_product` ; retrait : `manage_product`, l'isolation venant de la lecture. Arbitré en E2-02.
 
 `variant`
 `id, tenant_id, product_id, sku, barcode, attributes jsonb, floor_price, is_default, is_active, deleted_at`
 
 - `attributes` : `{}` en V1.
+- **La variante par défaut porte l'identifiant de son produit** (`variant.id = product.id`). Une tablette hors-ligne qui crée un produit fabrique sa variante sous le même identifiant que le serveur, sans se concerter avec lui : au retour du réseau, les deux désignent la même ligne (§ 2.5). Arbitré en E2-01.
+- `sku` : dérivé de `product.code` à la création, nul si le produit n'a pas de code. Celui de la variante par défaut **suit la référence** quand elle change, tant qu'il n'en a pas divergé (valeur égale à l'ancienne référence, NULL compris) — sinon une référence libérée resterait tenue par l'ancien SKU. Arbitré en E2-02 ; E2-06 décidera si l'impression d'une étiquette fige le SKU. `code` et `sku` sont uniques par commerce sans égard à la casse, parmi les lignes non supprimées ; espaces de bord retirés et chaîne vide ramenée à nul par la base.
+- Une variante ne change jamais de produit, et la dernière variante d'un produit ne se supprime pas tant que le produit existe (§ 2.3, « toujours »).
+- La suppression douce d'un produit se propage à ses variantes vivantes, à la même date ; sa restauration rétablit celles qui portent exactement cette date.
 - `floor_price` : plancher sous lequel un `worker` ne peut descendre. Ce n'est pas un coût — c'est un prix de vente minimum, lisible par tous.
 
 `variant_cost`
@@ -245,9 +257,15 @@ Toute table de `public` doit être déclarée par `merx.apply_business_conventio
 
 - Une ligne par `variant`, au plus. Relation **restreinte** par la capacité `view_cost` — RÈGLE de placement des coûts, § 3. Un `worker` n'en lit aucune ligne, et `variant` ne porte pas la colonne : le nom `cost_price` n'apparaît dans aucune réponse qui lui est faite.
 - Séparée de `variant` pour cette seule raison. Sans la contrainte de confidentialité, la colonne serait restée sur `variant`.
+- Pas de coût connu, pas de ligne : effacer le coût supprime la ligne. Un seul garde, la policy `view_cost`, en lecture comme en écriture ; pas de restriction d'écriture en plus, qui refuserait l'employé avec le même `42501` sans qu'aucun test puisse la distinguer (règle E1-02). Arbitré en E2-03.
 
 `price_break`
 `id, tenant_id, variant_id, min_qty, unit_price`
+
+- `unit_price` est nullable : NULL signifie **prix non renseigné**, et la vente ne propose alors aucun prix automatique — le vendeur le saisit. Jamais 0 par défaut : un oubli ferait vendre gratuitement, sans que rien ne le signale (§ 2.6). Arbitré en E2-03.
+- La ligne `min_qty = 1` de la RÈGLE M1-2 est créée par la base pour **toute** variante, sans prix, **sous l'identifiant de sa variante** (`price_break.id = variant.id`) — même raisonnement hors-ligne que la variante par défaut. Elle ne se supprime pas tant que la variante existe, et ne change ni de quantité, ni de variante, ni d'état supprimé : seul son prix se modifie.
+- Une quantité inférieure au plus petit `min_qty` — 0,5 face à la ligne à l'unité — ne résout **aucun** palier : pas de prix automatique. Un palier retenu sans prix ne retombe pas sur un palier inférieur. Étendre la ligne à l'unité en dessous de 1 réinterpréterait la RÈGLE M1-2. Arbitré en E2-03.
+- La résolution tourne sur l'appareil (§ 2.5) ; la grille se saisit sur un écran à part, `/products/:id/prices`, ouvert depuis la fiche produit.
 
 **Règles**
 

@@ -25,6 +25,7 @@ import {
   TenantListScreen,
   UserListScreen,
 } from '@/modules/admin'
+import { PriceGridScreen, ProductFormScreen, ProductListScreen } from '@/modules/catalogue'
 
 /**
  * Le pendant du garde : un utilisateur déjà connecté n'a rien à faire sur le
@@ -84,6 +85,26 @@ export function AppRoutes() {
             travaille dans la langue du commerce. */}
         <Route element={<RequireCapability capability="manage_settings" />}>
           <Route path="/settings" element={<SettingsScreen />} />
+        </Route>
+
+        {/* Le catalogue. E2-02. La liste se lit par tout le commerce
+            (`view_catalogue`) ; la fiche s'ouvre au seul `manage_product`. Le
+            garde de route masque l'écran ; ce qui protège l'écriture sont les
+            policies de `product`, de `variant` et du compartiment des photos. */}
+        <Route element={<RequireCapability capability="view_catalogue" />}>
+          <Route path="/products" element={<ProductListScreen />} />
+        </Route>
+        <Route element={<RequireCapability capability="manage_product" />}>
+          <Route path="/products/new" element={<ProductFormScreen />} />
+          <Route path="/products/:id" element={<ProductFormScreen />} />
+        </Route>
+
+        {/* La grille de prix. E2-03. « Modifier la grille de prix »
+            (`manage_price_list`, § 3.1). Le garde de route masque l'écran ; ce
+            qui protège sont les policies de `price_break`, de `variant` pour le
+            plancher, et la policy restrictive `view_cost` de `variant_cost`. */}
+        <Route element={<RequireCapability capability="manage_price_list" />}>
+          <Route path="/products/:id/prices" element={<PriceGridScreen />} />
         </Route>
       </Route>
 
