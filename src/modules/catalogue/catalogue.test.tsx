@@ -91,7 +91,17 @@ vi.mock('@/lib/supabase', () => ({
         createSignedUrls: (...args: unknown[]) => createSignedUrls(...args),
       }),
     },
-    rpc: vi.fn(),
+    // La liste passe par la recherche (E2-04) : l'appel est enregistré comme
+    // les autres, sous le nom de la fonction.
+    rpc: (fn: string, args: Record<string, unknown>) => {
+      const call: Call = { table: `rpc:${fn}`, op: 'select', payload: args, filters: [], single: false }
+      return {
+        then: (resolve: (value: Response) => unknown, reject: (reason: unknown) => unknown) => {
+          calls.push(call)
+          return Promise.resolve(respond(call)).then(resolve, reject)
+        },
+      }
+    },
     functions: { invoke: vi.fn() },
   },
 }))
@@ -135,8 +145,27 @@ const PRODUCT = {
 let categories: Array<{ id: string; name_fr: string }> = []
 let products: Array<Partial<typeof PRODUCT>> = []
 
+const SEARCH = 'rpc:search_products'
+
+/* Ce que `search_products()` rend pour un produit à une variante. */
+const searchRowOf = (product: Partial<typeof PRODUCT>) => ({
+  variant_id: product.id,
+  product_id: product.id,
+  name_fr: product.name_fr,
+  name_ar: product.name_ar ?? null,
+  code: product.code ?? null,
+  sku: product.code ?? null,
+  barcode: null,
+  photo_url: product.photo_url ?? null,
+})
+
 function defaultRespond(call: Call): Response {
   if (call.table === 'category') return { data: categories, error: null }
+  if (call.table === SEARCH) return { data: products.map(searchRowOf), error: null }
+  // Toute route authentifiée enregistre l'appareil au montage (E1-03).
+  if (call.table === 'rpc:register_device') {
+    return { data: [{ id: 'd1', label: 'Appareil A', prefix: 'A', last_sync_at: null }], error: null }
+  }
   if (call.op === 'select') {
     return call.single ? { data: PRODUCT, error: null } : { data: products, error: null }
   }
@@ -511,7 +540,7 @@ describe('la liste — quatre états', () => {
       release = resolve
     })
     respond.mockImplementation(async (call) => {
-      if (call.table === 'product' && call.op === 'select') await held
+      if (call.table === SEARCH) await held
       return defaultRespond(call)
     })
     renderAt('/products', 'owner')
@@ -531,7 +560,7 @@ describe('la liste — quatre états', () => {
 
   it('erreur : le message, et de quoi réessayer', async () => {
     respond.mockImplementation((call) =>
-      call.table === 'product' && call.op === 'select'
+      call.table === SEARCH
         ? { data: null, error: { message: 'Réseau indisponible.' } }
         : defaultRespond(call),
     )
@@ -543,12 +572,19 @@ describe('la liste — quatre états', () => {
     expect(await screen.findByText('Eau de toilette')).toBeInTheDocument()
   })
 
-  it('ne liste que les produits non supprimés', async () => {
+  /*
+   * E2-04 : la liste est la recherche, requête vide. Écarter les produits
+   * supprimés n'est plus un filtre de l'écran — c'est la base qui s'en charge,
+   * dans `search_products()`, et `supabase/tests/product-search.test.ts`
+   * l'éprouve (suppression douce, produit et variante, avec son contrôle
+   * positif).
+   */
+  it('passe par la recherche, requête vide, sans jamais lire la table', async () => {
     renderAt('/products', 'owner')
     await screen.findByText('Eau de toilette')
 
-    const list = calls.find((call) => call.table === 'product' && call.op === 'select')
-    expect(list!.filters).toContainEqual(['is', 'deleted_at', null])
+    expect(calls.filter((call) => call.table === SEARCH).map((call) => call.payload)).toEqual([{ q: '' }])
+    expect(calls.some((call) => call.table === 'product' && call.op === 'select')).toBe(false)
   })
 })
 

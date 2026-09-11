@@ -16,6 +16,7 @@
 import { useId, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
+import { BackLink } from '@/components/BackLink'
 import { Button } from '@/components/ui/button'
 import { normalizePhone } from '@/lib/phone'
 import { Field } from '@/components/Field'
@@ -72,6 +73,7 @@ export function NewUserScreen() {
     <main className="min-h-dvh px-4 py-6">
       <div className="mx-auto flex w-full max-w-md flex-col gap-6">
         <div>
+          <BackLink to="/users" label="Employés" />
           <h1 className="text-title text-paper-900">Nouvel employé</h1>
           <p className="mt-2 text-body text-paper-700">
             Il se connectera avec son numéro et ce mot de passe. Il ne verra ni vos prix d’achat ni

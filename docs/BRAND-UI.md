@@ -1,7 +1,7 @@
 # BRAND & UI — Spécification de style
 
 **Produit :** Merx
-**Version :** 1.1
+**Version :** 1.2
 **Documents associés :** `docs/SPEC.md`, `docs/BACKLOG.md`
 
 ---
@@ -117,9 +117,9 @@ Volontairement légèrement froids. Un crème chaud ferait « papier ancien » ;
 | 900 | `#1C1F25` | Titres |
 | 800 | `#2E323B` | Texte secondaire fort |
 | 700 | `#434955` | Texte secondaire |
-| 600 | `#5A6170` | Libellés |
+| 600 | `#5A6170` | Libellés. **Icônes inactives**, et le libellé qui les accompagne — l'onglet inactif (§ 13) |
 | 500 | `#767E8E` | Texte désactivé — **jamais sur fond blanc en dessous de 14 px** |
-| 400 | `#9BA3B2` | Icônes inactives |
+| 400 | `#9BA3B2` | Décor seulement. **Jamais un élément porteur de texte ou de sens** — 2,5:1 sur blanc, sous le 4,5:1 exigé ci-dessous |
 | 300 | `#C3C9D4` | Bordures |
 | 200 | `#DDE1E8` | Séparateurs |
 | 100 | `#EDEFF3` | Fond de zone |
@@ -143,6 +143,7 @@ Volontairement légèrement froids. Un crème chaud ferait « papier ancien » ;
 - **Aucun dégradé nulle part.** Ni en fond, ni sur un bouton, ni derrière un chiffre.
 - **Une seule ombre portée**, celle des éléments flottants : `0 2px 8px rgba(16,18,22,0.12)`. Les cartes n'en ont pas — elles ont une bordure.
 - **Contraste minimum 4.5:1** sur tout texte. L'écran est lu en plein soleil. Le gris clair sur blanc est interdit, quelle que soit l'élégance apparente.
+- **Une icône inactive est en papier 600, pas en papier 400.** Jusqu'à la version 1.1, ce document attribuait le 400 aux icônes inactives ; mais une icône inactive est celle d'un onglet, et elle porte son libellé, donc du texte — à 2,5:1, le 400 ne tient pas la règle ci-dessus. Corrigé en 1.2 (E11-04). Ne pas « restaurer » le 400.
 
 ---
 
@@ -248,6 +249,7 @@ Aucune animation d'entrée d'écran, aucun fondu au chargement, aucune transitio
 - Les graphiques décoratifs. Un graphique n'apparaît que si le chiffre seul ne suffit pas.
 - Les modales de confirmation sur les actions courantes. Réservées à ce qui est irréversible.
 - Les icônes sans texte. Le patron a 45 ans et n'a pas grandi avec ces conventions.
+- Le menu latéral en tiroir. Trois interactions, et un bouton dans le coin le plus dur à atteindre au pouce. La navigation est une barre d'onglets (§ 13).
 - Le gris clair sur blanc. Élégant à l'écran du concepteur, illisible derrière un comptoir.
 
 ---
@@ -266,10 +268,77 @@ Chaque écran, sans exception :
 - [ ] `prefers-reduced-motion` respecté
 - [ ] Testé sur un Android d'entrée de gamme, pas seulement en simulateur
 - [ ] Lisible en plein soleil
+- [ ] Un onglet ou un retour, jamais les deux, jamais aucun (§ 13)
 
 ---
 
-## 13. À trancher
+## 13. Navigation
+
+Règle transversale. Tout écran, présent et à venir, s'y conforme. Elle vient d'un essai sur un vrai Android : sans elle, on entre dans un écran et on n'en sort plus.
+
+### Deux sortes d'écrans
+
+| Sorte | Ce qu'il porte | Ce qu'il ne porte pas |
+|---|---|---|
+| **Premier niveau** — un onglet de la barre | La barre d'onglets, en bas | Aucun retour |
+| **Détail** — tout le reste | Un retour, dans l'en-tête | Aucune barre |
+
+**Un onglet ou un retour, jamais les deux, jamais aucun.** Sur un écran de détail, le tiers bas appartient à l'action de l'écran (§ 7) — le bouton « Enregistrer » collé en bas ; la barre y entrerait en conflit. Un écran sans l'un ni l'autre est une impasse.
+
+La sorte d'un écran se décide dans la table des routes, pas dans l'écran : les écrans de premier niveau sont les seuls placés sous la mise en page qui porte la barre.
+
+### La barre d'onglets
+
+Pas de tiroir latéral : il coûte trois interactions, et son bouton est en haut à gauche, le coin le plus dur à atteindre au pouce. La barre est en bas, dans le tiers que § 7 réserve aux actions.
+
+- **Cinq onglets au plus**, chacun avec son icône **et** son libellé (§ 11 : pas d'icône seule). Cinq libellés lisibles, c'est la largeur d'un téléphone.
+- **Le premier onglet est l'Accueil.** Aucun bouton « accueil » ailleurs : il ferait double emploi.
+- **La barre suit le rôle.** Un onglet dont la capacité manque ne s'affiche pas — ni grisé, ni barré. La question passe par `useCan()`, donc par la matrice SPEC § 3.1 ; aucune comparaison de rôle, aucun cas particulier, `super_admin` compris. Masquer l'onglet n'est pas un contrôle d'accès : la route garde son `RequireCapability`, et la base ses policies.
+- **Un onglet n'apparaît qu'avec son écran.** Un onglet vers un écran qui n'existe pas est une anticipation (BACKLOG, « une story à la fois »).
+
+| Ordre | Onglet | Capacité | `owner` | `worker` | Arrive avec |
+|---|---|---|:-:|:-:|---|
+| 1 | Accueil | aucune | ✓ | ✓ | E11-04 |
+| 2 | Vente | `create_sale` | ✓ | ✓ | E4-03 |
+| 3 | Produits | `view_catalogue` | ✓ | ✓ | E2-02 — le stock (E3-02) s'y consulte, sans onglet à lui |
+| 4 | Clients | `manage_client` | ✓ | ✓ | E6-01 |
+| 5 | Rapports | `view_reports` | ✓ | — | E10-01 |
+
+**Aspect.**
+- Fixée en bas de l'écran. Fond blanc, bordure haute papier 200, **pas d'ombre** — elle se distingue par sa bordure, comme une carte (§ 5, § 8).
+- Hauteur 64 px, plus la marge de sécurité du système (`env(safe-area-inset-bottom)`) : la barre de gestes d'Android ne mange pas les onglets.
+- Chaque onglet occupe une part égale de la largeur, bien au-delà des 48 × 48 px de § 7. Icône 24 px au-dessus du libellé, en taille *Libellé* (14 px).
+- **Actif** : icône et libellé en encre 600 sur fond encre 100 — § 5, « onglet actif ». Le fond double la couleur : l'état se lit en plein soleil et sans distinguer les teintes. Marqué `aria-current="page"`.
+- **Inactif** : icône et libellé en papier 600. Pas le 400 — voir § 5.
+- Aucune animation au changement d'onglet (§ 10).
+
+### Ce qui n'est pas un onglet part de l'Accueil
+
+Une seule règle, pour qu'aucune destination n'ait à chercher sa place.
+
+- **Les destinations rares du patron** — employés, appareils, journal, paramètres — sont dans un bloc **« Gestion du commerce »**, en bas de l'Accueil, au-dessus de « Se déconnecter ». Chaque lien derrière sa capacité, par `useCan()`. Commerces, l'écran de l'éditeur, y figure pour le seul `super_admin` : administrer les commerces n'est pas une case de § 3.1, et suit le garde de son écran (E1-01). Depuis n'importe quel écran : deux appuis.
+- **Les actions quotidiennes sans onglet** — caisse (E7-03), réception (E8-02), inventaire (E3-04) — prendront un bouton sur l'Accueil, au-dessus de ce bloc, avec leur story.
+- **Pas d'onglet « Plus ».** Un fourre-tout ne fait que grossir, et il coûterait la place de Rapports.
+
+### Le retour
+
+- **En tête de l'écran de détail**, au début de la ligne, au-dessus du titre. Chevron **et** nom de l'écran parent — « ‹ Produits » : le mot dit où l'on va. Cible de 48 px. Nom accessible « Retour : Produits ».
+- **Il mène au parent désigné, jamais à l'historique** (`history(-1)`). Une PWA lancée sur une URL, ou ouverte depuis un lien, a un historique vide : le retour ne mènerait nulle part.
+- **Le chevron est directionnel** : il se retourne en RTL (`rtl:-scale-x-100`, § 9). Propriétés logiques uniquement — jamais `left`, `ml-`, `text-left`.
+- **Le bouton retour du système** (geste ou touche Android) reste l'historique du navigateur. Rien ne l'intercepte.
+- **Pas de second « Retour à … » en bas d'écran** : deux sorties pour le même endroit, c'est une question de plus. Deux exceptions, qui ne sont pas des retours : l'invitation d'un écran vide (« Ce produit n'existe plus » → « Retour aux produits », § 6), et le « Annuler » d'un formulaire de création, qui abandonne une saisie.
+
+| Écran de détail | Parent |
+|---|---|
+| Nouveau produit, fiche produit | Produits |
+| Grille de prix | Fiche produit |
+| Employés, appareils, journal, paramètres, commerces | Accueil |
+| Nouvel employé | Employés |
+| Nouveau commerce | Commerces |
+
+---
+
+## 14. À trancher
 
 1. `Merx` : vérification OMPIC et domaine `merx.ma`
 2. Domaine et dépôt de marque

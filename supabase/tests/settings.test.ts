@@ -606,12 +606,28 @@ describe.each(WRITE_RESTRICTED)('%s, écriture réservée à %s', (table, capabi
        */
       await client.query(`delete from public."${table}" where id = $1`, [row])
 
+      /*
+       * Les colonnes générées ne se recopient pas : Postgres refuse toute
+       * valeur qu'on y écrit (`428C9`), et ce refus-là masquait celui de la
+       * policy — le `42501` de l'employé devenait `428C9` (constaté en E2-04,
+       * colonnes de recherche de `product` et `variant`). La liste vient du
+       * catalogue, comme le reste du balayage : aucune table n'est nommée.
+       */
+      const { rows: columnRows } = await client.query<{ columns: string }>(
+        `select string_agg(quote_ident(attname), ', ' order by attnum) as columns
+         from pg_attribute
+         where attrelid = format('public.%I', $1::text)::regclass
+           and attnum > 0 and not attisdropped and attgenerated = ''`,
+        [table],
+      )
+      const columns = columnRows[0]!.columns
+
       await actAs(client, tokenFor(tenant, role))
 
       const written = await attempt(
         client,
-        `insert into public."${table}"
-           select * from jsonb_populate_record(
+        `insert into public."${table}" (${columns})
+           select ${columns} from jsonb_populate_record(
              null::public."${table}",
              $payload$${before}$payload$::jsonb || jsonb_build_object('id', gen_random_uuid()))`,
       )

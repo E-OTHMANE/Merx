@@ -22,6 +22,7 @@
 
 import { useCallback, useEffect, useId, useState, type FormEvent } from 'react'
 
+import { BackLink } from '@/components/BackLink'
 import { Button } from '@/components/ui/button'
 import { Field } from '@/components/Field'
 import { loadSettings, saveSettings, type Settings } from '@/modules/admin/settings'
@@ -107,6 +108,7 @@ export function SettingsScreen() {
     <main className="min-h-dvh px-4 py-6">
       <div className="mx-auto flex w-full max-w-md flex-col gap-6">
         <div>
+          <BackLink to="/" label="Accueil" />
           <h1 className="text-title text-paper-900">Paramètres</h1>
           <p className="mt-2 text-body text-paper-700">
             Déjà réglés à l’ouverture du commerce. À corriger quand quelque chose a changé.

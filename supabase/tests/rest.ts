@@ -16,7 +16,11 @@
 
 import type { Client } from 'pg'
 
-import { appendOnlyTables } from './isolation'
+import { appendOnlyTables, auditedTables, withoutTriggers } from './isolation'
+
+// Réexporté ici : les fichiers de test qui rangent par PostgREST l'importent
+// avec le reste de leur outillage.
+export { withoutTriggers }
 
 export const API_URL = process.env.SUPABASE_API_URL ?? 'http://127.0.0.1:54521'
 
@@ -220,6 +224,7 @@ export async function deleteRows(
   rows: ReadonlyMap<string, string>,
 ): Promise<void> {
   const appendOnly = await appendOnlyTables(client)
+  const audited = await auditedTables(client)
 
   for (const table of [...order].reverse()) {
     const id = rows.get(table)
@@ -248,10 +253,14 @@ export async function deleteRows(
      * chemins de l'application et de la base, dans `audit.test.ts` et le
      * balayage d'isolation — pas dans une routine de nettoyage.
      */
-    if (appendOnly.has(table)) {
-      await client.query('set session_replication_role = replica')
-      await client.query(`delete from public."${table}" where id = $1`, [id])
-      await client.query('set session_replication_role = origin')
+    /*
+     * Une table journalisée (RÈGLE M8-1) refuse, elle, toute écriture sans
+     * commerce ni auteur dans le jeton — et ce ménage n'en a pas. Même geste.
+     */
+    if (appendOnly.has(table) || audited.has(table)) {
+      await withoutTriggers(client, () =>
+        client.query(`delete from public."${table}" where id = $1`, [id]),
+      )
       continue
     }
 

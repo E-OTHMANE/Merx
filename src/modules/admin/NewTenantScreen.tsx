@@ -13,6 +13,7 @@
 import { useId, useState, type FormEvent } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 
+import { BackLink } from '@/components/BackLink'
 import { Button } from '@/components/ui/button'
 import { normalizePhone } from '@/lib/phone'
 import { Field } from '@/components/Field'
@@ -73,6 +74,7 @@ export function NewTenantScreen() {
     <main className="min-h-dvh px-4 py-6">
       <div className="mx-auto flex w-full max-w-md flex-col gap-6">
         <div>
+          <BackLink to="/admin/tenants" label="Commerces" />
           <h1 className="text-title text-paper-900">Nouveau commerce</h1>
           <p className="mt-2 text-body text-paper-700">
             Le patron pourra se connecter avec son numéro et ce mot de passe.

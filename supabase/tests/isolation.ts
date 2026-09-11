@@ -384,6 +384,21 @@ export async function writeCapabilityTables(client: Client): Promise<Map<string,
   return new Map(rows.map((r) => [r.table_name, r.capability]))
 }
 
+/**
+ * Les tables dont chaque écriture est journalisée par trigger — lues au
+ * registre, jamais énumérées ici. RÈGLE M8-1, addendum E2-03.
+ *
+ * Leur trigger refuse toute écriture sans commerce ni auteur dans le jeton ; le
+ * harnais les peuple et les range donc triggers suspendus, comme les tables en
+ * ajout seul (`rest.ts`, `withoutTriggers`).
+ */
+export async function auditedTables(client: Client): Promise<Set<string>> {
+  const { rows } = await client.query<{ table_name: string }>(
+    'select table_name from merx.audited_registry order by table_name',
+  )
+  return new Set(rows.map((r) => r.table_name))
+}
+
 async function columnsOf(client: Client, table: string): Promise<Column[]> {
   const { rows } = await client.query<Column>(COLUMNS, [`public.${table}`])
   return rows
@@ -596,8 +611,20 @@ export async function seedTwoTenants(client: Client): Promise<Seeded> {
     )
   }
 
+  /*
+   * Une table journalisée refuse toute écriture sans commerce ni auteur dans le
+   * jeton (RÈGLE M8-1) — et ce peuplement tourne en `postgres`, sans jeton. Sa
+   * ligne est donc posée triggers suspendus. C'est un contournement de
+   * harnais, et seulement cela : le journal est éprouvé sur le chemin réel dans
+   * `purchase-price-audit.test.ts`.
+   */
+  const audited = await auditedTables(client)
+
   const insert = async (table: string, tenant: string | null, rows: TenantRows): Promise<string> => {
-    const { rows: inserted } = await client.query<{ id: string }>(insertSql(table, tenant, rows))
+    const run = () => client.query<{ id: string }>(insertSql(table, tenant, rows))
+    const { rows: inserted } = audited.has(table)
+      ? await withoutTriggers(client, run)
+      : await run()
     const id = inserted[0]?.id
     if (id === undefined) throw new Error(`${table} : insertion sans identifiant rendu`)
     return id
@@ -748,3 +775,28 @@ export async function attempt(
 
 /** Le code SQLSTATE d'un refus par RLS ou par privilège manquant. */
 export const INSUFFICIENT_PRIVILEGE = '42501'
+
+/**
+ * Exécute `body` triggers suspendus (`session_replication_role = replica`),
+ * puis les rétablit. À appeler en `postgres` : le réglage est réservé.
+ *
+ * **Réservé au harnais de test** : peupler ou ranger, hors session, une table
+ * que ses triggers défendent — l'ajout seul (E1-04), le journal du prix
+ * d'achat (RÈGLE M8-1). Le garde est levé sans être nommé, pour que la routine
+ * ne dépende pas de la façon dont il est posé. Une migration ou une fonction
+ * applicative qui en aurait besoin signalerait une règle mal posée, pas une
+ * règle à écarter : s'arrêter et le dire.
+ *
+ * Les clés étrangères, elles aussi portées par des triggers, sont suspendues
+ * le temps du corps : ne s'en servir que pour des lignes dont on sait déjà
+ * qu'elles tiennent. Les policies, elles, restent en vigueur — ce ne sont pas
+ * des triggers.
+ */
+export async function withoutTriggers<T>(client: Client, body: () => Promise<T>): Promise<T> {
+  await client.query('set session_replication_role = replica')
+  try {
+    return await body()
+  } finally {
+    await client.query('set session_replication_role = origin')
+  }
+}

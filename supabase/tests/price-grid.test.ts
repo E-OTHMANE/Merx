@@ -34,7 +34,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { INSUFFICIENT_PRIVILEGE, actAs, attempt, tokenFor } from './isolation'
 import { rawBody } from './permissions'
-import { createAuthUser, deleteAuthUser, rest, sessionFor } from './rest'
+import { createAuthUser, deleteAuthUser, rest, sessionFor, withoutTriggers } from './rest'
 
 const CONNECTION_STRING =
   process.env.SUPABASE_DB_URL ?? 'postgresql://postgres:postgres@127.0.0.1:54522/postgres'
@@ -113,9 +113,13 @@ beforeAll(async () => {
       )
     ).id
   }
-  await client.query(
-    'insert into public.variant_cost (tenant_id, variant_id, cost_price) values ($1, $2, $3)',
-    [fixture.tenant, fixture.priced, COST],
+  // Hors session, le journal du prix d'achat refuserait la ligne (RÈGLE M8-1,
+  // addendum E2-03) : le harnais la pose triggers suspendus.
+  await withoutTriggers(client, () =>
+    client.query(
+      'insert into public.variant_cost (tenant_id, variant_id, cost_price) values ($1, $2, $3)',
+      [fixture.tenant, fixture.priced, COST],
+    ),
   )
 
   for (const role of ['owner', 'worker'] as const) {
@@ -126,8 +130,18 @@ beforeAll(async () => {
 afterAll(async () => {
   if (client !== undefined && fixture.tenant !== '') {
     await client.query('reset role')
-    // La cascade emporte variantes, paliers — ligne à l'unité comprise, le
-    // garde voyant la variante disparue — et prix d'achat.
+    /*
+     * Les écritures du patron ont laissé leurs entrées au journal, en ajout
+     * seul, qui tiennent le commerce et le patron par clé étrangère ; et une
+     * ligne de coût ne se supprime pas hors session. Le harnais range les deux
+     * triggers suspendus — le seul endroit où ce contournement a sa place.
+     */
+    await withoutTriggers(client, async () => {
+      await client.query('delete from public.audit_log where tenant_id = $1', [fixture.tenant])
+      await client.query('delete from public.variant_cost where tenant_id = $1', [fixture.tenant])
+    })
+    // La cascade emporte variantes et paliers — ligne à l'unité comprise, le
+    // garde voyant la variante disparue.
     await client.query('delete from public.product where tenant_id = $1', [fixture.tenant])
     await client.query('delete from public.app_user where tenant_id = $1', [fixture.tenant])
     await client.query('delete from public.tenant where id = $1', [fixture.tenant])
@@ -500,7 +514,9 @@ describe('variant_cost — saisi par le patron seul', () => {
     expect(accepted.status, accepted.body).toBe(201)
     expect(await costOf(fixture.bare)).toBe('10.00')
 
-    await client.query('delete from public.variant_cost where variant_id = $1', [fixture.bare])
+    await withoutTriggers(client, () =>
+      client.query('delete from public.variant_cost where variant_id = $1', [fixture.bare]),
+    )
   })
 
   it('l’employé ne le modifie pas ; le patron, si', async () => {
@@ -522,10 +538,12 @@ describe('variant_cost — saisi par le patron seul', () => {
     expect(accepted.rows).toHaveLength(1)
     expect(await costOf(fixture.priced)).toBe('43.00')
 
-    await client.query('update public.variant_cost set cost_price = $2 where variant_id = $1', [
-      fixture.priced,
-      COST,
-    ])
+    await withoutTriggers(client, () =>
+      client.query('update public.variant_cost set cost_price = $2 where variant_id = $1', [
+        fixture.priced,
+        COST,
+      ]),
+    )
   })
 
   it('l’employé ne le supprime pas ; le patron, si', async () => {
@@ -536,30 +554,46 @@ describe('variant_cost — saisi par le patron seul', () => {
     expect(refused.rows).toHaveLength(0)
     expect(await costOf(fixture.priced), 'FUITE — le coût a été supprimé').toBe(COST)
 
-    await as('owner', async () => {
-      const removed = await attempt(
-        client,
-        `delete from public.variant_cost where variant_id = '${fixture.priced}'::uuid`,
-      )
-      expect(removed).toEqual({ ok: true, rowCount: 1 })
+    // Le patron, par le chemin de l'application : son jeton porte l'auteur que
+    // le journal du prix d'achat exige (RÈGLE M8-1, addendum E2-03).
+    const accepted = await rest(`variant_cost?variant_id=eq.${fixture.priced}`, {
+      token: tokens.owner,
+      method: 'DELETE',
     })
+    expect(accepted.rows).toHaveLength(1)
+    expect(await costOf(fixture.priced)).toBeUndefined()
+
+    // La suppression est validée pour de bon : le coût est remis pour la suite.
+    await withoutTriggers(client, () =>
+      client.query(
+        'insert into public.variant_cost (tenant_id, variant_id, cost_price) values ($1, $2, $3)',
+        [fixture.tenant, fixture.priced, COST],
+      ),
+    )
   })
 
   it('une ligne par variante, au plus — par son unicité ; une autre variante en reçoit une', async () => {
     await as('owner', async () => {
-      const insert = (variant: string): string =>
+      const duplicate = await attempt(
+        client,
         `insert into public.variant_cost (tenant_id, variant_id, cost_price)
-         values ('${fixture.tenant}', '${variant}', '1.00')`
-
-      const duplicate = await attempt(client, insert(fixture.priced))
+         values ('${fixture.tenant}', '${fixture.priced}', '1.00')`,
+      )
       expect(duplicate.ok, 'deux coûts pour une variante').toBe(false)
       if (!duplicate.ok) {
         expect(duplicate.code).toBe(UNIQUE_VIOLATION)
         expect(duplicate.message).toContain('variant_cost_one_per_variant')
       }
-
-      const other = await attempt(client, insert(await newVariant(fixture.priced)))
-      expect(other.ok, other.ok ? '' : other.message).toBe(true)
     })
+
+    // Contrôle positif : une autre variante reçoit la sienne — par le chemin
+    // de l'application, dont le jeton porte l'auteur que le journal exige.
+    const other = await newVariant(fixture.priced)
+    const accepted = await rest('variant_cost', {
+      token: tokens.owner,
+      method: 'POST',
+      body: { variant_id: other, cost_price: '1.00' },
+    })
+    expect(accepted.status, accepted.body).toBe(201)
   })
 })

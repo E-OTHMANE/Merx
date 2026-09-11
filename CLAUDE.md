@@ -52,12 +52,22 @@ npx supabase db reset # rebuild from migrations + seed
 
 **Docker Desktop can lose its mount of the D: drive.** The Edge runtime then cannot start — `mkdir /run/desktop/mnt/host/d: file exists` on `docker restart`, `failed to copy edge runtime main service into container` on `npx supabase start` — and every test that calls an Edge Function gets `503`, which reads like a broken function. `npx supabase stop && npx supabase start` does not fix it; only restarting Docker Desktop does, and that is the user's call, not Claude's. Seen in E2-03: 26 tests in `tenant-creation` and `user-management` failed on every run, the control run included.
 
+**Testing on a real phone, same Wi-Fi.** On the phone, `localhost` is the phone, so the app cannot reach an API at `127.0.0.1`. Steps:
+
+1. Find the machine's LAN IPv4 — the Wi-Fi interface that has a default gateway (`Get-NetIPConfiguration`), not the `172.x` vEthernet adapters of WSL and Hyper-V, which the phone cannot reach.
+2. Set `VITE_SUPABASE_URL=http://<LAN-IP>:54521` in `.env.local`.
+3. Stop any running dev server, then `npm run dev -- --host`, and open `http://<LAN-IP>:5173` on the phone.
+
+No `config.toml` change is needed for password login: Kong publishes 54521 on all interfaces and answers CORS for any origin (`Access-Control-Allow-Origin: *`, verified 2026-09-11 with a preflight from the LAN origin). `additional_redirect_urls` only matters for redirect flows. The Windows firewall must allow Node.js and Docker Desktop inbound on the active network profile — the Wi-Fi here is `Public`.
+
+**Afterwards, put `.env.local` back to `http://127.0.0.1:54521`.** The LAN IP changes with every network; left in place, the app dials an address that no longer exists, and the failure reads like a broken migration or a stack that is down.
+
 Run `npm run typecheck` and `npm run lint` before saying a task is done.
 
 ## Layout
 
 ```
-docs/          SPEC.md, CAHIER-DES-CHARGES.md
+docs/          SPEC.md, BACKLOG.md, BRAND-UI.md, CAHIER-DES-CHARGES.md
 src/app/       routes
 src/modules/   one folder per module (catalogue, stock, sales, clients, ...)
 src/packs/     one folder per pack (variants, batches, vehicles, serials)
@@ -69,7 +79,7 @@ Module code stays inside its own folder. A module may import from `src/lib` and 
 
 ## Hard constraints
 
-**Money is `numeric(12,2)`. Quantities are `numeric(12,3)`. Never floating point, anywhere.**
+**Every amount is declared `money_amount`, every quantity `quantity`** — the two domains of `public`, `numeric(12,2)` and `numeric(12,3)`. A bare `numeric` in a business table is an infraction, the same as a float: precision must not depend on anyone copying `(12,2)` correctly. Never floating point, anywhere. See SPEC § 4, RÈGLE des domaines nommés; enforced by `supabase/tests/conventions.ts`.
 
 **The core never imports from `src/packs/`.** Packs extend the core; the core does not know they exist. A pack may add its own tables and nullable columns on core tables, nothing else.
 
@@ -105,9 +115,15 @@ Module code stays inside its own folder. A module may import from `src/lib` and 
 
 **Any column the isolation sweep must populate needs a machine-readable domain** — an enum or a foreign key, never a `check` constraint with a pattern. `supabase/tests/isolation.ts` derives its values from the Postgres catalogue: it can read an enum's labels and follow a foreign key, but a regex is opaque to it. A column it cannot fill drops its table out of the sweep. This is why `device.prefix` is `public.device_prefix`, not `text check (prefix ~ '^[A-Z]$')`.
 
+**Under RLS, no index on `like`, `unaccent` or `pg_trgm` is ever used.** Postgres only accepts `leakproof` predicates as index conditions under a row-level policy, and none of these are; `postgres` is not a superuser, so nothing can be declared leakproof. The index exists and every query reads the whole table — all tenants. Measured in E2-04, five tenants of 10,000 products, same 1,251 rows returned by both paths: Seq Scan 417–472 ms under `authenticated`, 8.6–9.7 ms through the trigram index from a `security definer` function. The way out is the named exception of SPEC § 2.1 and `merx.rls_exception_registry`, never a quiet definer function. The same mechanism makes the `OR merx.is_super_admin()` of the two isolation policies defeat even the `tenant_id` btree: `listProducts()` took 410 ms, 13.5 ms without `super_admin_all` (BACKLOG E0-03, open).
+
+**A GIN index with the default `fastupdate` loses the plan after every bulk insert.** New entries wait in a pending list, read in full on every scan until the next vacuum; the planner counts it and prefers another index. Measured in E2-04, twelve search queries: 12/12 through the trigram index on clean indexes, **3/12 right after inserting 10,000 products**, 12/12 again once the list was flushed, 12/12 immediately with `fastupdate = off`. A test that seeds then asserts a plan sees this; production after an import does too, silently.
+
+**A plan sabotage that stays green on one run proves nothing — read the plan of a warm session.** Plan choice is borderline and flips between runs on the same data. In E2-04, removing `tenant_id` from the composite search indexes stayed green once; I concluded the composite was useless and removed it. The next run, with the plan read after eight warm-up calls in the same session — the way a pooled PostgREST connection runs — failed on « creme », « crème » and « nivea creme 200 », and `tenant_id` went back into the indexes. A plan assertion warms the session first; a plan sabotage is judged on more than one run.
+
 ## Working style
 
-Build one step of `docs/SPEC.md` section 12 at a time. Do not build ahead into later steps, even when it looks trivial to add.
+Build one step of `docs/SPEC.md` section 11 at a time. Do not build ahead into later steps, even when it looks trivial to add.
 
 Before starting a step, state which spec sections you have read and what you plan to change. Wait for confirmation on anything touching the schema.
 

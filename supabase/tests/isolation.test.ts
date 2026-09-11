@@ -28,10 +28,12 @@ import {
   actAs,
   appendOnlyTables,
   attempt,
+  auditedTables,
   isolationViolations,
   registeredTables,
   seedTwoTenants,
   tokenFor,
+  withoutTriggers,
   type IsolationRuleName,
   type Seeded,
   type WritePath,
@@ -68,6 +70,22 @@ const TABLES = await tablesUnderTest()
  * entreront dans le balayage en s'inscrivant.
  */
 const APPEND_ONLY = await appendOnlyUnderTest()
+
+/*
+ * Et le registre d'audit (RÈGLE M8-1, addendum E2-03) : une table journalisée
+ * refuse toute écriture sans auteur dans le jeton, et les claims de ce balayage
+ * n'en portent pas. Voir le contrôle de suppression, en fin de fichier.
+ */
+const AUDITED = await auditedUnderTest()
+
+async function auditedUnderTest(): Promise<Set<string>> {
+  const client = await connect()
+  try {
+    return await auditedTables(client)
+  } finally {
+    await client.end()
+  }
+}
 
 async function tablesUnderTest(): Promise<string[]> {
   const client = await connect()
@@ -203,6 +221,24 @@ describe('les quatre opérations, à travers la frontière', () => {
   let client: Client
   let seeded: Seeded
 
+  /*
+   * Chaque requête du balayage passe par `attempt()`, donc par un point de
+   * sauvegarde, et rend le nombre de lignes touchées — ou, si elle lève, son
+   * code et son message, que l'assertion affiche.
+   *
+   * Le balayage tourne dans une seule transaction. Sans ce point, la première
+   * erreur l'avortait, et toutes les tables suivantes tombaient sur « current
+   * transaction is aborted » : `warehouse` rouge à cause de `variant_cost`.
+   * Mesuré en E2-04 : un garde du journal retiré faisait tomber 27 tests, dont
+   * 25 en cascade — un décompte qui ne nommait plus la bonne table, et que
+   * chaque table ajoutée aurait grossi. Un garde retiré, un test tombe, sur sa
+   * table (BACKLOG E0-03).
+   */
+  const rowsTouched = async (sql: string): Promise<number | string> => {
+    const result = await attempt(client, sql)
+    return result.ok ? result.rowCount : `${result.code} ${result.message}`
+  }
+
   beforeAll(async () => {
     client = await connect()
     await client.query('begin')
@@ -253,13 +289,11 @@ describe('les quatre opérations, à travers la frontière', () => {
     it('select — voit sa ligne, ignore celle du voisin', async () => {
       await asOwnerOfA()
 
-      const mine = await client.query(`select id from public."${table}" where id = $1`, [own()])
-      expect(mine.rowCount, 'sa propre ligne est invisible').toBe(1)
+      const read = (id: string): string =>
+        `select id from public."${table}" where id = '${id}'::uuid`
 
-      const theirs = await client.query(`select id from public."${table}" where id = $1`, [
-        foreign(),
-      ])
-      expect(theirs.rowCount, 'FUITE — la ligne du commerce B est lisible').toBe(0)
+      expect(await rowsTouched(read(own())), 'sa propre ligne est invisible').toBe(1)
+      expect(await rowsTouched(read(foreign())), 'FUITE — la ligne du commerce B est lisible').toBe(0)
     })
 
     const touch = (id: string): string =>
@@ -271,24 +305,23 @@ describe('les quatre opérations, à travers la frontière', () => {
       it('update — ne touche pas la ligne du voisin, touche la sienne', async () => {
         await asOwnerOfA()
 
-        const theirs = await client.query(
-          `update public."${table}" set updated_at = updated_at where id = $1`,
-          [foreign()],
-        )
-        expect(theirs.rowCount, 'FUITE — la ligne du commerce B est modifiable').toBe(0)
-
-        const mine = await client.query(
-          `update public."${table}" set updated_at = updated_at where id = $1`,
-          [own()],
-        )
-        expect(mine.rowCount, 'la policy refuse aussi les écritures légitimes').toBe(1)
+        expect(
+          await rowsTouched(touch(foreign())),
+          'FUITE — la ligne du commerce B est modifiable',
+        ).toBe(0)
+        expect(
+          await rowsTouched(touch(own())),
+          'la policy refuse aussi les écritures légitimes',
+        ).toBe(1)
       })
 
       it('delete — ne supprime pas la ligne du voisin', async () => {
         await asOwnerOfA()
 
-        const theirs = await client.query(`delete from public."${table}" where id = $1`, [foreign()])
-        expect(theirs.rowCount, 'FUITE — la ligne du commerce B est supprimable').toBe(0)
+        expect(
+          await rowsTouched(erase(foreign())),
+          'FUITE — la ligne du commerce B est supprimable',
+        ).toBe(0)
       })
     } else {
       /*
@@ -373,10 +406,12 @@ describe('les quatre opérations, à travers la frontière', () => {
     it('super_admin — voit les deux commerces', async () => {
       await actAs(client, tokenFor(seeded.tenants.a, 'super_admin'))
 
-      const both = await client.query(`select id from public."${table}" where id = any($1)`, [
-        [own(), foreign()],
-      ])
-      expect(both.rowCount).toBe(2)
+      expect(
+        await rowsTouched(
+          `select id from public."${table}" where id in ('${own()}'::uuid, '${foreign()}'::uuid)`,
+        ),
+        'l’éditeur ne voit pas les deux commerces',
+      ).toBe(2)
     })
 
     /*
@@ -392,8 +427,10 @@ describe('les quatre opérations, à travers la frontière', () => {
     it.each(EMPTY_CLAIMS)('jeton sans tenant ($label) — ne peut rien faire', async ({ claims }) => {
       await actAs(client, claims)
 
-      const read = await client.query(`select id from public."${table}"`)
-      expect(read.rowCount, 'FUITE — un jeton sans tenant lit des lignes').toBe(0)
+      expect(
+        await rowsTouched(`select id from public."${table}"`),
+        'FUITE — un jeton sans tenant lit des lignes',
+      ).toBe(0)
 
       /*
        * Sur une table en ajout seul, le privilège manque : la requête est
@@ -464,8 +501,32 @@ describe('les quatre opérations, à travers la frontière', () => {
       if (APPEND_ONLY.has(table)) {
         await client.query('reset role')
         await client.query('set session_replication_role = replica')
-        await client.query(`delete from public."${table}" where id = $1`, [id])
+        const removed = await rowsTouched(`delete from public."${table}" where id = '${id}'::uuid`)
         await client.query('set session_replication_role = origin')
+        expect(removed, `${table} : ménage de la ligne en ajout seul impossible`).toBe(1)
+        await actAs(client, tokenFor(seeded.tenants.a, 'owner'))
+        continue
+      }
+
+      /*
+       * Une table journalisée refuse toute écriture sans auteur (RÈGLE M8-1),
+       * et ces claims n'en portent pas : la suppression tomberait sur le
+       * journal (`23502`), pas sur une policy. Elle est donc faite sous les
+       * mêmes claims — la policy reste ce qui décide — mais triggers suspendus.
+       * Le journal lui-même est éprouvé sur le chemin réel, dans
+       * `purchase-price-audit.test.ts`.
+       */
+      if (AUDITED.has(table)) {
+        await client.query('reset role')
+        await withoutTriggers(client, async () => {
+          await actAs(client, tokenFor(seeded.tenants.a, 'owner'))
+          const mine = await attempt(client, `delete from public."${table}" where id = '${id}'::uuid`)
+          expect(
+            mine.ok && mine.rowCount === 1,
+            `${table} : la policy refuse une suppression légitime — ${mine.ok ? mine.rowCount : `${mine.code} ${mine.message}`}`,
+          ).toBe(true)
+          await client.query('reset role')
+        })
         await actAs(client, tokenFor(seeded.tenants.a, 'owner'))
         continue
       }

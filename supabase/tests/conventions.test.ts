@@ -356,6 +356,213 @@ describe('les règles attrapent une table fautive', () => {
     })
   })
 
+  /*
+   * E2-04, SPEC § 2.1 — l'exception nommée, et le registre qui l'empêche de
+   * devenir une habitude. Chaque volet de la règle a sa fonction témoin, et
+   * chaque témoin fautif son jumeau conforme : une règle qui signalerait toute
+   * fonction `security definer` passerait les tests négatifs aussi.
+   */
+  describe('fonctions security definer et registre des exceptions RLS', () => {
+    const rule: RuleName = 'security definer inscrite et gardée'
+    const onFunction = (found: readonly Violation[], name: string) =>
+      found.filter((v) => v.table_name === `public.${name}`)
+
+    it('inscrit exactement les cinq fonctions connues, chacune justifiée', async () => {
+      const { rows } = await client.query<{
+        function_name: string
+        guard: string
+        justified: boolean
+      }>(`
+        select function_name, guard::text, btrim(justification) <> '' as justified
+        from merx.rls_exception_registry order by function_name
+      `)
+
+      // Liste exacte : une sixième entrée doit se lire ici, pas s'ajouter en silence.
+      expect(rows).toEqual([
+        { function_name: 'create_tenant', guard: 'super_admin', justified: true },
+        { function_name: 'create_worker', guard: 'current_tenant', justified: true },
+        { function_name: 'register_device', guard: 'current_tenant', justified: true },
+        { function_name: 'search_products', guard: 'current_tenant', justified: true },
+        { function_name: 'set_user_active', guard: 'current_tenant', justified: true },
+      ])
+    })
+
+    it('nomme une fonction definer qui touche une table métier sans être inscrite', async () => {
+      await client.query('begin')
+      await client.query(`
+        create function public.definer_probe() returns bigint
+        language sql security definer set search_path = ''
+        as $$ select count(*) from public.product where tenant_id = merx.current_tenant_id() $$;
+
+        create function public.harmless_definer_probe() returns boolean
+        language sql security definer set search_path = ''
+        as $$ select merx.is_super_admin() $$;
+      `)
+
+      const found = await violations(client, rule)
+      expect(describeViolations(onFunction(found, 'definer_probe'))).toContain(
+        'security definer, touche product hors RLS, absente de merx.rls_exception_registry',
+      )
+      // Contrôle positif : une fonction definer qui ne touche aucune table métier.
+      expect(onFunction(found, 'harmless_definer_probe')).toEqual([])
+
+      // Et la même, inscrite avec son garde, n'est plus signalée.
+      await client.query(`
+        select merx.register_rls_exception('public.definer_probe()', 'current_tenant',
+          'Témoin de conventions.test.ts.')
+      `)
+      expect(onFunction(await violations(client, rule), 'definer_probe')).toEqual([])
+    })
+
+    it('nomme une fonction inscrite en current_tenant dont le corps ne filtre pas le commerce', async () => {
+      await client.query('begin')
+      await client.query(`
+        create function public.unfiltered_probe() returns bigint
+        language sql security definer set search_path = ''
+        as $$ select count(*) from public.product $$;
+        select merx.register_rls_exception('public.unfiltered_probe()', 'current_tenant',
+          'Témoin de conventions.test.ts.');
+      `)
+
+      const found = onFunction(await violations(client, rule), 'unfiltered_probe')
+      expect(describeViolations(found)).toContain(
+        'inscrite en current_tenant, mais son corps n\'appelle pas merx.current_tenant_id()',
+      )
+      expect(found).toHaveLength(1)
+    })
+
+    it('nomme une fonction inscrite en super_admin qui n’appelle pas merx.is_super_admin()', async () => {
+      await client.query('begin')
+      await client.query(`
+        create function public.unguarded_admin_probe() returns bigint
+        language sql security definer set search_path = ''
+        as $$ select count(*) from public.tenant $$;
+        select merx.register_rls_exception('public.unguarded_admin_probe()', 'super_admin',
+          'Témoin de conventions.test.ts : se dit réservée à l''éditeur, sans le vérifier.');
+
+        create function public.guarded_admin_probe() returns bigint
+        language sql security definer set search_path = ''
+        as $$ select count(*) from public.tenant where merx.is_super_admin() $$;
+        select merx.register_rls_exception('public.guarded_admin_probe()', 'super_admin',
+          'Témoin de conventions.test.ts.');
+      `)
+
+      const found = await violations(client, rule)
+      expect(describeViolations(onFunction(found, 'unguarded_admin_probe'))).toContain(
+        'inscrite en super_admin, mais son corps n\'appelle pas merx.is_super_admin()',
+      )
+      // Contrôle positif : la même inscription, avec le garde dans le corps.
+      expect(onFunction(found, 'guarded_admin_probe')).toEqual([])
+    })
+
+    it('refuse une justification vide — contrainte rls_exception_justified', async () => {
+      await client.query('begin')
+      await client.query(`
+        create function public.silent_probe() returns bigint
+        language sql security definer set search_path = ''
+        as $$ select count(*) from public.product where tenant_id = merx.current_tenant_id() $$;
+      `)
+      await client.query('savepoint justification')
+
+      const refused = await client
+        .query("select merx.register_rls_exception('public.silent_probe()', 'current_tenant', '   ')")
+        .then(
+          () => null,
+          (error: { code?: string; constraint?: string }) => error,
+        )
+      expect(refused?.code).toBe('23514')
+      expect(refused?.constraint).toBe('rls_exception_justified')
+      await client.query('rollback to savepoint justification')
+
+      // Contrôle positif : la même inscription, justifiée, passe.
+      await client.query(
+        "select merx.register_rls_exception('public.silent_probe()', 'current_tenant', 'Témoin.')",
+      )
+    })
+
+    it('signale une justification vide que la contrainte ne tiendrait plus', async () => {
+      await client.query('begin')
+      await client.query(`
+        alter table merx.rls_exception_registry drop constraint rls_exception_justified;
+        update merx.rls_exception_registry set justification = ' ' where function_name = 'search_products';
+      `)
+
+      const found = await violations(client, 'registre des exceptions RLS tenu')
+      expect(describeViolations(found)).toBe(
+        'public.search_products — justification vide au registre des exceptions RLS — SPEC § 2.1',
+      )
+    })
+
+    it('signale une inscription dont la fonction n’existe plus', async () => {
+      await client.query('begin')
+      await client.query(`
+        insert into merx.rls_exception_registry (function_name, guard, justification)
+        values ('ghost_function_probe', 'current_tenant', 'Témoin.')
+      `)
+
+      const found = await violations(client, 'registre des exceptions RLS tenu')
+      expect(found.map((v) => v.table_name)).toEqual(['public.ghost_function_probe'])
+    })
+  })
+
+  /*
+   * RÈGLE M8-1, addendum E2-03. Chaque volet a son témoin fautif et son
+   * jumeau conforme, dans une transaction annulée.
+   */
+  describe('le journal du prix d’achat — tables auditées', () => {
+    it('signale une table auditée dont le trigger a disparu, et laisse passer la table gardée', async () => {
+      await client.query('begin')
+      await client.query(`
+        create table public.audited_probe (id uuid primary key default gen_random_uuid());
+        select merx.apply_reference_conventions('public.audited_probe');
+        alter table public.audited_probe add column unit_cost public.money_amount;
+        select merx.apply_audit('public.audited_probe', 'purchase_price_change', array['unit_cost']);
+      `)
+
+      const rule: RuleName = 'tables auditées gardées'
+      expect(onProbe(await violations(client, rule), 'audited_probe')).toEqual([])
+
+      await client.query('drop trigger audit_row_change on public.audited_probe')
+      const found = onProbe(await violations(client, rule), 'audited_probe')
+      expect(describeViolations(found)).toContain('sans trigger merx.audit_row_change()')
+      expect(found).toHaveLength(1)
+    })
+
+    it('refuse d’auditer une colonne qui n’existe pas', async () => {
+      await client.query('begin')
+      await client.query(`
+        create table public.audited_probe (id uuid primary key default gen_random_uuid());
+        select merx.apply_reference_conventions('public.audited_probe');
+      `)
+      await expect(
+        client.query(
+          "select merx.apply_audit('public.audited_probe', 'purchase_price_change', array['unit_cost'])",
+        ),
+      ).rejects.toThrow('Colonne auditée inconnue sur audited_probe : unit_cost')
+    })
+
+    it('signale une relation restreinte par view_cost dont le prix n’est pas journalisé', async () => {
+      await client.query('begin')
+      await client.query(`
+        create table public.cost_probe (id uuid primary key default gen_random_uuid());
+        select merx.apply_reference_conventions('public.cost_probe');
+        alter table public.cost_probe add column unit_cost public.money_amount;
+        select merx.apply_capability_restriction('public.cost_probe', 'view_cost');
+      `)
+
+      const rule: RuleName = 'prix d\'achat journalisés'
+      expect(describeViolations(onProbe(await violations(client, rule), 'cost_probe'))).toContain(
+        'dont le prix d\'achat n\'est pas journalisé',
+      )
+
+      // Contrôle positif : la même relation, journalisée, n'est plus nommée.
+      await client.query(
+        "select merx.apply_audit('public.cost_probe', 'purchase_price_change', array['unit_cost'])",
+      )
+      expect(onProbe(await violations(client, rule), 'cost_probe')).toEqual([])
+    })
+  })
+
   it('signale une entrée de registre sans table', async () => {
     await client.query('begin')
     await client.query(

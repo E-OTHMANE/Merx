@@ -37,6 +37,7 @@ import {
 } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 
+import { BackLink } from '@/components/BackLink'
 import { Field } from '@/components/Field'
 import { Button } from '@/components/ui/button'
 import { useCan } from '@/lib/auth'
@@ -295,6 +296,7 @@ function ProductForm({ productId }: { productId: string | null }) {
     <main className="min-h-dvh px-4 pt-6">
       <div className="mx-auto flex w-full max-w-md flex-col gap-6 pb-6">
         <div>
+          <BackLink to="/products" label="Produits" />
           <h1 className="text-title text-paper-900">{creating ? 'Nouveau produit' : 'Fiche produit'}</h1>
           {creating && (
             <p className="mt-2 text-body text-paper-700">
@@ -475,10 +477,6 @@ function ProductForm({ productId }: { productId: string | null }) {
                 Grille de prix
               </Link>
             )}
-
-            <Link to="/products" className={SECONDARY}>
-              {creating ? 'Voir les produits' : 'Retour aux produits'}
-            </Link>
 
             {!creating && (
               <button

@@ -1,11 +1,14 @@
 /*
- * Écran d'accueil — placeholder. E0-04.
+ * L'Accueil. E0-04, premier onglet depuis E11-04.
  *
- * Il existe pour qu'il y ait quelque chose derrière le garde de route : sans
- * lui, « session persistante » et « déconnexion » ne se vérifient pas. M8 (E1)
- * le remplacera par le véritable accueil. Rien d'autre ne s'y ajoute d'ici là.
+ * BRAND-UI § 13 : tout ce qui n'est pas un onglet part d'ici. Les destinations
+ * rares du patron sont dans le bloc « Gestion du commerce », en bas, au-dessus
+ * de « Se déconnecter ». Le catalogue n'y est plus : c'est un onglet. Les
+ * actions quotidiennes sans onglet — caisse, réception, inventaire — prendront
+ * un bouton au-dessus du bloc, avec leur story.
  */
 
+import { ChevronRight } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
@@ -23,16 +26,49 @@ const ROLE_LABELS: Record<UserRole, string> = {
   worker: 'Employé',
 }
 
+interface Destination {
+  to: string
+  label: string
+  visible: boolean
+}
+
+function DestinationRow({ to, label }: { to: string; label: string }) {
+  return (
+    <li className="border-b border-paper-200 last:border-b-0">
+      <Link to={to} className="flex h-row items-center justify-between gap-4 px-4 text-body text-paper-900">
+        {label}
+        {/* Directionnel : il se retourne en RTL (BRAND-UI § 9). */}
+        <ChevronRight aria-hidden="true" className="size-6 shrink-0 text-paper-600 rtl:-scale-x-100" />
+      </Link>
+    </li>
+  )
+}
+
 export function HomeScreen() {
   const { user, signOut } = useAuth()
   const canManageUsers = useCan('manage_users')
   const canManageDevices = useCan('manage_devices')
   const canViewAuditLog = useCan('view_audit_log')
   const canManageSettings = useCan('manage_settings')
-  const canViewCatalogue = useCan('view_catalogue')
+
+  /*
+   * Chaque lien est masqué en plus du contrôle serveur, jamais à sa place : les
+   * routes gardent leur `RequireCapability`, les tables leurs policies.
+   * La question passe par la matrice § 3.1 (`useCan`), jamais par une
+   * comparaison de rôle — sauf Commerces : administrer les commerces n'est pas
+   * une case de § 3.1, et le lien suit le garde de son écran, `RequireSuperAdmin`
+   * (E1-01).
+   */
+  const management: Destination[] = [
+    { to: '/users', label: 'Employés', visible: canManageUsers },
+    { to: '/devices', label: 'Appareils', visible: canManageDevices },
+    { to: '/audit', label: 'Journal', visible: canViewAuditLog },
+    { to: '/settings', label: 'Paramètres', visible: canManageSettings },
+    { to: '/admin/tenants', label: 'Commerces', visible: user?.role === 'super_admin' },
+  ].filter((destination) => destination.visible)
 
   return (
-    <main className="min-h-dvh px-4 py-6">
+    <main className="px-4 py-6">
       <div className="mx-auto flex w-full max-w-md flex-col gap-6">
         <div>
           <h1 className="text-title text-paper-900">Merx</h1>
@@ -57,73 +93,19 @@ export function HomeScreen() {
           </div>
         </dl>
 
-        {/* E1-01 : l'éditeur a un écran, les autres rôles n'en ont pas. Le lien
-            est masqué en plus du contrôle serveur, jamais à sa place. */}
-        {user?.role === 'super_admin' && (
-          <Link
-            to="/admin/tenants"
-            className="flex h-button items-center justify-center rounded-button bg-ink-600 text-body text-white hover:bg-ink-700 active:bg-ink-800"
-          >
-            Commerces
-          </Link>
-        )}
-
-        {/* E2-02 : le catalogue, lisible par tout le commerce. L'employé voit
-            la liste ; seul le patron ouvre les fiches. */}
-        {canViewCatalogue && (
-          <Link
-            to="/products"
-            className="flex h-button items-center justify-center rounded-button bg-ink-600 text-body text-white hover:bg-ink-700 active:bg-ink-800"
-          >
-            Produits
-          </Link>
-        )}
-
-        {/* E1-02 : le patron gère ses employés, l'employé ne voit pas le lien.
-            La question passe par la matrice § 3.1, jamais par une comparaison
-            de rôle écrite ici. */}
-        {canManageUsers && (
-          <Link
-            to="/users"
-            className="flex h-button items-center justify-center rounded-button bg-ink-600 text-body text-white hover:bg-ink-700 active:bg-ink-800"
-          >
-            Employés
-          </Link>
-        )}
-
-        {/* E1-03 : le patron voit ses appareils et leur dernière
-            synchronisation. Le lien est masqué en plus de la policy
-            restrictive sur `device`, jamais à sa place. */}
-        {canManageDevices && (
-          <Link
-            to="/devices"
-            className="flex h-button items-center justify-center rounded-button bg-ink-600 text-body text-white hover:bg-ink-700 active:bg-ink-800"
-          >
-            Appareils
-          </Link>
-        )}
-
-        {/* E1-04 : le journal nomme qui a fait quoi. Le lien est masqué en
-            plus de la policy restrictive sur `audit_log`, jamais à sa place. */}
-        {canViewAuditLog && (
-          <Link
-            to="/audit"
-            className="flex h-button items-center justify-center rounded-button bg-ink-600 text-body text-white hover:bg-ink-700 active:bg-ink-800"
-          >
-            Journal
-          </Link>
-        )}
-
-        {/* E1-05 : les réglages du commerce. Rien n'oblige à les ouvrir — un
-            commerce naît réglé. Le lien est masqué en plus des policies
-            d'écriture sur `tenant_setting`, jamais à leur place. */}
-        {canManageSettings && (
-          <Link
-            to="/settings"
-            className="flex h-button items-center justify-center rounded-button bg-ink-600 text-body text-white hover:bg-ink-700 active:bg-ink-800"
-          >
-            Paramètres
-          </Link>
+        {/* Un employé n'a aucune de ces destinations : le bloc n'existe pas
+            pour lui, plutôt qu'un titre au-dessus du vide. */}
+        {management.length > 0 && (
+          <section aria-labelledby="management-title" className="flex flex-col gap-2">
+            <h2 id="management-title" className="text-subtitle text-paper-900">
+              Gestion du commerce
+            </h2>
+            <ul className="rounded-card border border-paper-200 bg-white">
+              {management.map((destination) => (
+                <DestinationRow key={destination.to} to={destination.to} label={destination.label} />
+              ))}
+            </ul>
+          </section>
         )}
 
         <Button

@@ -55,13 +55,13 @@ Schéma, isolation, authentification. Rien de visible pour l'utilisateur, tout l
 **En tant que** développeur, **je veux** un projet qui démarre et se vérifie, **afin de** construire sur une base saine.
 
 **Critères d'acceptation**
-- [ ] Vite + React + TypeScript en mode strict, livré en PWA
-- [ ] Tailwind et shadcn/ui installés, un composant de test rendu
-- [ ] `npm run dev`, `build`, `lint`, `typecheck`, `test` fonctionnent
-- [ ] Vitest configuré — **tout critère d'acceptation vérifiable par machine devient un test**
-- [ ] Supabase local démarre via `npx supabase start`
-- [ ] `npx supabase db reset` reconstruit depuis les migrations
-- [ ] Arborescence conforme à `CLAUDE.md` : `src/app`, `src/modules`, `src/lib`, `supabase/`
+- [x] Vite + React + TypeScript en mode strict, livré en PWA
+- [x] Tailwind et shadcn/ui installés, un composant de test rendu
+- [x] `npm run dev`, `build`, `lint`, `typecheck`, `test` fonctionnent
+- [x] Vitest configuré — **tout critère d'acceptation vérifiable par machine devient un test**
+- [x] Supabase local démarre via `npx supabase start`
+- [x] `npx supabase db reset` reconstruit depuis les migrations
+- [x] Arborescence conforme à `CLAUDE.md` : `src/app`, `src/modules`, `src/lib`, `supabase/`
 
 ---
 
@@ -71,13 +71,13 @@ Schéma, isolation, authentification. Rien de visible pour l'utilisateur, tout l
 **En tant que** développeur, **je veux** des conventions appliquées dès la première migration, **afin de** ne pas les rétro-corriger sur 30 tables.
 
 **Critères d'acceptation**
-- [ ] Toutes les clés primaires en `uuid`, générées par la base
-- [ ] Montants en `numeric(12,2)`, quantités en `numeric(12,3)` — **aucun flottant nulle part**
-- [ ] Dates en `timestamptz`, stockées en UTC
-- [ ] Toute table métier porte `tenant_id`, `created_at`, `updated_at`, `created_by`, `device_id`
-- [ ] `updated_at` maintenu par trigger
-- [ ] Tables de référence : colonne `deleted_at` pour la suppression douce
-- [ ] Une seule migration initiale, relisible
+- [x] Toutes les clés primaires en `uuid`, générées par la base
+- [x] Montants en `numeric(12,2)`, quantités en `numeric(12,3)` — **aucun flottant nulle part** — *par les domaines `money_amount` et `quantity`, un `numeric` nu étant refusé (SPEC § 4)*
+- [x] Dates en `timestamptz`, stockées en UTC
+- [x] Toute table métier porte `tenant_id`, `created_at`, `updated_at`, `created_by`, `device_id`
+- [x] `updated_at` maintenu par trigger
+- [x] Tables de référence : colonne `deleted_at` pour la suppression douce
+- [x] Une seule migration initiale, relisible
 
 **Notes** — `SPEC.md` § 4.
 
@@ -89,14 +89,18 @@ Schéma, isolation, authentification. Rien de visible pour l'utilisateur, tout l
 **En tant qu'**éditeur, **je veux** que deux commerces ne puissent jamais se voir, **afin de** ne pas perdre la totalité de mes clients sur une seule fuite.
 
 **Critères d'acceptation**
-- [ ] Tables `tenant` et `app_user` créées
-- [ ] RLS activée sur **toutes** les tables métier, sans exception
-- [ ] Les policies dérivent `tenant_id` du JWT, jamais d'un paramètre client
-- [ ] Aucune requête applicative ne filtre `tenant_id` à la main
-- [ ] Test automatisé : l'utilisateur du commerce A ne lit ni n'écrit aucune ligne du commerce B, sur chaque table
-- [ ] Le rôle `super_admin` accède à tous les tenants par une policy distincte et explicite
+- [x] Tables `tenant` et `app_user` créées
+- [x] RLS activée sur **toutes** les tables métier, sans exception
+- [x] Les policies dérivent `tenant_id` du JWT, jamais d'un paramètre client
+- [x] Aucune requête applicative ne filtre `tenant_id` à la main — *hors les fonctions inscrites à `merx.rls_exception_registry`, dont l'exception nommée de SPEC § 2.1 (E2-04)*
+- [x] Test automatisé : l'utilisateur du commerce A ne lit ni n'écrit aucune ligne du commerce B, sur chaque table
+- [x] Le rôle `super_admin` accède à tous les tenants par une policy distincte et explicite
 
 **Notes** — `SPEC.md` § 2.1. La story n'est pas terminée sans le test d'isolation.
+
+**À instruire — relevé en E2-04, non traité.** Les deux policies permissives de chaque table métier se combinent par OU : le filtre que Postgres applique devient `(tenant_id = merx.current_tenant_id()) OR merx.is_super_admin()`, et aucun index ne sert une telle condition — pas même celui de `tenant_id`. Mesuré sur le stack local, cinq commerces de 10 000 produits, sous le jeton d'un employé : la liste des produits, telle que `listProducts()` la demande, fait un **Seq Scan de toute la table, 410 ms** pour les 9 517 lignes du commerce ; la même requête, `super_admin_all` retirée dans une transaction annulée, passe par l'index du commerce en **13,5 ms**. Toutes les tables métier portent cette paire de policies : toute requête de l'application paie la table entière, tous commerces confondus, et le coût croît avec leur nombre. Le dernier critère ci-dessus — « une policy distincte et explicite » pour `super_admin` — est précisément ce qui produit ce OU ; une correction devra le tenir, et passer le balayage d'isolation. La recherche produit y échappe par l'exception nommée de SPEC § 2.1, pas par une correction.
+
+**Retouche du balayage d'isolation — après E2-04.** Le balayage tourne dans une seule transaction, et ses `select`, `update` et `delete` n'étaient pas protégés par un point de sauvegarde : la première erreur avortait la transaction, et toutes les tables suivantes tombaient sur « current transaction is aborted », pour une régression qui n'était pas la leur. Mesuré sur le sabotage « garde "rien n'a changé" retiré » du journal du prix d'achat : **avant, 27 tests tombés, dont 25 en cascade** — `warehouse` rouge à cause de `variant_cost`. Chaque requête du balayage passe désormais par `attempt()`, donc par un point de sauvegarde, et une erreur se lit dans l'assertion de sa table avec son code. **Après, le même sabotage fait tomber 2 tests, les 2 vraies détections, 0 en cascade.** La propriété dont tout le projet dépend — un garde retiré, un test tombe, et il nomme la bonne table — tient à nouveau, et ne se dégradera plus avec E3, E4 et E6.
 
 ---
 
@@ -106,12 +110,12 @@ Schéma, isolation, authentification. Rien de visible pour l'utilisateur, tout l
 **En tant qu'**utilisateur, **je veux** me connecter, **afin d'**accéder à mon commerce.
 
 **Critères d'acceptation**
-- [ ] Connexion par email et mot de passe via Supabase Auth
-- [ ] Session persistante entre les redémarrages de l'application
-- [ ] Déconnexion vidant la session locale
-- [ ] Les routes protégées redirigent vers la connexion
-- [ ] `app_user` lié à `auth.users`, avec `tenant_id` et `role`
-- [ ] Écran de connexion utilisable au doigt sur téléphone
+- [x] Connexion par email et mot de passe via Supabase Auth — *par téléphone et mot de passe : l'adresse Supabase Auth est dérivée du numéro normalisé (arbitré en E1-01)*
+- [x] Session persistante entre les redémarrages de l'application
+- [x] Déconnexion vidant la session locale
+- [x] Les routes protégées redirigent vers la connexion
+- [x] `app_user` lié à `auth.users`, avec `tenant_id` et `role`
+- [ ] Écran de connexion utilisable au doigt sur téléphone — *hauteurs tactiles vérifiées en jsdom ; à vérifier à la main, sur un Android d'entrée de gamme*
 
 ---
 
@@ -121,12 +125,12 @@ Schéma, isolation, authentification. Rien de visible pour l'utilisateur, tout l
 **En tant que** patron, **je veux** que mon employé ne voie pas mes prix d'achat, **afin de** pouvoir mettre l'outil entre ses mains.
 
 **Critères d'acceptation**
-- [ ] Enum `user_role` : `super_admin`, `owner`, `worker`
-- [ ] Un helper serveur unique porte toutes les vérifications de droits
-- [ ] `cost_price` et toute marge sont **retirés de la réponse API** pour `worker` — pas masqués dans l'interface
-- [ ] Test : un appel API brut par un `worker` ne contient jamais `cost_price`
-- [ ] L'interface masque les actions interdites, en plus du contrôle serveur
-- [ ] Matrice de `SPEC.md` § 3.1 entièrement implémentée
+- [x] Enum `user_role` : `super_admin`, `owner`, `worker`
+- [x] Un helper serveur unique porte toutes les vérifications de droits
+- [x] `cost_price` et toute marge sont **retirés de la réponse API** pour `worker` — pas masqués dans l'interface
+- [x] Test : un appel API brut par un `worker` ne contient jamais `cost_price`
+- [x] L'interface masque les actions interdites, en plus du contrôle serveur
+- [x] Matrice de `SPEC.md` § 3.1 entièrement implémentée
 
 **Notes** — Le test sur la réponse API brute est le cœur de la story. Masquer un champ dans l'interface n'est pas un contrôle d'accès.
 
@@ -140,11 +144,11 @@ Schéma, isolation, authentification. Rien de visible pour l'utilisateur, tout l
 **En tant qu'**éditeur, **je veux** créer un commerce avec son patron, **afin d'**installer un nouveau client.
 
 **Critères d'acceptation**
-- [ ] Formulaire `super_admin` : nom du commerce, nom du patron, téléphone, ville
-- [ ] Crée le `tenant`, le premier `app_user` en `owner`, et un `device` par défaut
-- [ ] **Crée automatiquement l'unique `warehouse`**, jamais affiché ensuite
-- [ ] Le patron peut se connecter immédiatement
-- [ ] Liste des commerces avec date de création et dernière activité
+- [x] Formulaire `super_admin` : nom du commerce, nom du patron, téléphone, ville
+- [x] Crée le `tenant`, le premier `app_user` en `owner`, et un `device` par défaut
+- [x] **Crée automatiquement l'unique `warehouse`**, jamais affiché ensuite
+- [x] Le patron peut se connecter immédiatement
+- [x] Liste des commerces avec date de création et dernière activité
 
 **Notes** — `SPEC.md` § 2.4. Le `warehouse` est une constante invisible.
 
@@ -156,11 +160,11 @@ Schéma, isolation, authentification. Rien de visible pour l'utilisateur, tout l
 **En tant que** patron, **je veux** créer des comptes pour mes employés, **afin qu'**ils utilisent l'outil sans voir mes marges.
 
 **Critères d'acceptation**
-- [ ] Le `owner` crée un `worker` : nom, téléphone, mot de passe
-- [ ] Il peut désactiver un compte sans le supprimer
-- [ ] Un compte désactivé ne peut plus se connecter
-- [ ] Un `worker` ne voit pas cet écran
-- [ ] Le patron ne peut pas se retirer son propre rôle `owner`
+- [x] Le `owner` crée un `worker` : nom, téléphone, mot de passe
+- [x] Il peut désactiver un compte sans le supprimer
+- [x] Un compte désactivé ne peut plus se connecter
+- [x] Un `worker` ne voit pas cet écran
+- [x] Le patron ne peut pas se retirer son propre rôle `owner`
 
 ---
 
@@ -170,10 +174,10 @@ Schéma, isolation, authentification. Rien de visible pour l'utilisateur, tout l
 **En tant que** patron, **je veux** que mes bons soient numérotés sans doublon, **afin de** m'y retrouver.
 
 **Critères d'acceptation**
-- [ ] Table `device` : `label`, `prefix`, `last_sync_at`, `is_active`
-- [ ] `prefix` unique par commerce, attribué automatiquement (A, B, C…)
-- [ ] Un appareil s'enregistre à la première connexion
-- [ ] Le patron voit ses appareils et leur dernière synchronisation
+- [x] Table `device` : `label`, `prefix`, `last_sync_at`, `is_active`
+- [x] `prefix` unique par commerce, attribué automatiquement (A, B, C…)
+- [x] Un appareil s'enregistre à la première connexion
+- [x] Le patron voit ses appareils et leur dernière synchronisation
 
 **Notes** — `SPEC.md` RÈGLE M3-2. Sans préfixe, la numérotation hors-ligne produit des doublons.
 
@@ -185,11 +189,17 @@ Schéma, isolation, authentification. Rien de visible pour l'utilisateur, tout l
 **En tant que** patron, **je veux** savoir qui a fait quoi, **afin de** comprendre un écart.
 
 **Critères d'acceptation**
-- [ ] Table `audit_log` avec `before` et `after` en `jsonb`
-- [ ] Un helper unique, appelé par toutes les actions sensibles
-- [ ] Écrivent obligatoirement : forçage de prix, annulation de document, dépassement de plafond, validation d'écart d'inventaire, modification de rôle, changement de prix d'achat
-- [ ] Consultation filtrable par utilisateur et par date, `owner` seul
-- [ ] `audit_log` est en ajout seul : ni modification, ni suppression
+- [x] Table `audit_log` avec `before` et `after` en `jsonb`
+- [x] Un helper unique, appelé par toutes les actions sensibles
+- Écrivent obligatoirement dans `audit_log`, une action par ligne (RÈGLE M8-1) :
+  - [x] changement de prix d'achat — `purchase_price_change`, par trigger sur `variant_cost` (addendum E2-03, à la clôture d'E2-04) ; `goods_receipt_line_cost` s'y branchera en E8-03
+  - [ ] forçage de prix — `price_override`, arrive avec E4-04
+  - [ ] annulation de document — `document_cancellation`, arrive avec E4-01
+  - [ ] dépassement de plafond — `credit_limit_override`, arrive avec E6-03
+  - [ ] validation d'écart d'inventaire — `stock_variance_approval`, arrive avec E3-04
+  - [ ] modification de rôle — `role_change` : aucune story ne prévoit encore de modifier un rôle
+- [x] Consultation filtrable par utilisateur et par date, `owner` seul
+- [x] `audit_log` est en ajout seul : ni modification, ni suppression
 
 **Notes** — `SPEC.md` RÈGLE M8-1.
 
@@ -201,9 +211,9 @@ Schéma, isolation, authentification. Rien de visible pour l'utilisateur, tout l
 **En tant que** patron, **je veux** régler ce qui est propre à mon commerce, **afin que** l'outil me corresponde.
 
 **Critères d'acceptation**
-- [ ] Table `tenant_setting` en clé/valeur `jsonb`
-- [ ] Réglages V1 : nom et coordonnées à imprimer, langue par défaut, adresse de l'imprimante réseau
-- [ ] Valeurs par défaut fonctionnelles — l'application marche sans qu'on ouvre cet écran
+- [x] Table `tenant_setting` en clé/valeur `jsonb`
+- [x] Réglages V1 : nom et coordonnées à imprimer, langue par défaut, adresse de l'imprimante réseau
+- [x] Valeurs par défaut fonctionnelles — l'application marche sans qu'on ouvre cet écran
 
 ---
 
@@ -217,13 +227,13 @@ L'épique la plus déterminante pour l'adoption.
 **En tant que** développeur, **je veux** la couche variante en place dès le départ, **afin de** ne jamais migrer le stock d'un client en production.
 
 **Critères d'acceptation**
-- [ ] Tables `category`, `product`, `variant`, `price_break`
-- [ ] **Créer un `product` crée toujours une `variant` avec `is_default = true`** — par trigger ou dans une transaction serveur
-- [ ] `product.code` unique par tenant, saisie libre
-- [ ] `variant.sku` unique par tenant, dérivé de `product.code` s'il n'y a qu'une variante
-- [ ] `variant.attributes` en `jsonb`, `{}` en V1
-- [ ] **Aucune** table ne référence `product_id` pour du stock ou du prix
-- [ ] Test : créer un produit produit exactement une variante
+- [x] Tables `category`, `product`, `variant`, `price_break`
+- [x] **Créer un `product` crée toujours une `variant` avec `is_default = true`** — par trigger ou dans une transaction serveur
+- [x] `product.code` unique par tenant, saisie libre
+- [x] `variant.sku` unique par tenant, dérivé de `product.code` s'il n'y a qu'une variante
+- [x] `variant.attributes` en `jsonb`, `{}` en V1
+- [x] **Aucune** table ne référence `product_id` pour du stock ou du prix
+- [x] Test : créer un produit produit exactement une variante
 
 **Notes** — `SPEC.md` RÈGLES 2.3, M1-1. La décision la plus structurante du schéma.
 
@@ -270,6 +280,19 @@ L'épique la plus déterminante pour l'adoption.
 
 **Vérifié par sabotage** (14 cas, chacun seul sur une base fraîche, suite base complète) : trigger de la ligne à l'unité, G1, G2, unicité des paliers, les trois policies d'écriture de `price_break` et de `variant`, la policy restrictive de `variant_cost`, un `cost_price` posé sur `variant`, l'unicité de `variant_cost`, `apply_capability_restriction` retirée. Chacun fait tomber son test, code et nom de contrainte assertés. Deux tests corrigés en chemin : précondition « ligne à l'unité présente » (`price-grid.test.ts`), et le balayage d'insertion (`settings.test.ts`) qui asserte désormais la table nommée dans le `42501` — un trigger faisait refuser par la policy d'une autre table.
 
+**Addendum — le journal du prix d'achat** (relevé à la clôture d'E2-04, branché ensuite). E2-03 a livré `variant_cost` sans l'écriture au journal que la RÈGLE M8-1 exige : c'était une lacune dans du code livré, pas une anticipation sur E8. Migration `20260911160000_purchase_price_audit.sql` :
+- trigger `merx.audit_row_change()`, `security definer`, posé par `merx.apply_audit(table, étiquette, colonnes)` et inscrit à `merx.audited_registry` ; création, modification du prix et suppression écrivent chacune leur entrée `purchase_price_change`, avant et après limités à `variant_id` et `cost_price` ; une mise à jour qui ne les change pas n'écrit rien ;
+- **hors session, l'écriture est refusée** — `42501` sans commerce, `23502` sans auteur, par `merx.log_audit()` tel qu'E1-04 l'a posé. Arbitré : un journal sans auteur ne doit pas pouvoir exister, et c'est par `service_role` ou `postgres` qu'un incident passerait. Le seul contournement, `session_replication_role = replica`, est réservé au harnais de test (`withoutTriggers`, `supabase/tests/rest.ts`) ;
+- deux règles de `conventions.ts` : toute table inscrite porte son trigger, et toute relation restreinte par `view_cost` est journalisée — `goods_receipt_line_cost` (E8-03) sera nommée le jour où elle naîtra sans l'être ;
+- `supabase/tests/purchase-price-audit.test.ts` éprouve les trois entrées par le chemin réel, et le refus hors session, code asserté, aucune ligne créée.
+
+**Vérifié par sabotage** (5 cas, chacun seul sur une base fraîche ; nombre de tests tombés, vraies détections distinguées de la cascade) :
+- **trigger retiré après sa pose** — 10 tombent : les 9 de `purchase-price-audit.test.ts`, chaque entrée manquante nommant `purchase_price_change`, et la règle `tables auditées gardées` ;
+- **`apply_audit` jamais appelé** — 10 tombent : les mêmes 9, et la règle `prix d'achat journalisés`. Les deux règles ne tombent jamais ensemble ;
+- **garde « rien n'a changé » retiré** — 27 tombent, dont **2 vraies détections** : « une écriture qui ne change pas le prix n'en laisse aucune », et la mise à jour de `variant_cost` du balayage d'isolation (`23502`, aucun auteur). Les 25 autres sont une cascade : ce balayage tourne dans une seule transaction, sans point de sauvegarde autour de ses `update`, et l'erreur l'avorte pour tous les tests suivants ;
+- **`security definer` retiré du trigger** — 9 tombent sur 9 : « permission denied for function log_audit », le patron lui-même ne peut plus poser un prix ; le test « sans auteur » reçoit `42501` au lieu de `23502` ;
+- **comparaison avant/après remplacée par une condition toujours vraie** — 2 tombent, 2 vraies détections : « la modification du prix » (10.00 → 12.50 n'écrit rien) et « modifier sans jeton », dont le refus disparaît avec l'entrée.
+
 ---
 
 ### E2-04 — Recherche produit
@@ -278,14 +301,34 @@ L'épique la plus déterminante pour l'adoption.
 **En tant que** vendeur, **je veux** trouver un produit même en tapant mal, **afin de** ne pas faire attendre le client.
 
 **Critères d'acceptation**
-- [ ] Recherche simultanée sur nom français, nom arabe, `code`, `sku`, `barcode`
-- [ ] Tolérante aux fautes et aux accents : « creme » trouve « crème »
-- [ ] Fonctionne sur référence partielle : « 451 » trouve « 4512 »
-- [ ] Résultat en moins de 300 ms sur 10 000 références
-- [ ] Résultats en liste **et** en grille photo, au choix
-- [ ] Index base de données en place, testés sur un jeu réaliste de 10 000 lignes
+- [x] Recherche simultanée sur nom français, nom arabe, `code`, `sku`, `barcode`
+- [x] Tolérante aux fautes et aux accents : « creme » trouve « crème »
+- [x] Fonctionne sur référence partielle : « 451 » trouve « 4512 »
+- [x] Résultat en moins de 300 ms sur 10 000 références — *mesuré par PostgREST sur le stack local, sans réseau : 76 ms au pire (« creme ») ; une tablette en 3G n'est pas mesurée*
+- [x] Résultats en liste **et** en grille photo, au choix — *vérifié en jsdom ; le rendu sur une tablette réelle reste à voir*
+- [x] Index base de données en place, testés sur un jeu réaliste de 10 000 lignes — *parmi 40 000 d'autres commerces ; le plan du vrai appel est asserté par `auto_explain`*
 
 **Notes** — Point de rupture n° 4 du spec.
+
+**Tranché en E2-04** — la recherche est `public.search_products(q)`, en `security definer` : **exception nommée à la RÈGLE § 2.1**, parce que sous RLS Postgres n'utilise comme condition d'index que des prédicats `leakproof`, ce que `like`, `unaccent` et `pg_trgm` ne sont pas (mesure et raison : SPEC § 2.1). Le filtre du commerce, en tête du corps, est le seul garde de ce chemin. L'exception est bornée par le registre `merx.rls_exception_registry` : toute fonction `security definer` de `public` qui lit **ou écrit** une table métier s'y inscrit, avec son garde — `current_tenant` ou `super_admin` — et une justification que la base refuse vide ; `conventions.ts` nomme toute fonction non inscrite, et toute fonction dont le corps n'appelle pas le garde déclaré. Les quatre fonctions existantes y sont entrées (`create_tenant` en `super_admin`). Seuil de similarité **0,4**, mots tout en chiffres sans faute, requête vide = 50 premiers par ordre alphabétique, 1 ou 2 caractères par l'index du commerce, pas de filtre `is_active` (raisons et mesures : SPEC § 6, Recherche).
+
+**Constaté en E2-04**, chaque fois par une assertion de plan rouge alors que le chronomètre restait vert :
+- une fonction `language sql` est planifiée sans connaître la requête : l'index trigramme était écarté sur la branche produit. D'où plpgsql et `plan_cache_mode = force_custom_plan` ;
+- un index GIN met les insertions en liste d'attente jusqu'au vacuum : juste après l'insertion de 10 000 produits, 3 requêtes sur 12 seulement passaient par l'index. D'où `fastupdate = off`. **E2-05 doit mesurer ce que ce réglage coûte à l'import** ;
+- `create function … set pg_trgm.*` est refusé à `postgres` tant que la bibliothèque n'est pas chargée dans la session ; la migration la charge explicitement ;
+- un générateur de jeu de test dont un modulo partage un facteur avec le nombre de types attache une propriété à des types entiers : tous les shampooings étaient supprimés, et « شمبو » ne trouvait rien. Le jeu mentait, pas la recherche ;
+- le balayage d'insertion de `settings.test.ts` recopiait les colonnes générées, et le refus `428C9` masquait celui de la policy : il lit désormais la liste des colonnes insérables dans le catalogue.
+
+**Vérifié par sabotage** (26 cas, chacun seul sur une base fraîche). **Premier passage : 20 attrapés, 6 manqués** — chacun a reçu un test, puis a été rejoué :
+- filtre `p.deleted_at` retiré : la propagation de la suppression aux variantes faisait écarter le produit par `v.deleted_at`. Test ajouté, propagation contournée ;
+- pliage des alifs, de ة, de ؤ, de ئ retiré : la tolérance aux fautes rattrapait la recherche. Tests directs de `merx.search_fold`, règle par règle ;
+- fautes tolérées sur les chiffres : l'absence de 4512 dans les 50 premiers ne prouvait rien. Chaque résultat doit contenir le mot ; test direct de `merx.search_allows_typo` ;
+- rang de la référence exacte retiré : aucune référence rivale dans le jeu. Aiguille « Abricot Orvane » (`45129`) ajoutée ;
+- `tenant_id` retiré de l'index : resté vert sur une exécution où le plan tombait du bon côté. L'assertion relit désormais le plan d'une session chaude ; tombe sur « creme », « crème », « nivea creme 200 ».
+
+Rejoués : les six tombent. **`plan_cache_mode = force_custom_plan` est le seul garde de la story qu'aucun sabotage ne fait tomber** : même en session chaude, le cache de plans ne bascule pas sur un plan générique en local, sur 10 000 produits. **Gardé, et écrit comme non éprouvé** dans la migration — qu'aucun test ne sache provoquer le plan générique ne veut pas dire que Postgres ne le choisira jamais.
+
+Le filtre du commerce retiré fait tomber les deux tests d'isolation, les assertions de plan, et la règle `security definer inscrite et gardée` de `conventions.ts` — deux détections indépendantes.
 
 ---
 
@@ -873,7 +916,7 @@ Transversal. Chaque écran construit doit satisfaire cette épique.
 **En tant que** vendeur, **je veux** un écran utilisable debout et d'une main, **afin de** servir sans poser le téléphone.
 
 **Critères d'acceptation**
-- [ ] Cibles tactiles d'au moins 44 px
+- [ ] Cibles tactiles d'au moins 48 px (BRAND-UI § 7)
 - [ ] Actions principales atteignables au pouce
 - [ ] Photo produit systématique — **ne jamais dépendre du seul texte**
 - [ ] Lisible sous éclairage de boutique
@@ -895,6 +938,46 @@ Transversal. Chaque écran construit doit satisfaire cette épique.
 - [ ] Revue systématique en fin de chaque story : quels champs ai-je rendus obligatoires, et pourquoi
 
 **Notes** — `SPEC.md` § 2.6. Cette épique prime sur toute autre considération fonctionnelle.
+
+---
+
+### E11-04 — Navigation
+**Continu** · dépend de E0-05, E2-02
+
+**En tant que** commerçant, **je veux** passer d'un écran à l'autre au pouce et revenir d'où je viens, **afin de** ne jamais rester coincé dans un écran.
+
+Trois constats d'un essai sur un vrai Android : aucun retour, aucun accueil, aucun moyen de naviguer au téléphone. Aucune story ne les couvrait, ni BRAND-UI.
+
+**Critères d'acceptation**
+- [x] Barre d'onglets en bas des écrans de premier niveau ; chaque onglet porte une icône **et** un libellé ; cinq onglets au plus
+- [x] Le premier onglet est l'Accueil ; aucun autre bouton « accueil »
+- [x] Un onglet dont la capacité manque ne s'affiche pas — par `useCan()`, aucune comparaison de rôle, aucun cas particulier
+- [x] Onglets livrés : Accueil et Produits. Vente, Clients et Rapports arrivent avec E4-03, E6-01 et E10-01 — pas avant
+- [x] L'onglet actif se distingue par la couleur **et** le fond (encre 600 sur encre 100), et porte `aria-current="page"` ; l'inactif est en papier 600
+- [x] Chaque écran de détail porte un retour dans son en-tête, chevron et nom du parent, vers le parent désigné — jamais l'historique
+- [x] **Un onglet ou un retour, jamais les deux, jamais aucun** — vérifié route par route, et toute route ajoutée sans être classée fait tomber le test
+- [x] Le chevron se retourne en RTL ; propriétés logiques uniquement — *la classe est vérifiée en jsdom ; le retournement lui-même, à l'œil, avec le critère suivant*
+- [x] Employés, appareils, journal et paramètres dans le bloc « Gestion du commerce » de l'Accueil, chaque lien derrière sa capacité
+- [x] Les routes gardent leur `RequireCapability` : un onglet masqué n'est pas un contrôle d'accès — un test par niveau, chacun contournant l'autre
+- [ ] Testé à la main sur un Android d'entrée de gamme, en LTR et en `dir="rtl"`
+
+**Notes** — `BRAND-UI.md` § 13, et § 5 corrigé (icônes inactives en papier 600). Toute story qui ajoute un écran le range : un onglet, ou un retour vers son parent.
+
+**Sabotages** — neuf, chacun rejoué deux fois sur toute la suite front (398 tests) ; chacun fait tomber le test qui le mesure, et lui seul, sauf le filtre du lien Employés, que deux tests tiennent :
+
+| Sabotage | Tombe |
+|---|---|
+| Filtre de capacité retiré de la barre | « ne montre pas un onglet dont la capacité manque » |
+| Filtre retiré du lien Employés de l'Accueil | `users.test` « n'offre le lien qu'à qui a la capacité » et « le bloc n'existe pas pour un employé » |
+| `RequireCapability` retiré de `/products` | « renvoie à l'Accueil qui tape l'URL d'un onglet interdit » |
+| Classe active rendue inconditionnelle | « marque l'onglet actif, et lui seul » |
+| `/devices` placé sous la barre | « /devices porte un retour… et aucune barre » |
+| Mauvais parent sur Nouvel employé | « /users/new porte un retour vers son parent » |
+| Classe `rtl:` retirée du chevron | « le chevron du retour se retourne en RTL » |
+| Retour retiré des Paramètres | « /settings porte un retour… » |
+| Route `/stock` ajoutée sans classement | « classe chaque route déclarée dans routes.tsx » |
+
+Les deux gardes de `/products` se distinguent : l'onglet absent se lit à l'Accueil sans visiter la route, le garde de route par une redirection sur l'URL tapée. Le sabotage « `end` retiré de l'onglet Accueil », prévu au plan, a été abandonné : React Router n'active jamais un `NavLink` vers `/` sur un autre chemin, `end` ou non — il serait resté vert sans rien mesurer.
 
 ---
 

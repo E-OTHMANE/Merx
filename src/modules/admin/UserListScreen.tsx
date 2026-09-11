@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
+import { BackLink } from '@/components/BackLink'
 import { formatDateTime } from '@/lib/dates'
 import { useAuth } from '@/lib/auth'
 import { listUsers, setUserActive, type Employee } from '@/modules/admin/users'
@@ -157,6 +158,7 @@ export function UserListScreen() {
     <main className="min-h-dvh px-4 py-6">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
         <div>
+          <BackLink to="/" label="Accueil" />
           <h1 className="text-title text-paper-900">Employés</h1>
           <p className="mt-2 text-body text-paper-700">
             Ils vendent et encaissent, sans voir vos prix d’achat.

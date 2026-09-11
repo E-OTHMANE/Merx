@@ -13,6 +13,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { RequireAuth } from '@/app/RequireAuth'
 import { RequireCapability } from '@/app/RequireCapability'
 import { RequireSuperAdmin } from '@/app/RequireSuperAdmin'
+import { TabLayout } from '@/app/TabLayout'
 import { HomeScreen } from '@/app/home/HomeScreen'
 import { LoginScreen } from '@/app/login/LoginScreen'
 import { useAuth } from '@/lib/auth'
@@ -45,7 +46,16 @@ export function AppRoutes() {
       <Route path="/login" element={<SignedOutOnly />} />
 
       <Route element={<RequireAuth />}>
-        <Route path="/" element={<HomeScreen />} />
+        {/* Les écrans de premier niveau, et eux seuls, sous la barre d'onglets.
+            E11-04 — BRAND-UI § 13 : un onglet ou un retour, jamais les deux.
+            Toute autre route est un écran de détail et porte un retour ;
+            `src/app/navigation.test.tsx` classe chaque chemin de ce fichier. */}
+        <Route element={<TabLayout />}>
+          <Route path="/" element={<HomeScreen />} />
+          <Route element={<RequireCapability capability="view_catalogue" />}>
+            <Route path="/products" element={<ProductListScreen />} />
+          </Route>
+        </Route>
 
         {/* Les écrans de l'éditeur. E1-01. Deux gardes emboîtés : le premier
             exige une session, le second le rôle. */}
@@ -88,12 +98,10 @@ export function AppRoutes() {
         </Route>
 
         {/* Le catalogue. E2-02. La liste se lit par tout le commerce
-            (`view_catalogue`) ; la fiche s'ouvre au seul `manage_product`. Le
-            garde de route masque l'écran ; ce qui protège l'écriture sont les
-            policies de `product`, de `variant` et du compartiment des photos. */}
-        <Route element={<RequireCapability capability="view_catalogue" />}>
-          <Route path="/products" element={<ProductListScreen />} />
-        </Route>
+            (`view_catalogue`) — elle est un onglet, plus haut ; la fiche s'ouvre
+            au seul `manage_product`. Le garde de route masque l'écran ; ce qui
+            protège l'écriture sont les policies de `product`, de `variant` et
+            du compartiment des photos. */}
         <Route element={<RequireCapability capability="manage_product" />}>
           <Route path="/products/new" element={<ProductFormScreen />} />
           <Route path="/products/:id" element={<ProductFormScreen />} />

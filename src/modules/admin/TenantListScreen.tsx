@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 
+import { BackLink } from '@/components/BackLink'
 import { formatDate, formatDateTime } from '@/lib/dates'
 import { listTenants, type TenantSummary } from '@/modules/admin/api'
 
@@ -91,6 +92,7 @@ export function TenantListScreen() {
     <main className="min-h-dvh px-4 py-6">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
         <div>
+          <BackLink to="/" label="Accueil" />
           <h1 className="text-title text-paper-900">Commerces</h1>
           <p className="mt-2 text-body text-paper-700">
             {state.status === 'loaded' && state.tenants.length > 0

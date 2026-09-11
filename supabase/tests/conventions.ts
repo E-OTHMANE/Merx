@@ -532,6 +532,161 @@ const CREATION_FORM_REQUIRED = `
   order by 1, 2
 `
 
+/*
+ * SPEC § 2.1, exception nommée (E2-04) — une fonction `security definer`
+ * s'exécute sous `postgres`, qui porte BYPASSRLS : tout ce qu'elle lit ou
+ * écrit dans une table métier n'est borné au commerce que par son propre
+ * corps. C'est le filtre à la main que la RÈGLE refuse ; il n'est admis
+ * qu'inscrit à `merx.rls_exception_registry`, avec le garde qui le tient.
+ *
+ * Trois volets, un par façon de manquer :
+ *   — non inscrite : la fonction est nommée, avec les tables qu'elle touche ;
+ *   — inscrite en `current_tenant`, sans `merx.current_tenant_id()` dans le
+ *     corps ;
+ *   — inscrite en `super_admin`, sans `merx.is_super_admin()` dans le corps.
+ *     La valeur du registre ne suffit pas : `super_admin` ne doit pas devenir
+ *     la case qu'on coche quand le filtre par commerce est gênant à écrire.
+ *
+ * « Touche une table métier » : le corps nomme `public.<table du registre de
+ * conventions>` après `from`, `join`, `update` ou `into`. Grossier comme le
+ * contrôle d'`audit_log` plus haut, et pour la même raison : il attrape la
+ * faute au moment où elle s'écrit, dans E4 ou E2-05. Les fonctions de `public`
+ * sont toutes en `search_path = ''`, donc toute table y est qualifiée.
+ */
+const RLS_EXCEPTIONS = `
+  with definer as (
+    select p.proname,
+           p.prosrc,
+           (select string_agg(r.table_name, ', ' order by r.table_name)
+              from merx.convention_registry r
+             where p.prosrc ~* ('(from|join|update|into)\\s+public\\."?' || r.table_name || '"?\\M'))
+             as tables
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.prosecdef
+  )
+  select 'public.' || d.proname as table_name,
+         format('security definer, touche %s hors RLS, absente de merx.rls_exception_registry '
+                '— SPEC § 2.1', d.tables) as detail
+  from definer d
+  where d.tables is not null
+    and not exists (select 1 from merx.rls_exception_registry e where e.function_name = d.proname)
+
+  union all
+
+  select 'public.' || d.proname as table_name,
+         'inscrite en current_tenant, mais son corps n''appelle pas merx.current_tenant_id() '
+         '— SPEC § 2.1' as detail
+  from definer d
+  join merx.rls_exception_registry e on e.function_name = d.proname
+  where e.guard = 'current_tenant' and d.prosrc !~ 'merx\\.current_tenant_id\\(\\)'
+
+  union all
+
+  select 'public.' || d.proname as table_name,
+         'inscrite en super_admin, mais son corps n''appelle pas merx.is_super_admin() '
+         '— SPEC § 2.1' as detail
+  from definer d
+  join merx.rls_exception_registry e on e.function_name = d.proname
+  where e.guard = 'super_admin' and d.prosrc !~ 'merx\\.is_super_admin\\(\\)'
+
+  order by 1, 2
+`
+
+/*
+ * L'inverse, et la justification. Une entrée dont la fonction a disparu, ou
+ * n'est plus `security definer`, parle d'une exception qui n'existe plus — et
+ * masquerait la prochaine fonction du même nom. Une justification vide est
+ * refusée par la contrainte `rls_exception_justified` ; ce volet tient le jour
+ * où la contrainte tomberait.
+ */
+const RLS_EXCEPTION_REGISTRY = `
+  select 'public.' || e.function_name as table_name,
+         'inscrite au registre des exceptions RLS, mais absente de public ou plus '
+         'security definer' as detail
+  from merx.rls_exception_registry e
+  where not exists (
+    select 1 from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname = 'public' and p.proname = e.function_name and p.prosecdef
+  )
+
+  union all
+
+  select 'public.' || e.function_name as table_name,
+         'justification vide au registre des exceptions RLS — SPEC § 2.1' as detail
+  from merx.rls_exception_registry e
+  where btrim(coalesce(e.justification, '')) = ''
+
+  order by 1, 2
+`
+
+/*
+ * RÈGLE M8-1, addendum E2-03 — une table inscrite à `merx.audited_registry`
+ * porte son trigger `merx.audit_row_change()`, AFTER, pour chaque ligne, sur
+ * INSERT, UPDATE et DELETE. Et l'inverse : un trigger posé à la main, hors de
+ * `merx.apply_audit()`, échapperait au registre que le harnais de test lit —
+ * même raison que pour l'ajout seul.
+ */
+const AUDITED_TRIGGERS = `
+  with registered as (
+    select r.table_name, c.oid
+    from merx.audited_registry r
+    left join pg_class c
+      on c.relname = r.table_name and c.relnamespace = 'public'::regnamespace and c.relkind = 'r'
+  ),
+  guarded as (
+    select tg.tgrelid
+    from pg_trigger tg
+    where not tg.tgisinternal
+      and tg.tgfoid = 'merx.audit_row_change()'::regprocedure
+      and (tg.tgtype & 1) <> 0
+      and (tg.tgtype & 2) = 0
+      and (tg.tgtype & 64) = 0
+      and (tg.tgtype & 4) <> 0
+      and (tg.tgtype & 8) <> 0
+      and (tg.tgtype & 16) <> 0
+  )
+  select r.table_name,
+         'inscrite au registre d''audit sans trigger merx.audit_row_change() AFTER INSERT, '
+         'UPDATE, DELETE — ses écritures échappent au journal, RÈGLE M8-1' as detail
+  from registered r
+  where r.oid is null or r.oid not in (select tgrelid from guarded)
+
+  union all
+
+  select c.relname as table_name,
+         'trigger merx.audit_row_change() sans inscription au registre — passer par '
+         'merx.apply_audit()' as detail
+  from pg_trigger tg
+  join pg_class c on c.oid = tg.tgrelid
+  where not tg.tgisinternal
+    and tg.tgfoid = 'merx.audit_row_change()'::regprocedure
+    and not exists (select 1 from merx.audited_registry r where r.table_name = c.relname)
+
+  order by 1, 2
+`
+
+/*
+ * RÈGLE M8-1 — « changement de prix d'achat ». Toute relation restreinte par
+ * `view_cost` porte un prix d'achat (SPEC § 3, RÈGLE de placement des coûts) ;
+ * chacune doit donc être journalisée sous `purchase_price_change`.
+ * `variant_cost` l'est depuis l'addendum E2-03 ; `goods_receipt_line_cost`
+ * (E8-03) sera nommée ici le jour où elle naîtra sans l'être.
+ */
+const AUDITED_COSTS = `
+  select c.table_name,
+         'relation restreinte par view_cost dont le prix d''achat n''est pas journalisé — '
+         'merx.apply_audit(..., ''purchase_price_change'', ...), RÈGLE M8-1' as detail
+  from merx.confidential_registry c
+  where c.capability = 'view_cost'
+    and not exists (
+      select 1 from merx.audited_registry a
+      where a.table_name = c.table_name and a.action = 'purchase_price_change'
+    )
+  order by 1
+`
+
 export const RULES = {
   'table non enregistrée': UNREGISTERED,
   'registre périmé': STALE_REGISTRY,
@@ -551,6 +706,10 @@ export const RULES = {
   'aucune référence à product hors de variant': PRODUCT_REFERENCES,
   'tenant_id par défaut du jeton': TENANT_DEFAULT,
   'seul le nom est obligatoire à la création': CREATION_FORM_REQUIRED,
+  'security definer inscrite et gardée': RLS_EXCEPTIONS,
+  'registre des exceptions RLS tenu': RLS_EXCEPTION_REGISTRY,
+  'tables auditées gardées': AUDITED_TRIGGERS,
+  'prix d\'achat journalisés': AUDITED_COSTS,
 } as const
 
 export type RuleName = keyof typeof RULES

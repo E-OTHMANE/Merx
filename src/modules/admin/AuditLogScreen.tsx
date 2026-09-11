@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
+import { BackLink } from '@/components/BackLink'
 import { formatDateTime } from '@/lib/dates'
 import { ACTION_LABELS, listAuditEntries, type AuditEntry } from '@/modules/admin/audit'
 import { listUsers, type Employee } from '@/modules/admin/users'
@@ -99,6 +100,7 @@ export function AuditLogScreen() {
     <main className="min-h-dvh px-4 py-6">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
         <div>
+          <BackLink to="/" label="Accueil" />
           <h1 className="text-title text-paper-900">Journal</h1>
           <p className="mt-2 text-body text-paper-700">
             Les actions qui engagent l’argent : prix forcés, documents annulés, plafonds dépassés,

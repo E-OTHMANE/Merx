@@ -39,14 +39,6 @@ export interface Product {
   piecesPerCarton: number | null
 }
 
-/** Un produit, tel que la liste le montre. */
-export interface ProductSummary {
-  id: string
-  name: string
-  code: string | null
-  photoPath: string | null
-}
-
 /** Ce que le formulaire manipule : du texte, et rien d'autre. */
 export interface ProductDraft {
   name: string
@@ -211,28 +203,6 @@ function productOf(row: ProductRow): Product {
     unitLabel: row.unit_label,
     piecesPerCarton: row.pieces_per_carton,
   }
-}
-
-/*
- * Les produits non supprimés. Le filtre porte sur `deleted_at`, pas sur le
- * commerce : c'est la RLS qui borne au commerce. Un produit supprimé quitte la
- * liste mais pas la base — l'historique le relira par son identifiant.
- */
-export async function listProducts(): Promise<ProductSummary[]> {
-  const { data, error } = await supabase
-    .from('product')
-    .select('id, name_fr, code, photo_url')
-    .is('deleted_at', null)
-    .order('name_fr')
-
-  if (error !== null) throw new Error(error.message)
-
-  return (data as Array<Pick<ProductRow, 'id' | 'name_fr' | 'code' | 'photo_url'>>).map((row) => ({
-    id: row.id,
-    name: row.name_fr,
-    code: row.code,
-    photoPath: row.photo_url,
-  }))
 }
 
 /** Un produit non supprimé, ou `null` s'il n'existe pas ou plus. */

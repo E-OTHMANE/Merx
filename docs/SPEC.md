@@ -48,6 +48,14 @@ Une base, isolation par `tenant_id`.
 
 **RÈGLE** — Toute table métier porte `tenant_id NOT NULL`, avec Row-Level Security. Aucune requête applicative ne filtre le tenant à la main.
 
+**Exception nommée — la recherche produit (E2-04).** `public.search_products()` est `security definer` et filtre le commerce elle-même, sur `merx.current_tenant_id()`, en tête de son corps. Ce filtre est le **seul garde d'isolation** de ce chemin : aucune policy ne s'y applique.
+
+La raison est mesurée, pas supposée. Sous RLS, Postgres n'accepte comme condition d'index que des prédicats `leakproof` — qui ne peuvent rien laisser fuir d'une ligne que la policy aurait écartée. `like`, `lower`, `unaccent` et les opérateurs de `pg_trgm` ne le sont pas, et `postgres` n'étant pas superutilisateur, rien ne peut être déclaré tel. Sur le stack local, cinq commerces de 10 000 produits, « creme » cherché sous le jeton d'un employé, les deux chemins rendant les mêmes 1 251 lignes : sous `authenticated`, **Seq Scan de toute la table en 417 à 472 ms** (sous-chaîne) et 517 ms (similarité), temps qui croît avec le nombre de commerces ; hors RLS, par l'index trigramme, **8,6 à 9,7 ms**. Sans l'exception, l'index existerait et ne servirait jamais.
+
+Une première mesure, 139 ms contre 2,4 ms, figurait ici. Elle avait été prise sur un texte dont l'accent s'était abîmé en transit : la recherche indexée n'y trouvait aucune ligne, et les 2,4 ms mesuraient une recherche vide. Elle est remplacée, et la raison est écrite pour qu'on ne la reprenne pas.
+
+Une exception n'est pas un précédent. **RÈGLE** — toute fonction `security definer` de `public` qui lit ou écrit une table métier s'inscrit à `merx.rls_exception_registry` par `merx.register_rls_exception()`, avec son garde et sa justification en texte, que la base refuse vide. Le garde vaut `current_tenant` — le corps filtre sur `merx.current_tenant_id()` — ou `super_admin` — le corps exige `merx.is_super_admin()`, pour ce qui crée un commerce et ne peut donc pas en avoir un (`create_tenant`). `supabase/tests/conventions.ts` signale par son nom toute fonction non inscrite, et toute fonction inscrite dont le corps, lu dans `pg_proc`, n'appelle pas le garde déclaré : inscrire `super_admin` sans le garde ne passe pas. Le registre compte cinq entrées à la fin d'E2-04 : `create_tenant`, `create_worker`, `set_user_active`, `register_device`, `search_products`.
+
 ### 2.2 Noyau + packs
 
 **Aucun pack en V1.** Le noyau seul couvre le métier cosmétique.
@@ -258,6 +266,7 @@ Une clé étrangère ne passe pas par la RLS : Postgres vérifie l'existence de 
 - Une ligne par `variant`, au plus. Relation **restreinte** par la capacité `view_cost` — RÈGLE de placement des coûts, § 3. Un `worker` n'en lit aucune ligne, et `variant` ne porte pas la colonne : le nom `cost_price` n'apparaît dans aucune réponse qui lui est faite.
 - Séparée de `variant` pour cette seule raison. Sans la contrainte de confidentialité, la colonne serait restée sur `variant`.
 - Pas de coût connu, pas de ligne : effacer le coût supprime la ligne. Un seul garde, la policy `view_cost`, en lecture comme en écriture ; pas de restriction d'écriture en plus, qui refuserait l'employé avec le même `42501` sans qu'aucun test puisse la distinguer (règle E1-02). Arbitré en E2-03.
+- Chaque écriture — création de la ligne, modification du prix, suppression — écrit son entrée `purchase_price_change` dans `audit_log` (RÈGLE M8-1), par trigger : l'écriture passe par PostgREST sans fonction intermédiaire, un contrôle applicatif se contournerait. L'entrée retient `variant_id` et `cost_price`, avant et après ; une mise à jour qui ne les change pas n'écrit rien. Une écriture sans commerce ni auteur dans le jeton est refusée (§ 9, M8-1). Addendum E2-03, à la clôture d'E2-04.
 
 `price_break`
 `id, tenant_id, variant_id, min_qty, unit_price`
@@ -282,6 +291,21 @@ Une clé étrangère ne passe pas par la RLS : Postgres vérifie l'existence de 
 - **Code 128 émis par le système**, encodant `variant.sku`, pour tout ce qui arrive sans code.
 
 La recherche interroge les deux indifféremment.
+
+**Recherche** (E2-04, point de rupture n° 4). Une seule fonction, `public.search_products(q)`, sert la liste et servira la vente. Elle est `security definer` : c'est l'exception nommée de § 2.1, et elle rend des variantes, sans aucun coût (§ 3).
+
+- **Champs** : nom français, nom arabe, `code` sur le produit ; `sku`, `barcode` sur la variante. Chacun est stocké sous sa forme comparable, en colonne générée (`search_name`, `search_code`, `search_sku`, `search_barcode`) : minuscules, sans accents, arabe sans voyelles brèves ni tatweel, formes d'alif ramenées à ا, ى → ي, ة → ه, ؤ → و, ئ → ي, chiffres arabes ramenés aux chiffres latins (`merx.search_fold()`). Stocké et non recalculé : un pliage coûte 19 µs, et le classement en demandait cinq par candidat — 582 ms pour « creme ».
+- **Un mot est trouvé** en sous-chaîne (« 451 » trouve « 4512 »), ou à une faute près : similarité par mot `pg_trgm` ≥ **0,4**, pour un mot d'au moins trois caractères qui n'est pas fait que de chiffres. Tous les mots de la requête doivent être trouvés.
+- **Le seuil est 0,4 — ni le défaut de `pg_trgm` (0,6), ni 0,5.** Mesuré en E2-04 : l'omission d'une lettre dans un mot court vaut exactement 0,40 — « crme » pour « creme », « شمبو » pour « شامبو », « صبون » pour « صابون », « عطار » pour « عطر ». C'est la faute courante en arabe, où l'on saute un ا ou un ي. À 0,5, aucun de ces mots ne trouve rien, et le critère « tolérante aux fautes » d'E2-04 n'est plus rempli. Le prix est du bruit : « savn » ramène 1 013 candidats à 0,4 contre 474 à 0,5. Il est borné — les résultats trouvés par faute seule sont classés après tout résultat exact ou partiel, et la liste s'arrête à 50. **Remonter ce seuil pour réduire le bruit fait perdre ces cas-là, pas le bruit seulement.** Hors d'atteinte à 0,4 comme à 0,5 : « sabon » pour « savon » (0,33), « مسكرا » pour « ماسكارا » (0,17).
+- **Un mot fait seulement de chiffres** se cherche en sous-chaîne, jamais à une faute près. Mesuré : « 6110000 » coûtait 1 105 ms, chaque code-barres commençant par 611 lui ressemblant en trigrammes ; et « 4521 » vaut 0,40 face à « 4512 » — il le trouverait, ce qui n'est pas une référence partielle, c'est une autre référence.
+- **Classement** : référence, SKU ou code-barres égal à la requête ; référence ou SKU qui commence par elle ; qui la contient ; nom qui contient chaque mot ; code-barres qui la contient ; le reste, à une faute près. Puis la similarité, puis le nom. 50 résultats au plus.
+- **Requête vide** : les 50 premières variantes par ordre alphabétique. **Requête d'un ou deux caractères** : cherchée en sous-chaîne — un trigramme n'en extrait rien, la recherche passe alors par l'index du commerce. « 45 » trouve.
+- **Performance** : moins de 300 ms sur 10 000 références, et surtout l'index utilisé — Bitmap Index Scan sur `product_search` et `variant_search` à partir de trois caractères, index du commerce en dessous, aucun Seq Scan. `supabase/tests/product-search.test.ts` le vérifie sur le plan d'exécution du vrai appel, parmi 40 000 produits d'autres commerces : un chronomètre seul passe même sans index.
+- **Ce qui garde l'index utilisé**, trois décisions mesurées en E2-04, chacune tombée d'une assertion de plan rouge :
+  - la fonction est en plpgsql, `plan_cache_mode = force_custom_plan` : planifiée en `language sql`, elle ignorait la requête, estimait mal le motif, et lisait tout le commerce sur la branche produit (192 ms pour cette seule branche) ;
+  - les index portent `tenant_id` avec le texte (`btree_gin`) : avec un index trigramme seul, les requêtes larges (« creme ») repassent par l'index du commerce plus un filtre. Le sabotage qui le défait est d'abord resté vert sur une exécution où le plan tombait du bon côté ; l'assertion relit désormais le plan d'une session chaude, et il tombe. Avec ou sans `tenant_id` dans l'index, une recherche lit les listes de trigrammes de tous les commerces : à remesurer à plusieurs centaines de commerces ;
+  - les index sont en **`fastupdate = off`** : par défaut, GIN met les insertions en liste d'attente jusqu'au vacuum, et le planificateur écarte alors l'index. Mesuré : 12 requêtes sur 12 par l'index sur des index propres, **3 sur 12 juste après l'insertion de 10 000 produits**, 12 sur 12 avec `fastupdate = off`. Un import (E2-05) insère en masse ; **remettre le réglage par défaut fait perdre l'index après chaque import, sans erreur visible.**
+- Hors-ligne, la recherche tournera sur l'appareil (E9) : les colonnes générées se synchronisent, la manière de les chercher en SQLite reste à écrire.
 
 **Écrans.** Liste produits, fiche produit, grille de prix, import CSV, génération d'étiquettes.
 
@@ -470,7 +494,7 @@ Lecture seule, aucune entité. Doit fonctionner **hors-ligne**, calculé depuis 
 
 **RÈGLE M8-1** — Écrivent obligatoirement dans `audit_log` : forçage de prix, annulation de document, dépassement de plafond, validation d'écart, modification de rôle, changement de prix d'achat.
 
-Ces six actions sont l'enum `public.audit_action` — `price_override`, `document_cancellation`, `credit_limit_override`, `stock_variance_approval`, `role_change`, `purchase_price_change`. Aucune n'est implémentée en E1-04 : elles arrivent avec leurs modules et emploient ces étiquettes-là.
+Ces six actions sont l'enum `public.audit_action` — `price_override`, `document_cancellation`, `credit_limit_override`, `stock_variance_approval`, `role_change`, `purchase_price_change`. Aucune n'est implémentée en E1-04 : elles arrivent avec leurs modules et emploient ces étiquettes-là. `purchase_price_change` est branchée sur `variant_cost` depuis la clôture d'E2-04 (addendum E2-03), par un trigger que pose `merx.apply_audit()` — la même forme servira `goods_receipt_line_cost` en E8-03, et `supabase/tests/conventions.ts` refuse toute relation restreinte par `view_cost` qui n'est pas journalisée. **Hors session, une écriture journalisée est refusée** : sans commerce ni auteur dans le jeton, `merx.log_audit()` lève, et l'écriture avec — `service_role` et `postgres` compris. Seul le harnais de test suspend les triggers, pour peupler et ranger.
 
 **RÈGLE M8-2** — `audit_log` est en ajout seul, pour tous : ni UPDATE, ni DELETE, ni TRUNCATE, `owner` compris. L'unique chemin d'écriture est `merx.log_audit()`, que l'application ne peut pas appeler — `authenticated` n'a ni le privilège d'INSERT sur la table ni celui d'exécuter la fonction. Le commerce et l'auteur y viennent du jeton signé, jamais des paramètres : un journal dont l'appelant choisit la signature ne prouve rien.
 

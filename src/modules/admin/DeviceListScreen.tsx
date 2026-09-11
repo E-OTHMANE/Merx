@@ -20,6 +20,7 @@
 
 import { useCallback, useEffect, useState } from 'react'
 
+import { BackLink } from '@/components/BackLink'
 import { formatDateTime } from '@/lib/dates'
 import { listDevices, type Device } from '@/modules/admin/devices'
 
@@ -100,6 +101,7 @@ export function DeviceListScreen() {
     <main className="min-h-dvh px-4 py-6">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
         <div>
+          <BackLink to="/" label="Accueil" />
           <h1 className="text-title text-paper-900">Appareils</h1>
           <p className="mt-2 text-body text-paper-700">
             Chaque appareil numérote ses bons avec sa propre lettre : BL-A-0001, BL-B-0001.

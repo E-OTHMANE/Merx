@@ -26,6 +26,7 @@
 import { useCallback, useEffect, useId, useState, type FormEvent } from 'react'
 import { Link, useParams } from 'react-router-dom'
 
+import { BackLink } from '@/components/BackLink'
 import { Field } from '@/components/Field'
 import { Button } from '@/components/ui/button'
 import { useCan } from '@/lib/auth'
@@ -178,6 +179,7 @@ function PriceGrid({ productId }: { productId: string }) {
     <main className="min-h-dvh px-4 pt-6">
       <div className="mx-auto flex w-full max-w-md flex-col gap-6 pb-6">
         <div>
+          <BackLink to={`/products/${productId}`} label="Fiche produit" />
           <h1 className="text-title text-paper-900">Grille de prix</h1>
           {loaded.status === 'ready' && (
             <p className="mt-2 text-body text-paper-700">{loaded.saved.productName}</p>
@@ -314,10 +316,6 @@ function PriceGrid({ productId }: { productId: string }) {
                 </Button>
               </div>
             </form>
-
-            <Link to={`/products/${productId}`} className={SECONDARY}>
-              Retour à la fiche
-            </Link>
           </>
         )}
       </div>
