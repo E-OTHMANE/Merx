@@ -15,6 +15,25 @@
 import { supabase } from '@/lib/supabase'
 import { installationId } from '@/lib/device/installation'
 
+/*
+ * La lettre, retenue sur l'appareil. E2-06.
+ *
+ * Elle est attribuée par la base, une fois, et ne change jamais (E1-03). Elle
+ * est retenue ici parce qu'un SKU s'engendre au comptoir, parfois sans réseau
+ * (SPEC § 2.5) : la redemander au serveur reviendrait à ne pas pouvoir imprimer
+ * d'étiquette hors ligne, ce que RÈGLE M1-5 attend précisément de faire.
+ *
+ * Absente — appareil jamais enregistré en ligne —, rien ne s'engendre, et
+ * l'écran d'étiquettes le dit sans rien réclamer (SPEC § 2.6).
+ */
+export const DEVICE_PREFIX_KEY = 'merx.device-prefix'
+
+/** La lettre de cet appareil, ou `null` s'il ne s'est jamais présenté. */
+export function cachedDevicePrefix(): string | null {
+  const stored = window.localStorage.getItem(DEVICE_PREFIX_KEY)
+  return stored !== null && /^[A-Z]$/.test(stored) ? stored : null
+}
+
 /** L'appareil, tel que le serveur le rend une fois enregistré. */
 export interface RegisteredDevice {
   id: string
@@ -55,6 +74,8 @@ export async function registerDevice(): Promise<RegisteredDevice> {
    */
   const row = (data as DeviceRow[] | null)?.[0]
   if (row === undefined) throw new Error('Réponse inattendue du serveur.')
+
+  window.localStorage.setItem(DEVICE_PREFIX_KEY, row.prefix)
 
   return {
     id: row.id,

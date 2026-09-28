@@ -38,6 +38,7 @@ import {
 import { Link, useNavigate, useParams } from 'react-router-dom'
 
 import { BackLink } from '@/components/BackLink'
+import { ScanButton } from '@/lib/barcode'
 import { Field } from '@/components/Field'
 import { Button } from '@/components/ui/button'
 import { useCan } from '@/lib/auth'
@@ -50,6 +51,7 @@ import {
   uploadPhoto,
 } from '@/modules/catalogue/photo'
 import type { ProductListNavigation } from '@/modules/catalogue/ProductListScreen'
+import { listVariants, setBarcode } from '@/modules/catalogue/variants'
 import {
   EMPTY_DRAFT,
   canSave,
@@ -73,7 +75,19 @@ type Loaded =
   | { status: 'loading' }
   | { status: 'error'; message: string }
   | { status: 'missing' }
-  | { status: 'ready'; saved: ProductDraft; storedPath: string | null }
+  | {
+      status: 'ready'
+      saved: ProductDraft
+      storedPath: string | null
+      /*
+       * La variante par défaut porte l'identifiant de son produit (E2-01), et
+       * c'est elle qui porte le code-barres. On garde tout de même l'identifiant
+       * lu : le jour où le pack de déclinaisons existe, la fiche en montrera
+       * plusieurs, et cette ligne-ci n'aura pas à changer d'avis.
+       */
+      defaultVariantId: string
+      barcode: string
+    }
 
 const SECONDARY =
   'flex h-button w-full items-center justify-center rounded-button border border-paper-300 bg-white text-body text-ink-700'
@@ -111,11 +125,27 @@ function ProductForm({ productId }: { productId: string | null }) {
   const brandId = useId()
   const unitId = useId()
   const piecesId = useId()
+  const barcodeId = useId()
 
   const [loaded, setLoaded] = useState<Loaded>(
-    creating ? { status: 'ready', saved: EMPTY_DRAFT, storedPath: null } : { status: 'loading' },
+    creating
+      ? {
+          status: 'ready',
+          saved: EMPTY_DRAFT,
+          storedPath: null,
+          defaultVariantId: '',
+          barcode: '',
+        }
+      : { status: 'loading' },
   )
   const [draft, setDraft] = useState<ProductDraft>(EMPTY_DRAFT)
+  /*
+   * Le code-barres vit sur la variante, pas sur le produit (SPEC § 2.3) : il a
+   * donc son état à lui, et il s'enregistre par sa propre écriture. Le mêler à
+   * `ProductDraft` l'enverrait à `product`, où la colonne n'existe pas — et où
+   * elle n'a rien à faire.
+   */
+  const [barcode, setBarcodeDraft] = useState('')
   const [photo, setPhoto] = useState<Photo>({ status: 'none' })
   const [categories, setCategories] = useState<Category[]>([])
   const [saving, setSaving] = useState(false)
@@ -150,7 +180,23 @@ function ProductForm({ productId }: { productId: string | null }) {
         }
         const saved = draftOf(product)
         setDraft(saved)
-        setLoaded({ status: 'ready', saved, storedPath: product.photoPath })
+
+        /*
+         * Les variantes, en silence. Un échec de lecture laisse le champ vide,
+         * et un champ vide inchangé n'écrit rien : le code-barres enregistré
+         * n'est pas effacé pour autant (SPEC § 2.6).
+         */
+        const variants = await listVariants(product.id).catch(() => [])
+        const main = variants.find((variant) => variant.isDefault) ?? variants[0]
+        const currentBarcode = main?.barcode ?? ''
+        setBarcodeDraft(currentBarcode)
+        setLoaded({
+          status: 'ready',
+          saved,
+          storedPath: product.photoPath,
+          defaultVariantId: main?.id ?? product.id,
+          barcode: currentBarcode,
+        })
 
         const path = product.photoPath
         if (path === null) return
@@ -223,13 +269,35 @@ function ProductForm({ productId }: { productId: string | null }) {
       }
     }
 
+    /*
+     * Le code-barres suit la création, comme la photo : le produit est
+     * enregistré d'abord. Un code déjà pris par un autre produit ne fait pas
+     * perdre la saisie — le produit reste, et le message dit ce qui manque.
+     */
+    if (barcode.trim() !== '') {
+      try {
+        // La variante par défaut porte l'identifiant de son produit (E2-01).
+        await setBarcode(id, barcode)
+      } catch (error) {
+        const why = error instanceof Error ? error.message : ''
+        notice = `« ${name} » enregistré, sans son code-barres. ${why}`.trim()
+      }
+    }
+
     setDraft(EMPTY_DRAFT)
+    setBarcodeDraft('')
     setPhoto({ status: 'none' })
     setMessage(notice)
     document.getElementById(nameId)?.focus()
   }
 
-  const save = async (id: string, saved: ProductDraft, storedPath: string | null): Promise<void> => {
+  const save = async (
+    id: string,
+    saved: ProductDraft,
+    storedPath: string | null,
+    variantId: string,
+    savedBarcode: string,
+  ): Promise<void> => {
     const changes: ProductChanges = changesBetween(saved, draft)
 
     let uploadedPath: string | null = null
@@ -248,6 +316,9 @@ function ProductForm({ productId }: { productId: string | null }) {
     }
     if ('photo_url' in changes && storedPath !== null) void removePhoto(storedPath)
 
+    // Sa propre écriture, sur sa propre table. Inchangé, rien ne part (§ 2.5).
+    if (barcode.trim() !== savedBarcode.trim()) await setBarcode(variantId, barcode)
+
     const state: ProductListNavigation = { saved: draft.name.trim() }
     navigate('/products', { replace: true, state })
   }
@@ -261,7 +332,14 @@ function ProductForm({ productId }: { productId: string | null }) {
     setMessage(null)
     try {
       if (productId === null) await create()
-      else await save(productId, loaded.saved, loaded.storedPath)
+      else
+        await save(
+          productId,
+          loaded.saved,
+          loaded.storedPath,
+          loaded.defaultVariantId,
+          loaded.barcode,
+        )
     } catch (error: unknown) {
       setFailure(error instanceof Error ? error.message : 'Enregistrement impossible.')
     } finally {
@@ -392,6 +470,36 @@ function ProductForm({ productId }: { productId: string | null }) {
                 className="tabular"
               />
 
+              {/*
+                * Le code-barres. Voie principale de la RÈGLE M1-5 : en
+                * cosmétique, les marques en portent un fiable, et le scanner
+                * vaut mieux que le taper — treize chiffres se saisissent faux.
+                * Le champ reste saisissable à la main dans tous les cas : c'est
+                * aussi ce qui fait marcher la douchette du comptoir, qui tape
+                * comme un clavier. Le bouton, lui, ne s'affiche que si la
+                * caméra est une voie possible (SPEC § 2.6).
+                */}
+              <div className="flex flex-col gap-2">
+                <Field
+                  id={barcodeId}
+                  label="Code-barres"
+                  value={barcode}
+                  onChange={(value) => {
+                    setMessage(null)
+                    setBarcodeDraft(value)
+                  }}
+                  inputMode="numeric"
+                  className="tabular"
+                />
+                <ScanButton
+                  label="Scanner le code-barres"
+                  onScan={(code) => {
+                    setMessage(null)
+                    setBarcodeDraft(code)
+                  }}
+                />
+              </div>
+
               <Field
                 id={nameArId}
                 label="Nom en arabe"
@@ -475,6 +583,14 @@ function ProductForm({ productId }: { productId: string | null }) {
             {!creating && canEditPrices && (
               <Link to={`/products/${productId}/prices`} className={SECONDARY}>
                 Grille de prix
+              </Link>
+            )}
+
+            {/* E2-06. L'écran d'étiquettes suit `manage_product`, comme cette
+                fiche : imprimer peut attribuer un code au produit, et le figer. */}
+            {!creating && (
+              <Link to={`/products/${productId}/labels`} className={SECONDARY}>
+                Étiquettes
               </Link>
             )}
 

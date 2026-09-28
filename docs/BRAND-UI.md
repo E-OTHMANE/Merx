@@ -331,7 +331,7 @@ Une seule règle, pour qu'aucune destination n'ait à chercher sa place.
 | Écran de détail | Parent |
 |---|---|
 | Nouveau produit, fiche produit | Produits |
-| Grille de prix | Fiche produit |
+| Grille de prix, étiquettes | Fiche produit |
 | Employés, appareils, journal, paramètres, commerces | Accueil |
 | Nouvel employé | Employés |
 | Nouveau commerce | Commerces |

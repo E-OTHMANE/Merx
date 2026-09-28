@@ -26,7 +26,13 @@ import {
   TenantListScreen,
   UserListScreen,
 } from '@/modules/admin'
-import { PriceGridScreen, ProductFormScreen, ProductListScreen } from '@/modules/catalogue'
+import {
+  ImportScreen,
+  LabelSheetScreen,
+  PriceGridScreen,
+  ProductFormScreen,
+  ProductListScreen,
+} from '@/modules/catalogue'
 
 /**
  * Le pendant du garde : un utilisateur déjà connecté n'a rien à faire sur le
@@ -103,8 +109,19 @@ export function AppRoutes() {
             protège l'écriture sont les policies de `product`, de `variant` et
             du compartiment des photos. */}
         <Route element={<RequireCapability capability="manage_product" />}>
+          {/* L'import du catalogue. E2-05, point de rupture n° 1 (SPEC § 10).
+              Chemin statique avant la fiche : `/products/import` n'est pas un
+              identifiant de produit. Le garde de route masque l'écran ; ce qui
+              protège sont le garde de `import_products()` et, ligne par ligne,
+              les policies d'écriture du catalogue. */}
+          <Route path="/products/import" element={<ImportScreen />} />
           <Route path="/products/new" element={<ProductFormScreen />} />
           <Route path="/products/:id" element={<ProductFormScreen />} />
+          {/* Les étiquettes. E2-06, RÈGLE M1-5. Sous `manage_product` et non
+              sous `view_catalogue` : imprimer peut attribuer un SKU au produit
+              et le figer — c'est une modification du catalogue, pas une
+              consultation. */}
+          <Route path="/products/:id/labels" element={<LabelSheetScreen />} />
         </Route>
 
         {/* La grille de prix. E2-03. « Modifier la grille de prix »

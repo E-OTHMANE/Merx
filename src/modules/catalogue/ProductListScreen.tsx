@@ -402,12 +402,23 @@ export function ProductListScreen() {
         )}
 
         {canManage && (
-          <Link
-            to="/products/new"
-            className="flex h-button items-center justify-center rounded-button bg-ink-600 text-body text-white hover:bg-ink-700 active:bg-ink-800"
-          >
-            Ajouter un produit
-          </Link>
+          <div className="flex flex-col gap-2">
+            <Link
+              to="/products/new"
+              className="flex h-button items-center justify-center rounded-button bg-ink-600 text-body text-white hover:bg-ink-700 active:bg-ink-800"
+            >
+              Ajouter un produit
+            </Link>
+            {/* E2-05, point de rupture n° 1 : un commerçant arrive avec un
+                fichier, pas avec 2 000 saisies. Secondaire, parce que l'ajout
+                d'un produit reste le geste quotidien (BRAND-UI § 8). */}
+            <Link
+              to="/products/import"
+              className="flex h-button items-center justify-center rounded-button border border-paper-300 bg-white text-body text-ink-700"
+            >
+              Importer un fichier
+            </Link>
+          </div>
         )}
       </div>
     </main>

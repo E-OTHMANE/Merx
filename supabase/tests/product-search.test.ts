@@ -34,6 +34,7 @@ import { Client } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { actAs, tokenFor } from './isolation'
+import { BATTERY, indexUsage, planOf } from './search-plan'
 import { createAuthUser, deleteAuthUser, rest, sessionFor } from './rest'
 
 const CONNECTION_STRING =
@@ -313,6 +314,12 @@ afterAll(async () => {
     await client.query('delete from public.product where tenant_id = any($1::uuid[])', [all])
     await client.query('delete from public.app_user where tenant_id = any($1::uuid[])', [all])
     await client.query('delete from public.tenant where id = any($1::uuid[])', [all])
+    /*
+     * 50 000 produits supprimés laissent autant de pages mortes, et la suite
+     * base tourne en série : les fichiers suivants les reliraient à chaque
+     * lecture large, jusqu'à dépasser leur délai (constaté en E2-05).
+     */
+    await client.query('vacuum (analyze) public.product, public.variant, public.price_break')
   }
   for (const role of ['owner', 'worker', 'stranger'] as const) {
     if (authUsers[role] !== undefined) await deleteAuthUser(authUsers[role])
@@ -671,94 +678,6 @@ describe('aucun coût dans la réponse — SPEC § 3', () => {
 /* Performance                                                                 */
 /* -------------------------------------------------------------------------- */
 
-/*
- * La batterie : le pire cas (« creme », des milliers de candidats), les fautes,
- * l'arabe, les références, les codes-barres, un et deux caractères, la requête
- * vide, et ce qui ne trouve rien.
- */
-const BATTERY = [
-  '',
-  'creme',
-  'crème',
-  'crme hydratante',
-  'shampoing',
-  '451',
-  '4512',
-  'NIV-45',
-  '6110000',
-  'كريم',
-  'اركان',
-  '٤٥١',
-  'nivea creme 200',
-  'a',
-  '45',
-  'zzqx',
-]
-
-/* De quoi dépasser les cinq plans personnalisés du cache, avec des requêtes variées. */
-const WARM_UP = ['savon', 'nivea', '4512', 'argan', 'x', 'huile', 'rose', 'كريم']
-
-interface PlanNode {
-  'Node Type': string
-  'Relation Name'?: string
-  'Index Name'?: string
-  'Index Cond'?: string
-  'Recheck Cond'?: string
-  Plans?: PlanNode[]
-}
-
-function nodesOf(node: PlanNode): PlanNode[] {
-  return [node, ...(node.Plans ?? []).flatMap(nodesOf)]
-}
-
-/**
- * Le plan de la requête que `search_products()` exécute, sous le jeton d'un
- * employé, lu par `auto_explain` sur l'appel réel.
- */
-async function planOf(q: string): Promise<PlanNode[]> {
-  const notices: string[] = []
-  const listen = (notice: { message?: string | undefined }): void => {
-    notices.push(notice.message ?? '')
-  }
-  client.on('notice', listen)
-
-  await client.query('begin')
-  try {
-    /*
-     * Le cache de plans d'une fonction plpgsql vit le temps de la session, et
-     * bascule sur un plan générique après cinq appels. Une connexion PostgREST
-     * sert des centaines de requêtes : le plan lu doit être celui d'une session
-     * chaude, pas celui du premier appel.
-     */
-    await actAs(client, tokenFor(tenants.own, 'worker'))
-    for (const warm of WARM_UP) {
-      await client.query('select count(*) from public.search_products($1)', [warm])
-    }
-    await client.query('reset role')
-
-    await client.query('set local auto_explain.log_min_duration = 0')
-    await client.query('set local auto_explain.log_nested_statements = on')
-    await client.query('set local auto_explain.log_level = notice')
-    await client.query('set local auto_explain.log_format = json')
-    await actAs(client, tokenFor(tenants.own, 'worker'))
-    await client.query('select count(*) from public.search_products($1)', [q])
-  } finally {
-    await client.query('rollback')
-    client.off('notice', listen)
-  }
-
-  const plans = notices.filter((m) => m.includes('with catalogue as not materialized'))
-  if (plans.length !== 1) {
-    throw new Error(
-      `auto_explain a rendu ${plans.length} plan(s) de la requête de recherche pour « ${q} », ` +
-        `1 attendu (${notices.length} notices en tout). Sans plan, rien ne prouve que l'index ` +
-        'sert : le test échoue plutôt que de mesurer un plan reconstruit à côté.',
-    )
-  }
-  const plan = JSON.parse(plans[0]!.slice(plans[0]!.indexOf('{'))) as { Plan: PlanNode }
-  return nodesOf(plan.Plan)
-}
-
 describe('performance — 10 000 références, parmi 40 000 d’autres commerces', () => {
   it('le jeu est bien en place', async () => {
     const { rows } = await client.query<{ tenant_id: string; live: string }>(
@@ -773,33 +692,22 @@ describe('performance — 10 000 références, parmi 40 000 d’autres commerces
   })
 
   it.each(BATTERY)('« %s » : l’index sert, aucun Seq Scan', async (q) => {
-    const nodes = await planOf(q)
+    const nodes = await planOf(client, tenants.own, q)
     const pivot = await one<{ length: number | null }>(
       'select length(merx.search_pivot($1)) as length',
       [q],
     )
 
-    const seqScans = nodes.filter(
-      (n) =>
-        n['Node Type'] === 'Seq Scan' &&
-        (n['Relation Name'] === 'product' || n['Relation Name'] === 'variant'),
-    )
-    expect(seqScans, 'Seq Scan sur le catalogue').toEqual([])
+    const usage = indexUsage(nodes)
+    expect(usage.seqScans, 'Seq Scan sur le catalogue').toEqual([])
 
     if ((pivot.length ?? 0) >= 3) {
-      const trigram = nodes
-        .filter((n) => n['Node Type'] === 'Bitmap Index Scan')
-        .map((n) => n['Index Name'])
-      expect(trigram, 'index trigramme du produit').toContain('product_search')
-      expect(trigram, 'index trigramme de la variante').toContain('variant_search')
+      expect(usage.trigram, 'index trigramme du produit').toContain('product_search')
+      expect(usage.trigram, 'index trigramme de la variante').toContain('variant_search')
     } else {
       // Un ou deux caractères, ou rien : un trigramme n'en extrait rien. Le
       // commerce passe alors par un index qui porte `tenant_id`.
-      const tenantIndex = nodes.filter(
-        (n) =>
-          n['Index Name'] !== undefined && (n['Index Cond'] ?? '').includes('tenant_id'),
-      )
-      expect(tenantIndex.length, 'index du commerce').toBeGreaterThan(0)
+      expect(usage.tenantIndexes, 'index du commerce').toBeGreaterThan(0)
     }
   })
 

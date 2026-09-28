@@ -115,6 +115,10 @@ Module code stays inside its own folder. A module may import from `src/lib` and 
 
 **Any column the isolation sweep must populate needs a machine-readable domain** — an enum or a foreign key, never a `check` constraint with a pattern. `supabase/tests/isolation.ts` derives its values from the Postgres catalogue: it can read an enum's labels and follow a foreign key, but a regex is opaque to it. A column it cannot fill drops its table out of the sweep. This is why `device.prefix` is `public.device_prefix`, not `text check (prefix ~ '^[A-Z]$')`.
 
+**`session_replication_role = replica` disables foreign keys too, not just triggers.** Cascades stop firing, and the rows that should have followed stay behind — silently, and for good. A test-harness cleanup that deleted products under it left 283 000 orphan variants across runs in E2-05: three unrelated files then timed out on wide reads, and the search plan flipped, none of it pointing at the cause. Suspend triggers only around the writes that actually need it — an append-only table, an audited one — never around a delete whose cascade is doing the work.
+
+**Match on a column you store, not on an expression you compute.** Under RLS an index condition must be `leakproof`; `lower(x) = any(...)` is not, so the index is skipped and every lookup reads the whole table — measured in E2-05 at 400 ms per 50-row batch, 71 s for a 2 000-line import, 7 s once the key was a stored generated column (`product.code_key`). Equality on a column (`texteq`) is leakproof, so the stored form is the way out — and the stored form must fold *exactly* what the matching rule folds, never more: `merx.search_fold()` also strips accents, and « CRÈME-1 » and « CREME-1 » are two different references.
+
 **Under RLS, no index on `like`, `unaccent` or `pg_trgm` is ever used.** Postgres only accepts `leakproof` predicates as index conditions under a row-level policy, and none of these are; `postgres` is not a superuser, so nothing can be declared leakproof. The index exists and every query reads the whole table — all tenants. Measured in E2-04, five tenants of 10,000 products, same 1,251 rows returned by both paths: Seq Scan 417–472 ms under `authenticated`, 8.6–9.7 ms through the trigram index from a `security definer` function. The way out is the named exception of SPEC § 2.1 and `merx.rls_exception_registry`, never a quiet definer function. The same mechanism makes the `OR merx.is_super_admin()` of the two isolation policies defeat even the `tenant_id` btree: `listProducts()` took 410 ms, 13.5 ms without `super_admin_all` (BACKLOG E0-03, open).
 
 **A GIN index with the default `fastupdate` loses the plan after every bulk insert.** New entries wait in a pending list, read in full on every scan until the next vacuum; the planner counts it and prefers another index. Measured in E2-04, twelve search queries: 12/12 through the trigram index on clean indexes, **3/12 right after inserting 10,000 products**, 12/12 again once the list was flushed, 12/12 immediately with `fastupdate = off`. A test that seeds then asserts a plan sees this; production after an import does too, silently.
@@ -130,3 +134,13 @@ Before starting a step, state which spec sections you have read and what you pla
 Prefer boring, obvious code. This codebase is maintained by one person.
 
 When something in the spec is ambiguous, ask. Do not pick an interpretation and continue.
+
+## Sabotage
+
+Each story ends with a sabotage pass: remove a guard, run the tests, and check that one goes red for the right reason. A guard whose removal leaves the suite green is untested, whatever the test names say.
+
+**Sabotage only the guards that hold a line**: authorization, tenant isolation, money and quantity precision, cost confidentiality, append-only. Interface details — a label, a field order, an empty state — get ordinary tests and no sabotage pass; they fail visibly and cost nothing when they break.
+
+**Run only the test files the sabotaged guard touches**, with a reporter that prints failures only. The full suite runs once, at the end of the pass — not after each case.
+
+**Report one line per case**: the guard removed, the files run, how many tests went red, and which. A count is the whole report; a green case is a hole to fix, not a line to explain away.

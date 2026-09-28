@@ -314,7 +314,7 @@ L'épique la plus déterminante pour l'adoption.
 
 **Constaté en E2-04**, chaque fois par une assertion de plan rouge alors que le chronomètre restait vert :
 - une fonction `language sql` est planifiée sans connaître la requête : l'index trigramme était écarté sur la branche produit. D'où plpgsql et `plan_cache_mode = force_custom_plan` ;
-- un index GIN met les insertions en liste d'attente jusqu'au vacuum : juste après l'insertion de 10 000 produits, 3 requêtes sur 12 seulement passaient par l'index. D'où `fastupdate = off`. **E2-05 doit mesurer ce que ce réglage coûte à l'import** ;
+- un index GIN met les insertions en liste d'attente jusqu'au vacuum : juste après l'insertion de 10 000 produits, 3 requêtes sur 12 seulement passaient par l'index. D'où `fastupdate = off`. **Mesuré en E2-05** : de l'ordre de 15 % sur l'insertion, et le réglage inverse fait perdre l'index à 13 requêtes sur 16 après un import de 10 000 lignes. Réglage inchangé ;
 - `create function … set pg_trgm.*` est refusé à `postgres` tant que la bibliothèque n'est pas chargée dans la session ; la migration la charge explicitement ;
 - un générateur de jeu de test dont un modulo partage un facteur avec le nombre de types attache une propriété à des types entiers : tous les shampooings étaient supprimés, et « شمبو » ne trouvait rien. Le jeu mentait, pas la recherche ;
 - le balayage d'insertion de `settings.test.ts` recopiait les colonnes générées, et le refus `428C9` masquait celui de la policy : il lit désormais la liste des colonnes insérables dans le catalogue.
@@ -338,16 +338,42 @@ Le filtre du commerce retiré fait tomber les deux tests d'isolation, les assert
 **En tant que** patron, **je veux** importer mon fichier Excel, **afin de** ne pas ressaisir 2 000 références à la main.
 
 **Critères d'acceptation**
-- [ ] Dépôt d'un fichier CSV ou XLSX
-- [ ] Écran de correspondance des colonnes, avec proposition automatique
-- [ ] Prévisualisation des 20 premières lignes avant validation
-- [ ] Validation ligne par ligne, avec numéro de ligne et motif d'erreur
-- [ ] Les lignes valides s'importent même si d'autres échouent ; rapport téléchargeable des rejets
-- [ ] Import de 2 000 lignes en moins d'une minute
-- [ ] Gère les cas réels : colonnes vides, doublons de référence, prix en texte (« 15,00 DH »), accents cassés, espaces parasites
-- [ ] Réimporter le même fichier met à jour au lieu de dupliquer, sur la clé `code`
+- [x] Dépôt d'un fichier CSV ou XLSX
+- [x] Écran de correspondance des colonnes, avec proposition automatique
+- [x] Prévisualisation des 20 premières lignes avant validation
+- [x] Validation ligne par ligne, avec numéro de ligne et motif d'erreur
+- [x] Les lignes valides s'importent même si d'autres échouent ; rapport téléchargeable des rejets
+- [x] Import de 2 000 lignes en moins d'une minute — *mesuré par PostgREST sur le stack local, parmi 20 000 produits d'autres commerces : **7,1 à 8,4 s**, soit 3,5 à 4,2 ms par ligne ; une tablette en 3G n'est pas mesurée*
+- [x] Gère les cas réels : colonnes vides, doublons de référence, prix en texte (« 15,00 DH »), accents cassés, espaces parasites
+- [x] Réimporter le même fichier met à jour au lieu de dupliquer, sur la clé `code`
+- [ ] Écran utilisable au doigt, sur un vrai fichier de commerçant — *à vérifier à la main, avec un fichier qui n'est pas engendré par un test*
 
 **Notes** — Point de rupture n° 1. Y consacrer plus de soin qu'à tout autre écran. Le code se fait en deux jours, les cas tordus en deux semaines.
+
+**Tranché en E2-05** — l'import est `public.import_products(rows jsonb)`, **en `security invoker`** : les policies s'appliquent ligne par ligne, le journal du prix d'achat reçoit l'auteur du jeton, et `merx.rls_exception_registry` garde ses cinq entrées. Chaque ligne tourne dans son propre bloc `begin … exception … end`, donc dans son propre point de sauvegarde : **une ligne fautive est annulée seule**, le lot n'est pas tout-ou-rien, et rien d'elle ne subsiste — ni produit sans prix, ni variante orpheline. L'appareil envoie par blocs de 50 lignes : au-delà de 64 sous-transactions écrivantes, Postgres déborde son cache de sous-transactions, et `statement_timeout` coupe `authenticated`. Réimport sur `code`, sans égard à la casse, parmi les produits non supprimés — la portée exacte de `product_code_per_tenant` ; une mise à jour qui ne change rien n'écrit rien (ni `updated_at`, ni entrée au journal) ; une cellule vide n'efface pas ce que la base porte (SPEC § 2.6).
+
+**Tranché aussi** — première occurrence d'une référence en double importée, les suivantes rejetées **en nommant sa ligne** ; prix vide et 0 saisi aboutissent tous deux à « prix non renseigné » (E2-03) mais **se comptent séparément à l'aperçu** ; une ligne sans référence est recréée à chaque import, l'aperçu le dit — un rapprochement par le nom fusionnerait deux produits différents ; un champ illisible **rejette la ligne entière**, et le motif nomme la colonne et cite la valeur ; SheetJS épinglé (0.20.3, intégrité au verrou), chargé à la demande.
+
+**Le refus de deviner.** « 1.250 » vaut 1 250 DH ou 1,25 DH selon la convention du fichier : un facteur mille sur un prix de vente, découvert au comptoir. Un séparateur unique suivi de trois chiffres est donc **rejeté**, motif et valeur cités, comme l'est un prix négatif, un montant à plus de deux décimales, ou un nombre qu'Excel a écrit en notation scientifique — un EAN de treize chiffres s'affiche ainsi même au format « Standard », et la valeur affichée ne porte plus le code. Le taux de rejet n'est pas un argument pour se mettre à deviner.
+
+**Constaté en E2-05** :
+- **un parcours complet de `product` par bloc**, soit 400 ms sur 50 000 lignes et **71 s pour 2 000 lignes** : le rapprochement s'écrivait `lower(p.code) = any(...)`, et sous RLS `lower()` n'est pas `leakproof` — la troisième rencontre de la règle d'E2-04. La parade tient sans nouvelle exception : la clé est **stockée** (`product.code_key`, colonne générée) et l'égalité sur une colonne est, elle, `leakproof`. 7,1 s après. `lower(code)` et surtout pas `merx.search_fold()`, qui plierait aussi les accents : « CRÈME-1 » et « CREME-1 » sont deux références distinctes ;
+- **`session_replication_role = replica` coupe aussi les clés étrangères**, donc les cascades : le ménage du fichier de test supprimait les produits sans emporter leurs variantes. 283 000 variantes orphelines accumulées, trois autres fichiers dont les lectures larges dépassaient leur délai, et le plan de recherche qui basculait — le tout sans rapport apparent avec l'import. Les triggers ne se suspendent désormais que pour `variant_cost` et `audit_log` ;
+- **la mesure de `fastupdate` sabotait la section suivante** : 500 lignes importées en `fastupdate = on` laissent leur liste d'attente, que le seul retour du réglage ne vide pas. `gin_clean_pending_list()` explicite, et c'est accessoirement la démonstration du coût du réglage.
+
+**Les deux dettes laissées par E2-04, réglées** :
+- **ce que `fastupdate = off` coûte à l'import** : 500 lignes en 1 729 à 2 466 ms avec `off`, 1 507 à 1 844 ms avec `on` — de l'ordre de 15 %, et la dépense n'est pas évitée, elle est reportée sur les recherches jusqu'au vacuum. **Réglage inchangé** ;
+- **après l'import, la recherche passe-t-elle encore par l'index ?** Oui : les 16 requêtes de la batterie d'E2-04 empruntent `product_search` et `variant_search` après un import de 10 000 lignes, sans vacuum. Le sabotage qui remet `fastupdate = on` fait tomber **13 tests sur 17** — 3 requêtes sur 16 seulement gardent l'index. C'est une recherche cassée au moment précis où le commerçant vient de remplir son catalogue et va l'essayer.
+
+**Vérifié par sabotage** (12 cas, chacun seul ; les 7 cas base sur une base fraîche ; vraies détections distinguées de la cascade) :
+- **bloc `exception` par ligne retiré** — 1 tombe : l'appel entier échoue, et « importe les bonnes lignes d'un lot mêlé » le voit ;
+- **garde `manage_product` retiré** — 1 tombe : l'employé n'est plus refusé par une phrase, il reçoit des rejets ligne à ligne ;
+- **`security invoker` passé en `definer`** — 2 détections indépendantes : le test structurel de la story, et la règle `security definer inscrite et gardée` de `conventions.ts` ;
+- **garde « rien n'a changé » retiré** — 3 tombent, 1 vraie détection (« n'écrit rien quand rien n'a changé »), les 2 autres par état partagé dans le même `describe` ;
+- **clé du réimport rendue sensible à la casse** — 4 tombent, dont « reconnaît la référence sans égard à la casse » et « crée à la première passe, met à jour à la seconde » : la clé pliée ne rencontrait plus rien, chaque import dupliquait ;
+- **portée de la clé élargie aux produits supprimés** — 1 tombe : « la référence d'un produit supprimé crée un produit neuf » ;
+- **`fastupdate = on`** — 13 tombent (ci-dessus) ;
+- côté appareil : **prix ambigu accepté** — 7 tombent, dont les deux « refuse de trancher » ; **notation scientifique acceptée** — 2 ; **détection des doublons retirée** — 1 ; **repli `windows-1256` retiré** — 1 ; **réparation du double encodage retirée** — 1.
 
 ---
 
@@ -357,13 +383,17 @@ Le filtre du commerce retiré fait tomber les deux tests d'isolation, les assert
 **En tant que** vendeur, **je veux** scanner ce qui a un code et étiqueter ce qui n'en a pas, **afin d'**aller vite dans les deux cas.
 
 **Critères d'acceptation**
-- [ ] Scan d'un EAN fabricant, stocké dans `variant.barcode`
-- [ ] Génération d'un Code 128 encodant `variant.sku` pour les produits sans code
-- [ ] La recherche interroge les deux indifféremment
-- [ ] Impression d'étiquettes en planche A4, quantité paramétrable
-- [ ] Un `barcode` déjà attribué à une autre variante est refusé avec un message clair
+- [x] Scan d'un EAN fabricant, stocké dans `variant.barcode`
+- [x] Génération d'un Code 128 encodant `variant.sku` pour les produits sans code
+- [x] La recherche interroge les deux indifféremment
+- [x] Impression d'étiquettes en planche A4, quantité paramétrable
+- [x] Un `barcode` déjà attribué à une autre variante est refusé avec un message clair
+
+**À vérifier à la main, sur un vrai téléphone.** `BarcodeDetector` est une hypothèse sur le matériel, pas une certitude : l'API dépend de l'appareil et de ses services Google. Ouvrir la fiche produit sur un Android d'entrée de gamme, en HTTPS ou via `localhost` — sur le LAN en clair, `getUserMedia` n'existe pas et le bouton disparaît, ce qui est le comportement attendu, pas une panne (CLAUDE.md, tester sur un vrai téléphone). Si l'API manque, **alors seulement** ajouter un repli wasm (ZXing) : 300 Ko et un décodage logiciel sur les appareils les plus lents ne se paient pas d'avance.
 
 **Notes** — `SPEC.md` RÈGLE M1-5. En cosmétique les marques portent un EAN fiable : c'est la voie principale.
+
+**Arbitrages rendus** — l'impression fige le SKU par `variant.sku_printed_at`, pas en refusant le changement de référence : la référence reste corrigeable, et une référence libérée reste tenue par le SKU figé, refusée par `variant_sku_per_tenant` avec son propre message. Une planche d'EAN fabricant ne fige rien. Le SKU des produits sans référence est engendré par l'appareil (`A-00001`), sans réseau, le compteur local n'étant jamais l'autorité — l'index unique l'est. Caméra par `BarcodeDetector` seul. Détail dans `SPEC.md` § 6, RÈGLE M1-5.
 
 ---
 

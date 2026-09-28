@@ -107,6 +107,16 @@ const COLUMNS =
 export const PRODUCT_MESSAGES = {
   duplicateCode:
     'Cette référence est déjà utilisée par un autre produit. Changez-la ou laissez-la vide.',
+  /*
+   * E2-06. Ce refus-ci ne vient pas de l'index des références mais de celui des
+   * SKU : la référence est libre sur `product`, et pourtant prise — un autre
+   * produit porte ce code sur une étiquette imprimée, et un code imprimé reste
+   * attribué même quand la référence d'origine a changé depuis (`sku_printed_at`).
+   * Sans cette phrase, le patron lit « déjà utilisée » et ne trouve le coupable
+   * nulle part : la référence, elle, n'est utilisée par personne.
+   */
+  printedCode:
+    'Ce code est porté par l’étiquette d’un autre produit. Un code imprimé reste attribué, même si la référence a changé depuis.',
   refused: 'Ce compte ne peut pas modifier le catalogue : la base a refusé l’enregistrement.',
   notSaved:
     'Produit non enregistré : il n’existe plus, ou ce compte n’a pas le droit de le modifier.',
@@ -175,17 +185,28 @@ interface PostgrestErrorLike {
 }
 
 /*
- * Une référence déjà prise se heurte à l'un de deux index : celui des
- * références, ou celui des SKU, que la référence alimente (E2-01). Pour le
- * patron, c'est la même chose — la référence est prise.
+ * Une référence déjà prise se heurte à l'un de deux index, et depuis E2-06 ce
+ * ne sont plus deux façons de dire la même chose :
+ *
+ *   — `product_code_per_tenant` : un autre produit porte cette référence. Elle
+ *     se voit dans la liste, on la change ;
+ *   — `variant_sku_per_tenant` : la référence est libre, et pourtant prise —
+ *     un SKU figé par une impression la tient (`sku_printed_at`). Le produit
+ *     coupable ne porte plus cette référence, donc le patron ne la trouve
+ *     nulle part ; la phrase doit le lui dire.
+ *
+ * Le tri se fait sur **le nom de la contrainte**, jamais sur le `23505` seul :
+ * trois index de `variant` et `product` répondent ce code-là (CLAUDE.md, règle
+ * des unicités).
  */
 function failure(error: PostgrestErrorLike): Error {
-  if (
-    error.code === '23505' &&
-    (error.message.includes('product_code_per_tenant') ||
-      error.message.includes('variant_sku_per_tenant'))
-  ) {
-    return new Error(PRODUCT_MESSAGES.duplicateCode)
+  if (error.code === '23505') {
+    if (error.message.includes('product_code_per_tenant')) {
+      return new Error(PRODUCT_MESSAGES.duplicateCode)
+    }
+    if (error.message.includes('variant_sku_per_tenant')) {
+      return new Error(PRODUCT_MESSAGES.printedCode)
+    }
   }
   if (error.code === '42501') return new Error(PRODUCT_MESSAGES.refused)
   return new Error(error.message)

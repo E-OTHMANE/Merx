@@ -61,9 +61,15 @@ const TOP_LEVEL: readonly string[] = ['/', '/products']
 /** Les écrans de détail : leur retour, vers le parent désigné (BRAND-UI § 13). */
 const DETAIL: Readonly<Record<string, { visit: string; parent: string; label: string }>> = {
   '/products/new': { visit: '/products/new', parent: '/products', label: 'Produits' },
+  '/products/import': { visit: '/products/import', parent: '/products', label: 'Produits' },
   '/products/:id': { visit: '/products/p-1', parent: '/products', label: 'Produits' },
   '/products/:id/prices': {
     visit: '/products/p-1/prices',
+    parent: '/products/p-1',
+    label: 'Fiche produit',
+  },
+  '/products/:id/labels': {
+    visit: '/products/p-1/labels',
     parent: '/products/p-1',
     label: 'Fiche produit',
   },
