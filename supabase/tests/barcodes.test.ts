@@ -31,7 +31,7 @@
 import { Client } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { INSUFFICIENT_PRIVILEGE, actAs, attempt, tokenFor } from './isolation'
+import { actAs, attempt, tokenFor } from './isolation'
 import { createAuthUser, deleteAuthUser, rest, sessionFor } from './rest'
 
 const CONNECTION_STRING =
@@ -275,26 +275,45 @@ describe('un code-barres désigne une variante, et une seule', () => {
    * est invisible, elle est chez le voisin (SPEC § 2.1).
    */
   it('le même code-barres chez deux commerces est accepté', async () => {
-    await as('a', 'owner', async () => {
+    /*
+     * **Les deux lignes doivent coexister dans la même transaction.** Écrite
+     * autrement — le code posé chez A dans un premier bloc annulé, puis tenté
+     * chez B — cette assertion ne mesure rien : au moment de l'écriture de B,
+     * celle de A n'existe plus, et un index sans `tenant_id` passerait aussi.
+     * Constaté au sabotage : l'unicité rendue globale laissait le test vert.
+     *
+     * Une unicité est vérifiée hors RLS, donc les deux écritures peuvent être
+     * préparées en `postgres` ; seule la seconde passe sous le jeton de B, pour
+     * que ce soit bien l'index qui réponde et non une policy.
+     */
+    await client.query('begin')
+    try {
+      await client.query('reset role')
       const mine = await newProduct('a')
+      const theirs = await newProduct('b')
       await client.query('update public.variant set barcode = $1 where id = $2', [
         '6111234567890',
         mine,
       ])
-    })
 
-    await client.query('begin')
-    try {
-      await client.query('reset role')
-      const theirs = await newProduct('b')
       await actAs(client, tokenFor(fixture.b.tenant, 'owner'))
-
       const allowed = await attempt(
         client,
         `update public.variant set barcode = '6111234567890' where id = '${theirs}'`,
       )
 
       expect(allowed.ok).toBe(true)
+
+      // Le compte se lit en `postgres` : sous le jeton de B, la RLS ne montre
+      // que la ligne de B, et « 1 » ne dirait rien de la coexistence.
+      await client.query('reset role')
+      expect(
+        (
+          await one<{ n: string }>(
+            "select count(*) as n from public.variant where barcode = '6111234567890'",
+          )
+        ).n,
+      ).toBe('2')
     } finally {
       await client.query('rollback')
     }
@@ -337,10 +356,15 @@ describe('un code-barres désigne une variante, et une seule', () => {
 
   /*
    * Le droit d'écrire est balayé par table et par rôle dans `settings.test.ts`.
-   * Ce test-ci vaut pour la colonne : un employé ne pose pas de code-barres, et
-   * c'est la policy de `variant` qui refuse — **le nom de la table dans le
-   * message le dit**, le `42501` seul ne le dirait pas (CLAUDE.md, le trigger
-   * qui écrit ailleurs).
+   * Ce test-ci vaut pour la colonne neuve : un employé ne pose pas de
+   * code-barres.
+   *
+   * **Un UPDATE refusé ne lève pas**, et c'est le piège : la policy restrictive
+   * porte `using (merx.can(...))`, donc la ligne n'est pas visible à
+   * l'écriture — PostgREST rend `200` et un tableau vide, pas `42501`. On relit
+   * donc la valeur (règle des gardes en écriture) : zéro ligne touchée, **et**
+   * le code-barres toujours nul. Avec son contrôle positif : la même écriture,
+   * faite par le patron, passe.
    */
   it('l’employé ne pose aucun code-barres', async () => {
     const product = await newProduct('a')
@@ -350,11 +374,19 @@ describe('un code-barres désigne une variante, et une seule', () => {
       method: 'PATCH',
       body: { barcode: '6119999999999' },
     })
+    const after = await variant(product)
+
+    const allowed = await rest(`variant?id=eq.${product}`, {
+      token: tokens.owner,
+      method: 'PATCH',
+      body: { barcode: '6119999999999' },
+    })
 
     await client.query('delete from public.product where id = $1', [product])
 
-    expect(refused.code).toBe(INSUFFICIENT_PRIVILEGE)
-    expect(refused.body).toContain('"variant"')
+    expect(refused.rows).toHaveLength(0)
+    expect(after.barcode).toBeNull()
+    expect(allowed.rows).toHaveLength(1)
   })
 })
 
@@ -551,15 +583,20 @@ describe('RÈGLE M1-5 — la recherche interroge les deux indifféremment', () =
 
   it('trouve par le code-barres du fabricant comme par le SKU', async () => {
     await as('a', 'owner', async () => {
-      const scanned = await newProduct('a', 'SKU-ONE')
-      const labelled = await newProduct('a', 'SKU-TWO')
+      /*
+       * Deux références sans ressemblance entre elles : la recherche tolère une
+       * faute (§ 6, seuil 0,4), et « SKU-ONE » face à « SKU-TWO » rend les deux
+       * — ce serait la tolérance qu'on mesurerait, pas les deux sources.
+       */
+      const scanned = await newProduct('a', 'ALPHA-1')
+      const labelled = await newProduct('a', 'ZOULOU-9')
       await client.query('update public.variant set barcode = $1 where id = $2', [
         '6111234567890',
         scanned,
       ])
 
       expect((await search('6111234567890')).map((row) => row.variant_id)).toStrictEqual([scanned])
-      expect((await search('SKU-TWO')).map((row) => row.variant_id)).toStrictEqual([labelled])
+      expect((await search('ZOULOU-9')).map((row) => row.variant_id)).toStrictEqual([labelled])
     })
   })
 })

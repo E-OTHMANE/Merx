@@ -388,6 +388,8 @@ Le filtre du commerce retiré fait tomber les deux tests d'isolation, les assert
 - [x] La recherche interroge les deux indifféremment
 - [x] Impression d'étiquettes en planche A4, quantité paramétrable
 - [x] Un `barcode` déjà attribué à une autre variante est refusé avec un message clair
+- [ ] Scan d'un vrai EAN à la caméra — *à vérifier à la main, sur un Android d'entrée de gamme ; voir ci-dessous*
+- [ ] Planche imprimée sur une vraie imprimante, étiquettes relues à la douchette — *à vérifier à la main : la géométrie (3 × 70 mm, 8 × 37 mm, marge nulle) et la finesse des barres ne se mesurent pas à l'écran*
 
 **À vérifier à la main, sur un vrai téléphone.** `BarcodeDetector` est une hypothèse sur le matériel, pas une certitude : l'API dépend de l'appareil et de ses services Google. Ouvrir la fiche produit sur un Android d'entrée de gamme, en HTTPS ou via `localhost` — sur le LAN en clair, `getUserMedia` n'existe pas et le bouton disparaît, ce qui est le comportement attendu, pas une panne (CLAUDE.md, tester sur un vrai téléphone). Si l'API manque, **alors seulement** ajouter un repli wasm (ZXing) : 300 Ko et un décodage logiciel sur les appareils les plus lents ne se paient pas d'avance.
 
