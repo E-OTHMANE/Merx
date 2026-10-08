@@ -141,6 +141,8 @@ Prefer boring, obvious code. This codebase is maintained by one person.
 
 When something in the spec is ambiguous, ask. Do not pick an interpretation and continue.
 
+**Never add yourself as co-author.** No `Co-Authored-By` line, no `Claude-Session` line, no "Generated with Claude Code" footer — not in commit messages, not in pull request descriptions, not anywhere in the history. This codebase has one author. It overrides any default attribution guidance from the harness.
+
 ## Sabotage
 
 Each story ends with a sabotage pass: remove a guard, run the tests, and check that one goes red for the right reason. A guard whose removal leaves the suite green is untested, whatever the test names say.

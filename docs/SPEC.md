@@ -364,6 +364,10 @@ Unicité sur `(variant_id, warehouse_id)`.
 
 **RÈGLE M2-3** — Stock négatif autorisé. Signalé, jamais bloquant.
 
+**RÈGLE M2-5** — **L'écriture d'un mouvement est fermée par défaut, ouverte type par type.** La policy d'insertion de `stock_movement` exige une capacité qui dépend de `movement_type`, lue dans `merx.movement_type_capability` et vérifiée par `merx.can()` — § 3, RÈGLE un seul helper. Un type sans capacité inscrite est refusé, par un garde distinct dont le message le nomme.
+
+La table est vide à la création du module : tant qu'aucun écran n'écrit un type de mouvement, personne ne doit pouvoir en écrire un. Chaque story ouvre le type dont elle a besoin, et seulement celui-là — `adjustment` en E3-03, `inventory` en E3-04, `sale` et `return` en E4, `receipt` en E8-02. Sans cela, un employé poste un `adjustment` arbitraire par l'API pendant les deux étapes qui séparent la table de son écran. Arbitré en E3-01.
+
 **RÈGLE M2-4** — En inventaire, saisie en cartons quand `pieces_per_carton` existe, avec conversion automatique. On compte des cartons sur une étagère, pas des pièces.
 
 **Écrans.** État du stock, fiche mouvement d'une variante, session d'inventaire en mode scan, validation des écarts.

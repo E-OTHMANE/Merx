@@ -150,6 +150,24 @@ const POLICY_SET = `
       ('write_capability_update', 'w', true,  true),
       ('write_capability_delete', 'd', true,  false)
     ) w(polname, cmd, has_qual, has_withcheck)
+
+    union all
+
+    /*
+     * E3-01. Les tables dont l'insertion exige une capacité résolue depuis une
+     * colonne de la ligne — \`stock_movement\` et son type de mouvement. Une
+     * policy restrictive pour INSERT seul, sans \`using\` : il n'y a pas de
+     * ligne existante à qualifier.
+     *
+     * Le registre décide, comme pour les trois autres branches. Le résolveur
+     * doit passer par \`merx.can()\` (SPEC § 3, RÈGLE un seul helper) ; ce
+     * contrôle-ci vérifie la forme de la policy, pas le corps du résolveur.
+     */
+    select t.relname, 'column_capability_insert', false, 'a',
+           '',
+           format('merx.%s(%s)', c.resolver_function, c.column_name)
+    from business t
+    join merx.column_capability_registry c on c.table_name = t.relname
   ),
   actual as (
     select t.relname,
@@ -179,7 +197,9 @@ const POLICY_SET = `
   select a.relname as table_name,
          format('policy %I inattendue — l''isolation passe par '
                 'merx.apply_tenant_isolation(), la confidentialité par '
-                'merx.apply_capability_restriction()', a.polname) as detail
+                'merx.apply_capability_restriction(), l''écriture restreinte par '
+                'merx.apply_write_capability_restriction() ou '
+                'merx.apply_column_capability_insert()', a.polname) as detail
   from actual a
   where not exists (
     select 1 from expected e where e.relname = a.relname and e.polname = a.polname
@@ -344,8 +364,11 @@ export async function registeredTables(client: Client): Promise<string[]> {
   return rows.map((r) => r.table_name)
 }
 
-/** Comment s'écrit une ligne d'une table en ajout seul. E1-04. */
-export type WritePath = 'application' | 'helper'
+/**
+ * Comment s'écrit une ligne d'une table en ajout seul. E1-04 ; `restricted`
+ * E3-01.
+ */
+export type WritePath = 'application' | 'helper' | 'restricted'
 
 /**
  * Les tables en ajout seul, et par quel chemin elles s'écrivent — lues au
@@ -355,12 +378,19 @@ export type WritePath = 'application' | 'helper'
  * tables-là : ce qui prouve qu'une table ordinaire n'est pas simplement
  * verrouillée pour tout le monde, c'est qu'un `owner` modifie et supprime sa
  * propre ligne. Sur une table en ajout seul, c'est le contraire qui est vrai,
- * et le contrôle positif devient l'insertion — pour `write_path = 'helper'`, où
- * `authenticated` n'insère pas non plus, il reste la lecture.
+ * et le contrôle positif devient l'insertion — sauf pour les deux chemins où
+ * `authenticated` n'insère pas de ligne que le générateur sache fabriquer, et
+ * où il reste la lecture :
  *
- * Le registre décide parce que `stock_movement` (E3) et le grand livre (E6)
- * arriveront après : ils hériteront du balayage en s'inscrivant, sans qu'une
- * ligne de ce fichier change.
+ *   'helper'     — le privilège d'INSERT est retiré ; seule une fonction
+ *                  `security definer` écrit. C'est `audit_log` (E1-04).
+ *   'restricted' — l'application insère, mais une policy qualifie chaque
+ *                  insertion depuis une colonne de la ligne. C'est
+ *                  `stock_movement` (E3-01), dont aucun type de mouvement n'est
+ *                  ouvert aujourd'hui.
+ *
+ * Le registre décide parce que le grand livre (E6) arrivera après : il héritera
+ * du balayage en s'inscrivant, sans qu'une ligne de ce fichier change.
  */
 export async function appendOnlyTables(client: Client): Promise<Map<string, WritePath>> {
   const { rows } = await client.query<{ table_name: string; write_path: WritePath }>(
@@ -395,6 +425,29 @@ export async function writeCapabilityTables(client: Client): Promise<Map<string,
 export async function auditedTables(client: Client): Promise<Set<string>> {
   const { rows } = await client.query<{ table_name: string }>(
     'select table_name from merx.audited_registry order by table_name',
+  )
+  return new Set(rows.map((r) => r.table_name))
+}
+
+/**
+ * Les tables dérivées — des agrégats maintenus par un trigger sur leur table
+ * source, que l'application n'écrit jamais. Lues au registre, jamais énumérées
+ * ici. RÈGLE M2-1, E3-01.
+ *
+ * Troisième façon pour une table de ne pas se laisser écrire, et elle se
+ * distingue des deux autres par ce qu'elle laisse passer :
+ *
+ *   ajout seul — UPDATE et DELETE sont refusés **par le privilège** (`42501`),
+ *                donc sur la ligne du voisin comme sur la sienne ;
+ *   dérivée    — le privilège est intact (le trigger d'agrégat en a besoin), et
+ *                c'est un garde de ligne qui refuse (`55000`). Une ligne du
+ *                voisin n'étant pas visible, aucune ligne n'est touchée et
+ *                aucun garde ne s'exécute : le balayage garde donc ses
+ *                assertions de fuite, et n'inverse que le contrôle positif.
+ */
+export async function derivedTables(client: Client): Promise<Set<string>> {
+  const { rows } = await client.query<{ table_name: string }>(
+    'select table_name from merx.derived_registry order by table_name',
   )
   return new Set(rows.map((r) => r.table_name))
 }
@@ -612,17 +665,36 @@ export async function seedTwoTenants(client: Client): Promise<Seeded> {
   }
 
   /*
-   * Une table journalisée refuse toute écriture sans commerce ni auteur dans le
-   * jeton (RÈGLE M8-1) — et ce peuplement tourne en `postgres`, sans jeton. Sa
-   * ligne est donc posée triggers suspendus. C'est un contournement de
-   * harnais, et seulement cela : le journal est éprouvé sur le chemin réel dans
-   * `purchase-price-audit.test.ts`.
+   * Trois familles de tables dont un trigger refuse ce que ce peuplement-ci ne
+   * sait pas lui donner. Leurs lignes sont posées triggers suspendus. C'est un
+   * contournement de harnais, et seulement cela : chaque propriété est éprouvée
+   * sur son chemin réel, ailleurs.
+   *
+   *   journalisée — refuse toute écriture sans commerce ni auteur dans le jeton
+   *                 (RÈGLE M8-1), et ce peuplement tourne en `postgres`, sans
+   *                 jeton. Éprouvée dans `purchase-price-audit.test.ts`.
+   *   dérivée     — refuse toute écriture qui ne vient pas de son trigger
+   *                 d'agrégat (RÈGLE M2-1). Éprouvée dans
+   *                 `stock-movements.test.ts`.
+   *   `restricted`— refuse toute insertion dont la colonne qualifiante n'est
+   *                 pas ouverte, et le générateur de lignes prend la première
+   *                 étiquette de l'enum, qui ne l'est pas. Éprouvée dans
+   *                 `stock-movements.test.ts`.
+   *
+   * Pour la table dérivée, la suspension a un effet second utile : le trigger
+   * d'agrégat ne tourne pas non plus, donc la ligne de la table source ne vient
+   * pas modifier la ligne d'agrégat que le balayage vient de poser.
    */
   const audited = await auditedTables(client)
+  const derived = await derivedTables(client)
+  const appendOnly = await appendOnlyTables(client)
+
+  const needsTriggerBypass = (table: string): boolean =>
+    audited.has(table) || derived.has(table) || appendOnly.get(table) === 'restricted'
 
   const insert = async (table: string, tenant: string | null, rows: TenantRows): Promise<string> => {
     const run = () => client.query<{ id: string }>(insertSql(table, tenant, rows))
-    const { rows: inserted } = audited.has(table)
+    const { rows: inserted } = needsTriggerBypass(table)
       ? await withoutTriggers(client, run)
       : await run()
     const id = inserted[0]?.id
@@ -775,6 +847,13 @@ export async function attempt(
 
 /** Le code SQLSTATE d'un refus par RLS ou par privilège manquant. */
 export const INSUFFICIENT_PRIVILEGE = '42501'
+
+/**
+ * Le code SQLSTATE du garde des tables dérivées — *object_not_in_prerequisite_
+ * state*. Celui d'aucun autre refus du projet, pour qu'un test qui l'assert
+ * mesure ce garde-là. RÈGLE M2-1, E3-01.
+ */
+export const DERIVED_WRITE = '55000'
 
 /**
  * Exécute `body` triggers suspendus (`session_replication_role = replica`),

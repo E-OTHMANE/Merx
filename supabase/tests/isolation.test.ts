@@ -22,6 +22,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { describe as describeViolations } from './conventions'
 import {
+  DERIVED_WRITE,
   EMPTY_CLAIMS,
   ISOLATION_RULES,
   INSUFFICIENT_PRIVILEGE,
@@ -29,6 +30,7 @@ import {
   appendOnlyTables,
   attempt,
   auditedTables,
+  derivedTables,
   isolationViolations,
   registeredTables,
   seedTwoTenants,
@@ -36,6 +38,7 @@ import {
   withoutTriggers,
   type IsolationRuleName,
   type Seeded,
+  type TenantRows,
   type WritePath,
 } from './isolation'
 
@@ -78,10 +81,26 @@ const APPEND_ONLY = await appendOnlyUnderTest()
  */
 const AUDITED = await auditedUnderTest()
 
+/*
+ * Et le registre des tables dérivées (RÈGLE M2-1, E3-01) : un agrégat n'est
+ * écrit que par le trigger de sa table source, donc son `owner` ne modifie ni
+ * ne supprime sa propre ligne. Là encore aucune table n'est nommée ici.
+ */
+const DERIVED = await derivedUnderTest()
+
 async function auditedUnderTest(): Promise<Set<string>> {
   const client = await connect()
   try {
     return await auditedTables(client)
+  } finally {
+    await client.end()
+  }
+}
+
+async function derivedUnderTest(): Promise<Set<string>> {
+  const client = await connect()
+  try {
+    return await derivedTables(client)
   } finally {
     await client.end()
   }
@@ -269,6 +288,28 @@ describe('les quatre opérations, à travers la frontière', () => {
     }
 
     /*
+     * Toute tentative d'insertion passe par un point de sauvegarde, relâché
+     * dans tous les cas — succès compris.
+     *
+     * Une insertion qui réussit alors qu'elle devait être refusée laisse une
+     * ligne derrière elle, et sur une table source elle en engendre d'autres
+     * par trigger : la ligne d'agrégat de `stock_level`, demain les écritures
+     * de E4. Les cas suivants tombent alors sur un état qu'ils n'ont pas
+     * produit, et le décompte ne nomme plus la bonne cause. Mesuré sur le
+     * sabotage « garde du fermé par défaut retiré » : 8 tests rouges dont 1 en
+     * cascade, 7 après ce point de sauvegarde (BACKLOG E0-03).
+     */
+    const tryInsert = async (
+      tenant: string,
+      rows: TenantRows,
+    ): ReturnType<typeof attempt> => {
+      await client.query('savepoint insert_attempt')
+      const outcome = await attempt(client, seeded.insertSql(table, tenant, rows))
+      await client.query('rollback to savepoint insert_attempt')
+      return outcome
+    }
+
+    /*
      * E1-04. Sur une table en ajout seul, les assertions d'écriture s'inversent
      * — elles ne disparaissent pas. Une table dont plus rien n'est attendu
      * cesse d'être vérifiée : « modifier échoue » est satisfait aussi bien par
@@ -286,6 +327,20 @@ describe('les quatre opérations, à travers la frontière', () => {
      */
     const appendOnly = APPEND_ONLY.get(table)
 
+    /*
+     * E3-01. Une table dérivée n'a aucun écrivain applicatif : son `owner` ne
+     * modifie ni ne supprime sa propre ligne, et n'en insère pas non plus. Le
+     * contrôle positif se déplace là encore sur le `select`.
+     *
+     * Elle ne se confond pas avec l'ajout seul, et la différence est ce que ces
+     * tests mesurent : le privilège d'écriture reste accordé — le trigger
+     * d'agrégat en a besoin — donc une ligne du voisin, qui n'est pas visible,
+     * ne fait tomber aucun garde. Les assertions de fuite sont donc les mêmes
+     * que sur une table ordinaire, et seule l'écriture chez soi diffère : elle
+     * est refusée, en `55000`, par le garde de ligne.
+     */
+    const derived = DERIVED.has(table)
+
     it('select — voit sa ligne, ignore celle du voisin', async () => {
       await asOwnerOfA()
 
@@ -301,7 +356,61 @@ describe('les quatre opérations, à travers la frontière', () => {
 
     const erase = (id: string): string => `delete from public."${table}" where id = '${id}'::uuid`
 
-    if (appendOnly === undefined) {
+    if (derived) {
+      it('update — ne touche pas la ligne du voisin, refusée sur la sienne (agrégat)', async () => {
+        await asOwnerOfA()
+
+        expect(
+          await rowsTouched(touch(foreign())),
+          'FUITE — la ligne du commerce B est modifiable',
+        ).toBe(0)
+
+        const changed = await attempt(client, touch(own()))
+        expect(changed.ok, 'RATURE — un agrégat a été modifié à la main').toBe(false)
+        if (changed.ok) return
+        expect(changed.code, `refusée, mais pas par le garde d'agrégat : ${changed.message}`).toBe(
+          DERIVED_WRITE,
+        )
+      })
+
+      it('delete — ne supprime ni la ligne du voisin ni la sienne (agrégat)', async () => {
+        await asOwnerOfA()
+
+        expect(
+          await rowsTouched(erase(foreign())),
+          'FUITE — la ligne du commerce B est supprimable',
+        ).toBe(0)
+
+        /*
+         * Point de sauvegarde relâché dans tous les cas, succès compris : si le
+         * garde manquait, la ligne partirait pour de bon, et les cas suivants
+         * tomberaient en cascade sur une ligne absente — un décompte qui ne
+         * nomme plus la bonne cause (BACKLOG E0-03).
+         */
+        await client.query('savepoint derived_delete')
+        const removed = await attempt(client, erase(own()))
+        await client.query('rollback to savepoint derived_delete')
+
+        expect(removed.ok, 'RATURE — un agrégat a été supprimé à la main').toBe(false)
+        if (removed.ok) return
+        expect(removed.code, `refusée, mais pas par le garde d'agrégat : ${removed.message}`).toBe(
+          DERIVED_WRITE,
+        )
+      })
+
+      /*
+       * Pas d'assertion « insert chez soi refusée » ici, et c'est une décision.
+       * Le générateur réutilise les lignes parentes qu'il a semées, donc la
+       * ligne qu'il fabriquerait vise la paire que la ligne d'agrégat déjà
+       * semée occupe : l'unicité refuse (`23505`) avant que le garde ait à se
+       * prononcer. L'assertion passerait au vert sur le refus du voisin, et le
+       * garde pourrait disparaître sans la faire tomber (CLAUDE.md).
+       *
+       * Le refus d'insertion du garde est donc mesuré là où une paire vierge
+       * est disponible : `stock-movements.test.ts`. Ici, l'inversion du
+       * contrôle positif tient aux deux cas ci-dessus et au `select`.
+       */
+    } else if (appendOnly === undefined) {
       it('update — ne touche pas la ligne du voisin, touche la sienne', async () => {
         await asOwnerOfA()
 
@@ -364,13 +473,10 @@ describe('les quatre opérations, à travers la frontière', () => {
       })
 
       /* Le contrôle positif déplacé, dans le sens que le registre indique. */
-      it(`insert — chez soi, ${appendOnly === 'application' ? 'acceptée' : 'réservée au helper'}`, async () => {
+      it(`insert — chez soi, ${appendOnly === 'application' ? 'acceptée' : `refusée (${appendOnly})`}`, async () => {
         await asOwnerOfA()
 
-        const written = await attempt(
-          client,
-          seeded.insertSql(table, seeded.tenants.a, seeded.rows.a),
-        )
+        const written = await tryInsert(seeded.tenants.a, seeded.rows.a)
 
         if (appendOnly === 'application') {
           expect(
@@ -380,9 +486,14 @@ describe('les quatre opérations, à travers la frontière', () => {
           return
         }
 
-        expect(written.ok, 'FUITE — une ligne a été écrite hors du helper').toBe(false)
+        expect(
+          written.ok,
+          appendOnly === 'helper'
+            ? 'FUITE — une ligne a été écrite hors du helper'
+            : 'FUITE — une ligne a été écrite sans que sa colonne qualifiante soit ouverte',
+        ).toBe(false)
         if (written.ok) return
-        expect(written.code, `refusée, mais pas par le privilège : ${written.message}`).toBe(
+        expect(written.code, `refusée, mais pas pour défaut de droit : ${written.message}`).toBe(
           INSUFFICIENT_PRIVILEGE,
         )
       })
@@ -391,10 +502,7 @@ describe('les quatre opérations, à travers la frontière', () => {
     it('insert — refuse une ligne destinée au commerce du voisin', async () => {
       await asOwnerOfA()
 
-      const written = await attempt(
-        client,
-        seeded.insertSql(table, seeded.tenants.b, seeded.rows.b),
-      )
+      const written = await tryInsert(seeded.tenants.b, seeded.rows.b)
 
       expect(written.ok, 'FUITE — une ligne a été écrite dans le commerce B').toBe(false)
       if (written.ok) return
@@ -438,6 +546,10 @@ describe('les quatre opérations, à travers la frontière', () => {
        * bougé » ; on les distingue plutôt que de les confondre, sinon un jour
        * un `rowCount` de 0 obtenu pour une raison qui n'est pas la bonne
        * passerait inaperçu.
+       *
+       * Sur une table dérivée, en revanche, le privilège est intact et la ligne
+       * n'est pas visible : aucune ligne n'est touchée, aucun garde ne
+       * s'exécute, et les attentes sont celles d'une table ordinaire.
        */
       const updated = await attempt(client, touch(own()))
       const deleted = await attempt(client, erase(own()))
@@ -454,7 +566,7 @@ describe('les quatre opérations, à travers la frontière', () => {
         expect(deleted.ok, 'FUITE — un jeton sans tenant supprime').toBe(false)
       }
 
-      const written = await attempt(client, seeded.insertSql(table, seeded.tenants.a, seeded.rows.a))
+      const written = await tryInsert(seeded.tenants.a, seeded.rows.a)
       expect(written.ok, 'FUITE — un jeton sans tenant écrit des lignes').toBe(false)
       if (written.ok) return
       expect(written.code, `refusée, mais pas par la RLS : ${written.message}`).toBe(
@@ -498,12 +610,18 @@ describe('les quatre opérations, à travers la frontière', () => {
        * sinon retirer le garde ferait rougir ce test-ci — qui parle d'autre
        * chose — au lieu du sien.
        */
-      if (APPEND_ONLY.has(table)) {
+      /*
+       * Une table dérivée refuse la suppression pour une autre raison — le
+       * garde d'agrégat, et non le privilège (RÈGLE M2-1) — mais la conclusion
+       * est la même : sa ligne n'a rien à faire dans ce contrôle positif, et
+       * elle est ôtée garde levé pour que la boucle puisse continuer.
+       */
+      if (APPEND_ONLY.has(table) || DERIVED.has(table)) {
         await client.query('reset role')
         await client.query('set session_replication_role = replica')
         const removed = await rowsTouched(`delete from public."${table}" where id = '${id}'::uuid`)
         await client.query('set session_replication_role = origin')
-        expect(removed, `${table} : ménage de la ligne en ajout seul impossible`).toBe(1)
+        expect(removed, `${table} : ménage de la ligne gardée impossible`).toBe(1)
         await actAs(client, tokenFor(seeded.tenants.a, 'owner'))
         continue
       }

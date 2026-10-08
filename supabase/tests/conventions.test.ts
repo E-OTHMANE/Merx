@@ -277,6 +277,141 @@ describe('les règles attrapent une table fautive', () => {
   })
 
   /*
+   * E3-01, SPEC RÈGLE M2-1. `stock_level` est la première table dérivée, et le
+   * contrôle positif est l'état réel du schéma : le registre la connaît, et
+   * aucun de ses gardes ne manque.
+   *
+   * Le négatif porte sur une sonde, et sur le **moment** du garde d'INSERT. Le
+   * remplacer par un BEFORE n'en retire rien d'apparent — la ligne est refusée
+   * dans les deux cas — mais en BEFORE il refuse avant la RLS, donc il tient
+   * lieu d'isolation et retirer `tenant_isolation` ne se verrait plus
+   * (CLAUDE.md). Une règle qui ne vérifierait que la présence passerait ce
+   * test ; celle-ci doit nommer l'écart.
+   */
+  describe('gardes des tables dérivées', () => {
+    const rule: RuleName = 'gardes des tables dérivées'
+
+    const createDerivedProbe = async (): Promise<void> => {
+      await client.query('begin')
+      await client.query(`
+        create table public.derived_probe (id uuid primary key default gen_random_uuid());
+        select merx.apply_business_conventions('public.derived_probe');
+
+        create function merx.write_derived_probe()
+        returns trigger language plpgsql as $probe$ begin return null; end; $probe$;
+
+        select merx.apply_derived_from(
+          'public.derived_probe', 'stock_movement', 'write_derived_probe');
+      `)
+    }
+
+    it('connaît stock_level et ses gardes', async () => {
+      const { rows } = await client.query<{ source_table: string; writer_function: string }>(
+        'select source_table, writer_function from merx.derived_registry' +
+          " where table_name = 'stock_level'",
+      )
+      expect(rows).toEqual([
+        { source_table: 'stock_movement', writer_function: 'apply_stock_movement' },
+      ])
+
+      expect(describeViolations(await violations(client, rule))).toBe('')
+    })
+
+    it('laisse passer une table posée par le helper', async () => {
+      await createDerivedProbe()
+      expect(onProbe(await violations(client, rule), 'derived_probe')).toEqual([])
+    })
+
+    it('signale un garde d\'INSERT posé en BEFORE au lieu d\'AFTER', async () => {
+      await createDerivedProbe()
+      await client.query('drop trigger reject_derived_insert on public.derived_probe')
+      await client.query(`
+        create trigger reject_derived_insert before insert on public.derived_probe
+          for each row execute function merx.reject_derived_write()
+      `)
+
+      const found = onProbe(await violations(client, rule), 'derived_probe')
+      expect(describeViolations(found)).toContain('AFTER INSERT')
+    })
+
+    it('signale le garde de TRUNCATE manquant', async () => {
+      await createDerivedProbe()
+      await client.query('drop trigger reject_derived_truncate on public.derived_probe')
+
+      const found = onProbe(await violations(client, rule), 'derived_probe')
+      expect(describeViolations(found)).toContain('BEFORE TRUNCATE')
+    })
+
+    it('signale TRUNCATE laissé à authenticated', async () => {
+      await createDerivedProbe()
+      await client.query('grant truncate on public.derived_probe to authenticated')
+
+      const found = onProbe(await violations(client, rule), 'derived_probe')
+      expect(describeViolations(found)).toContain('TRUNCATE')
+    })
+
+    it('signale un écrivain déclaré introuvable', async () => {
+      await createDerivedProbe()
+      await client.query(
+        "update merx.derived_registry set writer_function = 'absente'" +
+          " where table_name = 'derived_probe'",
+      )
+
+      const found = onProbe(await violations(client, rule), 'derived_probe')
+      expect(describeViolations(found)).toContain('merx.absente()')
+    })
+  })
+
+  /*
+   * L'inverse. Le registre n'est pas une étiquette : `isolation.test.ts` le lit
+   * pour savoir qu'il doit inverser son contrôle positif sur cette table-là.
+   * Une table rendue dérivée à la main y échapperait, et le désaccord se lirait
+   * comme une régression de policy. Même raisonnement qu'en E1-04.
+   */
+  it('signale une table gardée comme dérivée sans inscription au registre', async () => {
+    await client.query('begin')
+    await client.query(`
+      create table public.rogue_derived_probe (id uuid primary key default gen_random_uuid());
+      select merx.apply_business_conventions('public.rogue_derived_probe');
+      create trigger reject_derived_write before update or delete on public.rogue_derived_probe
+        for each row execute function merx.reject_derived_write();
+    `)
+
+    const found = onProbe(
+      await violations(client, 'aucune table dérivée hors registre'),
+      'rogue_derived_probe',
+    )
+    expect(describeViolations(found)).toContain('merx.apply_derived_from()')
+  })
+
+  /*
+   * E3-01, SPEC RÈGLE M2-1. `pg_trigger_depth()` dit « écrit par un trigger »,
+   * pas « écrit par le trigger d'agrégat » : une seconde fonction qui écrirait
+   * dans `stock_level` depuis un trigger — sur `sale_line` en E4, sur
+   * `goods_receipt_line` en E8 — passerait le garde, et deux endroits
+   * décideraient de la valeur d'un agrégat. C'est ce balayage qui le refuse.
+   *
+   * Le contrôle positif est l'état réel du schéma : l'écrivain déclaré écrit
+   * dans `stock_level` et n'est pas signalé.
+   */
+  it('signale une autre fonction que l\'écrivain déclaré qui écrit dans un agrégat', async () => {
+    const rule: RuleName = 'aucun autre écrivain d\'une table dérivée'
+    expect(describeViolations(await violations(client, rule))).toBe('')
+
+    await client.query('begin')
+    await client.query(`
+      create function merx.rogue_stock_writer(level_id uuid)
+      returns void language sql as $probe$
+        update public.stock_level set quantity = 0 where id = level_id
+      $probe$;
+    `)
+
+    const found = await violations(client, rule)
+    expect(describeViolations(found)).toContain('merx.rogue_stock_writer')
+    expect(describeViolations(found)).toContain('merx.apply_stock_movement()')
+  })
+
+  /*
    * E2-02, SPEC § 2.6. Une table de formulaire conforme, puis chacune des trois
    * façons de rendre obligatoire autre chose que le nom — chacune doit être
    * nommée, et une colonne NOT NULL pourvue d'un vrai défaut ne doit pas

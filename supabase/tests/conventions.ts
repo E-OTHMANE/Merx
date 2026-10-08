@@ -687,6 +687,170 @@ const AUDITED_COSTS = `
   order by 1
 `
 
+/*
+ * SPEC RÈGLE M2-1, E3-01 — une table dérivée est un agrégat : elle n'a aucun
+ * écrivain applicatif, et ses deux gardes le tiennent. Même forme que les
+ * gardes de l'ajout seul, et pour la même raison — le registre est ce que lit
+ * `isolation.test.ts` pour savoir qu'il doit inverser son contrôle positif.
+ *
+ * Quatre volets, un par façon de manquer :
+ *   — la table du registre n'existe pas dans `public` ;
+ *   — l'un des trois triggers manque. Le garde d'INSERT est **AFTER** et ceux
+ *     d'UPDATE et DELETE **BEFORE** : en BEFORE INSERT, le garde refuserait
+ *     avant la RLS et tiendrait lieu d'isolation, ce que le balayage ne
+ *     saurait pas distinguer (CLAUDE.md). Le contrôle vérifie donc le moment,
+ *     pas seulement la présence ;
+ *   — `authenticated` détient TRUNCATE. INSERT, UPDATE et DELETE, eux, doivent
+ *     rester accordés : le trigger d'agrégat tourne sous l'appelant ;
+ *   — l'écrivain déclaré ou la table source n'existent pas, donc le registre
+ *     nomme ce que la règle suivante chercherait en vain.
+ */
+const DERIVED_GUARDS = `
+  with registered as (
+    select r.table_name, r.source_table, r.writer_function, c.oid
+    from merx.derived_registry r
+    left join pg_class c
+      on c.relname = r.table_name
+     and c.relnamespace = 'public'::regnamespace
+     and c.relkind = 'r'
+  ),
+  guard as (
+    select t.table_name,
+           bool_or(tg.tgfoid = 'merx.reject_derived_write()'::regprocedure
+                   and (tg.tgtype & 1) <> 0 and (tg.tgtype & 2) = 0
+                   and (tg.tgtype & 4) <> 0)  as blocks_insert,
+           bool_or(tg.tgfoid = 'merx.reject_derived_write()'::regprocedure
+                   and (tg.tgtype & 1) <> 0 and (tg.tgtype & 2) <> 0
+                   and (tg.tgtype & 16) <> 0) as blocks_update,
+           bool_or(tg.tgfoid = 'merx.reject_derived_write()'::regprocedure
+                   and (tg.tgtype & 1) <> 0 and (tg.tgtype & 2) <> 0
+                   and (tg.tgtype & 8) <> 0)  as blocks_delete,
+           bool_or(tg.tgfoid = 'merx.reject_derived_truncate()'::regprocedure
+                   and (tg.tgtype & 1) = 0 and (tg.tgtype & 2) <> 0
+                   and (tg.tgtype & 32) <> 0) as blocks_truncate
+    from registered t
+    left join pg_trigger tg on tg.tgrelid = t.oid and not tg.tgisinternal
+    group by 1
+  )
+  select r.table_name, 'inscrite au registre des tables dérivées, absente de public' as detail
+  from registered r where r.oid is null
+
+  union all
+
+  select g.table_name,
+         'aucun trigger AFTER INSERT merx.reject_derived_write — une ligne s''écrit à la '
+         'main. AFTER et non BEFORE : en BEFORE, le garde refuserait avant la RLS et '
+         'tiendrait lieu d''isolation' as detail
+  from guard g where not coalesce(g.blocks_insert, false)
+
+  union all
+
+  select g.table_name,
+         'aucun trigger BEFORE UPDATE merx.reject_derived_write — un agrégat se rature' as detail
+  from guard g where not coalesce(g.blocks_update, false)
+
+  union all
+
+  select g.table_name,
+         'aucun trigger BEFORE DELETE merx.reject_derived_write — un agrégat se supprime' as detail
+  from guard g where not coalesce(g.blocks_delete, false)
+
+  union all
+
+  select g.table_name,
+         'aucun trigger BEFORE TRUNCATE merx.reject_derived_truncate — la table se vide '
+         'd''un coup, et le garde de ligne ne le voit pas' as detail
+  from guard g where not coalesce(g.blocks_truncate, false)
+
+  union all
+
+  select r.table_name,
+         'authenticated détient TRUNCATE sur une table dérivée' as detail
+  from registered r
+  join information_schema.role_table_grants g
+    on g.table_schema = 'public' and g.table_name = r.table_name
+   and g.grantee = 'authenticated' and g.privilege_type = 'TRUNCATE'
+
+  union all
+
+  select r.table_name,
+         format('écrivain déclaré merx.%s() introuvable — la règle qui refuse les autres '
+                'écrivains refuserait tout le monde', r.writer_function) as detail
+  from registered r
+  where not exists (
+    select 1 from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace and n.nspname = 'merx'
+    where p.proname = r.writer_function
+  )
+
+  union all
+
+  select r.table_name,
+         format('table source déclarée %s absente du registre de conventions', r.source_table)
+           as detail
+  from registered r
+  where not exists (
+    select 1 from merx.convention_registry c where c.table_name = r.source_table
+  )
+
+  order by 1, 2
+`
+
+/*
+ * L'inverse : une table gardée sans être inscrite. Même raisonnement qu'en
+ * E1-04 pour l'ajout seul — le registre n'est pas une étiquette, c'est ce que
+ * lit le harnais de test pour savoir ce qu'il doit attendre de cette table.
+ */
+const UNREGISTERED_DERIVED = `
+  select c.relname as table_name,
+         'gardée comme table dérivée sans inscription au registre — passer par '
+         'merx.apply_derived_from()' as detail
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public'
+  join pg_trigger tg on tg.tgrelid = c.oid and not tg.tgisinternal
+  where c.relkind = 'r'
+    and tg.tgfoid in ('merx.reject_derived_write()'::regprocedure,
+                      'merx.reject_derived_truncate()'::regprocedure)
+    and not exists (
+      select 1 from merx.derived_registry r where r.table_name = c.relname
+    )
+  group by 1
+  order by 1
+`
+
+/*
+ * SPEC RÈGLE M2-1, E3-01 — « stock_level est un agrégat maintenu par trigger ».
+ *
+ * Le garde de ligne repose sur `pg_trigger_depth()`, qui dit « écrit par un
+ * trigger » et non « écrit par le trigger d'agrégat ». Le jour où une autre
+ * fonction écrira dans une table dérivée depuis un trigger — sur `sale_line`
+ * en E4, sur `goods_receipt_line` en E8 — le garde la laissera passer, et deux
+ * endroits décideraient de la valeur d'un agrégat.
+ *
+ * Le registre nomme donc l'écrivain, et ce balayage refuse tous les autres. Il
+ * lit le corps des fonctions de `public` et de `merx` : grossier, et c'est le
+ * bon niveau de grossièreté — il attrape la faute au moment où elle s'écrit,
+ * dans une story qui n'est pas celle-ci. Même procédé que le contrôle
+ * d'`audit_log` plus haut (E1-04).
+ */
+const DERIVED_DIRECT_WRITE = `
+  with writers as (
+    select format('%s.%s', n.nspname, p.proname) as qualified, p.proname, p.prosrc
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname in ('public', 'merx')
+  )
+  select w.qualified as table_name,
+         format('écrit dans %s, dont le seul écrivain déclaré est merx.%s() — RÈGLE M2-1',
+                r.table_name, r.writer_function) as detail
+  from writers w
+  join merx.derived_registry r
+    on w.prosrc ~* ('(insert\\s+into|update|delete\\s+from)\\s+public\\."?'
+                    || r.table_name || '"?\\M')
+  where w.proname <> r.writer_function
+  order by 1, 2
+`
+
 export const RULES = {
   'table non enregistrée': UNREGISTERED,
   'registre périmé': STALE_REGISTRY,
@@ -701,6 +865,9 @@ export const RULES = {
   'aucune relation confidentielle vide': EMPTY_CONFIDENTIAL,
   'gardes de l\'ajout seul': APPEND_ONLY_GUARDS,
   'aucun ajout seul hors registre': UNREGISTERED_APPEND_ONLY,
+  'gardes des tables dérivées': DERIVED_GUARDS,
+  'aucune table dérivée hors registre': UNREGISTERED_DERIVED,
+  'aucun autre écrivain d\'une table dérivée': DERIVED_DIRECT_WRITE,
   'aucune écriture directe dans audit_log': AUDIT_DIRECT_WRITE,
   'clés étrangères composites sur tenant_id': TENANT_SCOPED_FOREIGN_KEYS,
   'aucune référence à product hors de variant': PRODUCT_REFERENCES,

@@ -16,7 +16,7 @@
 
 import type { Client } from 'pg'
 
-import { appendOnlyTables, auditedTables, withoutTriggers } from './isolation'
+import { appendOnlyTables, auditedTables, derivedTables, withoutTriggers } from './isolation'
 
 // Réexporté ici : les fichiers de test qui rangent par PostgREST l'importent
 // avec le reste de leur outillage.
@@ -225,6 +225,7 @@ export async function deleteRows(
 ): Promise<void> {
   const appendOnly = await appendOnlyTables(client)
   const audited = await auditedTables(client)
+  const derived = await derivedTables(client)
 
   for (const table of [...order].reverse()) {
     const id = rows.get(table)
@@ -257,7 +258,13 @@ export async function deleteRows(
      * Une table journalisée (RÈGLE M8-1) refuse, elle, toute écriture sans
      * commerce ni auteur dans le jeton — et ce ménage n'en a pas. Même geste.
      */
-    if (appendOnly.has(table) || audited.has(table)) {
+    /*
+     * Une table dérivée (RÈGLE M2-1), elle, refuse toute écriture qui ne vient
+     * pas de son trigger d'agrégat — y compris une suppression de ménage.
+     * Même geste, et pour la même raison : la propriété est éprouvée sur son
+     * chemin réel, dans `stock-movements.test.ts`, pas ici.
+     */
+    if (appendOnly.has(table) || audited.has(table) || derived.has(table)) {
       await withoutTriggers(client, () =>
         client.query(`delete from public."${table}" where id = $1`, [id]),
       )

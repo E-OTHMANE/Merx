@@ -407,16 +407,24 @@ Le filtre du commerce retiré fait tomber les deux tests d'isolation, les assert
 **En tant que** patron, **je veux** que chaque mouvement soit traçable, **afin de** comprendre un écart.
 
 **Critères d'acceptation**
-- [ ] Tables `warehouse`, `stock_level`, `stock_movement`
-- [ ] `stock_level` unique sur `(variant_id, warehouse_id)`
-- [ ] **`stock_level` n'est jamais écrit directement** : trigger sur `stock_movement`
-- [ ] `stock_movement` immuable : ni UPDATE, ni DELETE, refusé au niveau base
-- [ ] `quantity` signée, négative en sortie
-- [ ] `movement_type` : `sale | return | receipt | adjustment | inventory`
-- [ ] `source_type` et `source_id` renvoient au document d'origine
-- [ ] Test : une série de mouvements produit le `stock_level` attendu
+- [x] Tables `warehouse`, `stock_level`, `stock_movement`
+- [x] `stock_level` unique sur `(variant_id, warehouse_id)`
+- [x] **`stock_level` n'est jamais écrit directement** : trigger sur `stock_movement`
+- [x] `stock_movement` immuable : ni UPDATE, ni DELETE, refusé au niveau base
+- [x] `quantity` signée, négative en sortie
+- [x] `movement_type` : `sale | return | receipt | adjustment | inventory`
+- [x] `source_type` et `source_id` renvoient au document d'origine
+- [x] Test : une série de mouvements produit le `stock_level` attendu
 
 **Notes** — `SPEC.md` RÈGLES M2-1, M2-2. L'immutabilité est ce qui rendra la synchronisation possible en E9. Ne pas l'assouplir.
+
+**Arbitrages rendus** — `stock_level` est la première **table dérivée** : troisième registre à côté de l'ajout seul et de l'audit (`merx.derived_registry`, `merx.apply_derived_from()`), parce qu'un agrégat n'est ni immuable ni simplement journalisé — il n'a aucun écrivain applicatif. Le garde repose sur `pg_trigger_depth()`, qui dit « écrit par un trigger » et non « écrit par le trigger d'agrégat » : le registre nomme donc l'écrivain, et `conventions.ts` refuse toute autre fonction de `public` ou de `merx` qui écrirait dans la table. Refus en `55000`, code d'aucun autre garde du projet.
+
+**L'écriture d'un mouvement est fermée par défaut, ouverte type par type.** `merx.movement_type_capability` est **vide** en E3-01 : aucun écran n'écrit de mouvement, donc personne n'a besoin d'en écrire un, et laisser la porte ouverte deux stories durant laisserait un employé poster un `adjustment` de −1000 par PostgREST. E3-03 ouvrira `adjustment`, E3-04 `inventory`, E4 `sale` et `return`, E8-02 `receipt` — chaque story ouvre son type et seulement le sien, sans inventer de capacité, celles de § 3.1 suffisant toutes. Deux gardes s'en partagent la charge, avec deux refus distincts : la policy `column_capability_insert` (via `merx.can_move_stock()`, donc via `merx.can()`) répond pour le rôle, le trigger `require_open_movement_type` répond pour le type et le nomme. Chemin d'écriture `restricted`, troisième valeur du registre d'ajout seul.
+
+**Ordre des gardes.** Les deux gardes d'insertion — celui des tables dérivées et celui du fermé par défaut — sont posés **AFTER**, délibérément : la RLS d'une insertion est vérifiée entre les triggers BEFORE et les AFTER, et en BEFORE ils auraient refusé une ligne destinée au commerce voisin avant `tenant_isolation`, laissant le balayage d'isolation au vert si la policy disparaissait.
+
+**Retouche du balayage d'isolation.** Deux tests mutaient l'état partagé quand le garde qu'ils mesuraient manquait : la suppression de la ligne d'agrégat et la tentative d'insertion réussissaient pour de bon, et les cas suivants tombaient sur un état qu'ils n'avaient pas produit. Les deux passent désormais par un point de sauvegarde relâché dans tous les cas. Mesuré sur deux sabotages : **9 rouges dont 2 en cascade → 7**, et **8 dont 1 → 7**. Même propriété qu'`attempt()` en E2-04 — un garde retiré, un test tombe, et il nomme la bonne table.
 
 ---
 
