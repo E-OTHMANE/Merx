@@ -321,6 +321,17 @@ const APPEND_ONLY_GUARDS = `
   where g.privilege_type in ('UPDATE', 'DELETE', 'TRUNCATE')
      or (r.write_path = 'helper' and g.privilege_type = 'INSERT')
 
+  union all
+
+  select r.table_name,
+         format('garde %s désactivé (tgenabled = %L) — il existe toujours au catalogue '
+                'et ne refuse plus rien', tg.tgname, tg.tgenabled) as detail
+  from registered r
+  join pg_trigger tg on tg.tgrelid = r.oid and not tg.tgisinternal
+  where tg.tgfoid in ('merx.reject_row_mutation()'::regprocedure,
+                      'merx.reject_truncate()'::regprocedure)
+    and tg.tgenabled not in ('O', 'A')
+
   order by 1, 2
 `
 
@@ -792,6 +803,29 @@ const DERIVED_GUARDS = `
   where not exists (
     select 1 from merx.convention_registry c where c.table_name = r.source_table
   )
+
+  union all
+
+  /*
+   * Un trigger désactivé existe toujours dans pg_trigger : tgfoid et tgtype
+   * sont intacts, et les quatre contrôles ci-dessus passaient. Seul tgenabled
+   * change — d'où cette branche. E3-02 lève le garde d'insertion le temps d'un
+   * rattrapage, dans une migration : le seul endroit du projet, hors harnais,
+   * où un garde est baissé, et un enable oublié ne doit pas se lire comme une
+   * suite verte. Le message est distinct de « aucun trigger » — absent et
+   * désactivé ne se réparent pas de la même façon.
+   *
+   * Sans accent grave dans ce commentaire : il vit dans un littéral de
+   * gabarit, où un accent grave fermerait la chaîne.
+   */
+  select r.table_name,
+         format('garde %s désactivé (tgenabled = %L) — il existe toujours au catalogue '
+                'et ne refuse plus rien', tg.tgname, tg.tgenabled) as detail
+  from registered r
+  join pg_trigger tg on tg.tgrelid = r.oid and not tg.tgisinternal
+  where tg.tgfoid in ('merx.reject_derived_write()'::regprocedure,
+                      'merx.reject_derived_truncate()'::regprocedure)
+    and tg.tgenabled not in ('O', 'A')
 
   order by 1, 2
 `

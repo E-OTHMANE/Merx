@@ -97,3 +97,23 @@ export function decimalInput(raw: string, scale: number): string {
   }
   return result
 }
+
+/**
+ * La forme qu'une quantité **signée** s'affiche : `"-7.500"` → `"-7,5"`,
+ * `"0.000"` → `"0"`.
+ *
+ * `parseDecimal()` ne lit que du positif — c'est voulu, aucun champ de saisie
+ * n'accepte de signe. Une quantité en stock, elle, peut être négative
+ * (RÈGLE M2-3 : le stock négatif est autorisé, signalé, jamais bloquant), et
+ * elle n'est jamais saisie : elle est lue. Le signe est donc traité ici, et le
+ * reste passe par le même chemin que les champs — mêmes décimales inutiles
+ * retirées, même virgule (BRAND-UI § 6).
+ */
+export function quantityText(stored: string): string {
+  const negative = stored.trimStart().startsWith('-')
+  const text = inputText(negative ? stored.trimStart().slice(1) : stored, 'quantity')
+  if (text === '') return ''
+  // Un zéro n'a pas de signe : « -0 » ne veut rien dire au comptoir.
+  if (parseDecimal(text.replace(',', '.'), QUANTITY_SCALE) === 0n) return '0'
+  return negative ? `-${text}` : text
+}

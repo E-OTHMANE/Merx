@@ -311,7 +311,7 @@ describe('les règles attrapent une table fautive', () => {
           " where table_name = 'stock_level'",
       )
       expect(rows).toEqual([
-        { source_table: 'stock_movement', writer_function: 'apply_stock_movement' },
+        { source_table: 'stock_movement', writer_function: 'maintain_stock_level' },
       ])
 
       expect(describeViolations(await violations(client, rule))).toBe('')
@@ -408,7 +408,7 @@ describe('les règles attrapent une table fautive', () => {
 
     const found = await violations(client, rule)
     expect(describeViolations(found)).toContain('merx.rogue_stock_writer')
-    expect(describeViolations(found)).toContain('merx.apply_stock_movement()')
+    expect(describeViolations(found)).toContain('merx.maintain_stock_level()')
   })
 
   /*
@@ -502,7 +502,7 @@ describe('les règles attrapent une table fautive', () => {
     const onFunction = (found: readonly Violation[], name: string) =>
       found.filter((v) => v.table_name === `public.${name}`)
 
-    it('inscrit exactement les cinq fonctions connues, chacune justifiée', async () => {
+    it('inscrit exactement les six fonctions connues, chacune justifiée', async () => {
       const { rows } = await client.query<{
         function_name: string
         guard: string
@@ -512,10 +512,11 @@ describe('les règles attrapent une table fautive', () => {
         from merx.rls_exception_registry order by function_name
       `)
 
-      // Liste exacte : une sixième entrée doit se lire ici, pas s'ajouter en silence.
+      // Liste exacte : une septième entrée doit se lire ici, pas s'ajouter en silence.
       expect(rows).toEqual([
         { function_name: 'create_tenant', guard: 'super_admin', justified: true },
         { function_name: 'create_worker', guard: 'current_tenant', justified: true },
+        { function_name: 'list_stock_movements', guard: 'current_tenant', justified: true },
         { function_name: 'register_device', guard: 'current_tenant', justified: true },
         { function_name: 'search_products', guard: 'current_tenant', justified: true },
         { function_name: 'set_user_active', guard: 'current_tenant', justified: true },

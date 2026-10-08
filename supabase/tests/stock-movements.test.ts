@@ -120,7 +120,7 @@ let client: Client
  * porte l'identifiant de son produit depuis E2-01. Tout est posé en `postgres`
  * dans une transaction annulée en fin de fichier.
  */
-const fixture = { tenant: '', warehouse: '', variant: '', untouched: '' }
+const fixture = { tenant: '', warehouse: '', spare: '', variant: '', untouched: '' }
 
 beforeAll(async () => {
   client = await connect()
@@ -137,6 +137,24 @@ beforeAll(async () => {
     [fixture.tenant, 'Dépôt'],
   )
   fixture.warehouse = warehouses[0]!.id
+
+  /*
+   * Un second dépôt, non par défaut. Depuis E3-02 toute variante naît avec sa
+   * ligne de `stock_level` sur le dépôt par défaut : la paire
+   * `(variante, dépôt par défaut)` est donc **toujours** prise, et une
+   * insertion à la main y est refusée par l'unicité (`23505`) avant que le
+   * garde d'agrégat ait à se prononcer. La seule paire vierge d'un commerce est
+   * celle d'un second dépôt — et c'est un chemin réel, `authenticated` détenant
+   * INSERT sur `warehouse`. C'est par là que le garde se mesure.
+   *
+   * `is_default` à false : `warehouse_one_default_per_tenant` n'admet qu'un
+   * dépôt par défaut vivant par commerce.
+   */
+  const { rows: spares } = await client.query<{ id: string }>(
+    'insert into public.warehouse (tenant_id, name, is_default) values ($1, $2, false) returning id',
+    [fixture.tenant, 'Dépôt annexe'],
+  )
+  fixture.spare = spares[0]!.id
 
   const { rows: products } = await client.query<{ id: string }>(
     'insert into public.product (tenant_id, name_fr) values ($1, $2) returning id',
@@ -163,15 +181,19 @@ beforeAll(async () => {
   }
 
   /*
-   * Une seconde variante, qui ne reçoit jamais de mouvement. Elle sert aux cas
-   * d'insertion directe dans `stock_level` — et ce n'est pas un détail.
+   * Une seconde variante, qui ne reçoit jamais de mouvement. Avec le dépôt
+   * annexe ci-dessus, elle forme la paire vierge des cas d'insertion directe
+   * dans `stock_level` — et ce n'est pas un détail.
    *
    * Sur une paire qui a déjà un niveau, une insertion à la main est refusée par
    * l'unicité `(variant_id, warehouse_id)` (`23505`), **avant** que le garde
    * d'agrégat ait à se prononcer : le premier jet de ce test passait sur le
    * refus du voisin, et le garde pouvait disparaître sans qu'il tombe
-   * (CLAUDE.md, un refus qui prend le crédit d'un autre). Sur une paire vierge,
-   * l'unicité n'a rien à dire, et seul le garde peut refuser.
+   * (CLAUDE.md, un refus qui prend le crédit d'un autre). Jusqu'à E3-02 une
+   * variante sans mouvement suffisait à obtenir cette paire vierge ; depuis que
+   * la ligne naît avec la variante, il faut aussi un dépôt où elle n'est pas.
+   * Le cas « l'unicité refuse la paire occupée » est écrit plus bas, et il
+   * assert le nom de la contrainte : les deux refus restent distinguables.
    */
   const { rows: others } = await client.query<{ id: string }>(
     'insert into public.product (tenant_id, name_fr) values ($1, $2) returning id',
@@ -210,6 +232,24 @@ async function level(): Promise<string | null> {
   return rows[0]?.quantity ?? null
 }
 
+/**
+ * `last_movement_at` de la paire, relu hors RLS comme `level()`. NULL dit
+ * « aucun mouvement n'a jamais touché cette variante » — ce que l'écran lit
+ * « stock non saisi » plutôt que « 0 » (SPEC § 2.5, E3-02).
+ */
+async function lastMovement(): Promise<string | null> {
+  await client.query('reset role')
+  // `to_jsonb(...)::text` plutôt que la colonne : le pilote rend un `Date`, que
+  // deux assertions d'égalité stricte ne savent pas comparer. Un instant en
+  // texte se compare.
+  const { rows } = await client.query<{ at: string | null }>(
+    'select to_char(last_movement_at at time zone $3, $4) as at' +
+      ' from public.stock_level where variant_id = $1 and warehouse_id = $2',
+    [fixture.variant, fixture.warehouse, 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'],
+  )
+  return rows[0]?.at ?? null
+}
+
 /** La somme des mouvements de la paire — l'autre façon de calculer le niveau. */
 async function movementSum(): Promise<string> {
   await client.query('reset role')
@@ -232,14 +272,24 @@ async function openType(movementType: string, capability: string): Promise<void>
   )
 }
 
-/** Pose un mouvement en `postgres`, triggers actifs : l'agrégat doit tourner. */
-async function postMovement(movementType: string, quantity: string): Promise<void> {
+/**
+ * Pose un mouvement en `postgres`, triggers actifs : l'agrégat doit tourner.
+ *
+ * `createdAt` sert à rejouer ce que la synchronisation d'E9 produira — un
+ * mouvement saisi hors ligne, arrivé après de plus récents. Laissé de côté, la
+ * colonne prend son défaut, `now()`.
+ */
+async function postMovement(
+  movementType: string,
+  quantity: string,
+  createdAt?: string,
+): Promise<void> {
   await client.query('reset role')
   await client.query(
     'insert into public.stock_movement' +
-      ' (tenant_id, variant_id, warehouse_id, movement_type, quantity)' +
-      ' values ($1, $2, $3, $4::public.stock_movement_type, $5)',
-    [fixture.tenant, fixture.variant, fixture.warehouse, movementType, quantity],
+      ' (tenant_id, variant_id, warehouse_id, movement_type, quantity, created_at)' +
+      ' values ($1, $2, $3, $4::public.stock_movement_type, $5, coalesce($6::timestamptz, now()))',
+    [fixture.tenant, fixture.variant, fixture.warehouse, movementType, quantity, createdAt ?? null],
   )
 }
 
@@ -291,7 +341,16 @@ describe('la série de mouvements', () => {
   it('produit le stock_level attendu à chaque étape, négatif compris', async () => {
     await inCase(async () => {
       await open()
-      expect(await level(), 'un niveau existe avant le premier mouvement').toBeNull()
+      /*
+       * Depuis E3-02 la ligne existe avant tout mouvement — elle naît avec la
+       * variante — et c'est `last_movement_at` qui dit que rien n'a bougé.
+       * Les deux sont affirmés : une ligne absente ferait disparaître la
+       * variante de la liste des quantités et des deux filtres, et un
+       * horodatage posé d'avance ferait lire « 0 compté » un stock que
+       * personne n'a compté.
+       */
+      expect(await level(), 'la ligne de stock n’est pas ouverte à la naissance').toBe('0.000')
+      expect(await lastMovement(), 'un stock jamais saisi porte une date').toBeNull()
 
       const steps = [
         { type: 'receipt', quantity: '100', expected: '100.000' },
@@ -313,6 +372,43 @@ describe('la série de mouvements', () => {
        * niveau cohérent avec lui-même et faux par rapport à l'historique.
        */
       expect(await movementSum(), 'le niveau n’est plus la somme des mouvements').toBe('6.750')
+    })
+  })
+
+  /*
+   * `last_movement_at` et la synchronisation. E3-02 — SPEC § 2.5.
+   *
+   * En E9 un mouvement saisi hors ligne il y a trois jours arrivera **après**
+   * des mouvements plus récents : c'est la propriété qui rend l'ajout seul
+   * synchronisable (RÈGLE M2-2), et c'est exactement le cas où une colonne
+   * écrite avec `new.created_at` reculerait. Un écran qui annonce « dernier
+   * mouvement avant-hier » alors qu'il y en a eu un ce matin se lit comme une
+   * perte de données.
+   *
+   * Les deux mouvements sont posés dans le désordre, et la date relue : c'est
+   * `greatest()` qui est mesuré, pas l'ordre d'arrivée. La quantité, elle, est
+   * commutative — elle doit tenir dans les deux sens, et l'assertion le dit.
+   */
+  it('la date du dernier mouvement ne recule pas quand un retardataire arrive', async () => {
+    await inCase(async () => {
+      await open()
+
+      const recent = '2026-10-08T09:00:00Z'
+      const late = '2026-10-05T09:00:00Z'
+
+      await postMovement('receipt', '10', recent)
+      const afterRecent = await lastMovement()
+      expect(afterRecent, 'aucune date après le premier mouvement').not.toBeNull()
+
+      // Le retardataire, synchronisé après coup.
+      await postMovement('sale', '-4', late)
+
+      expect(await lastMovement(), 'la date a reculé sur un mouvement synchronisé en retard').toBe(
+        afterRecent,
+      )
+      expect(afterRecent).toBe(recent)
+      // La quantité, elle, prend bien les deux.
+      expect(await level(), 'le retardataire n’a pas été additionné').toBe('6.000')
     })
   })
 
@@ -420,7 +516,7 @@ describe('RÈGLE M2-1 — stock_level ne s’écrit pas à la main', () => {
    */
   const insertSql = (): string =>
     'insert into public.stock_level (tenant_id, variant_id, warehouse_id, quantity) values' +
-    ` ('${fixture.tenant}'::uuid, '${fixture.untouched}'::uuid, '${fixture.warehouse}'::uuid, 1)`
+    ` ('${fixture.tenant}'::uuid, '${fixture.untouched}'::uuid, '${fixture.spare}'::uuid, 1)`
 
   it('refuse l’insertion directe d’un owner', async () => {
     await withLevel(async () => {
@@ -433,6 +529,38 @@ describe('RÈGLE M2-1 — stock_level ne s’écrit pas à la main', () => {
       expect(written.code, written.message).toBe(DERIVED_WRITE)
       expect(written.message).toContain('stock_level')
       expect(written.message).toContain('agrégat')
+    })
+  })
+
+  /*
+   * L'autre refus du même geste, et il faut qu'il se distingue. Sur la paire
+   * **occupée** — celle que la naissance de la variante a ouverte — c'est
+   * l'unicité qui parle, pas le garde. Le test l'assert par le **nom de la
+   * contrainte**, jamais par le seul `23505` : deux index peuvent refuser la
+   * même insertion avec le même code, et celui qu'on croit mesurer n'est pas
+   * toujours celui qui a refusé (CLAUDE.md ; E2-01, E2-06).
+   *
+   * Sans ce cas, rien ne rappellerait que le garde d'insertion ne se mesure que
+   * sur une paire vierge — et le prochain à écrire un test d'insertion directe
+   * le poserait sur la paire par défaut, où il passerait sur le refus du
+   * voisin.
+   */
+  it('sur une paire déjà ouverte, c’est l’unicité qui refuse, pas le garde', async () => {
+    await withLevel(async () => {
+      await client.query('reset role')
+
+      const written = await attempt(
+        client,
+        'insert into public.stock_level (tenant_id, variant_id, warehouse_id, quantity) values' +
+          ` ('${fixture.tenant}'::uuid, '${fixture.variant}'::uuid, '${fixture.warehouse}'::uuid, 1)`,
+      )
+
+      expect(written.ok, 'FUITE — un second niveau pour la même paire').toBe(false)
+      if (written.ok) return
+      expect(written.code, written.message).toBe('23505')
+      expect(written.message).toContain('stock_level_variant_warehouse')
+      // Et surtout : ce n'est pas ce refus-là qui tient la RÈGLE M2-1.
+      expect(written.code).not.toBe(DERIVED_WRITE)
     })
   })
 
@@ -651,7 +779,8 @@ describe('l’écriture d’un mouvement est fermée par défaut', () => {
       expect(written.message, 'le refus ne nomme pas le type').toContain(CLOSED_BY_DEFAULT)
       expect(written.message).toContain(movementType)
 
-      expect(await level(), 'un niveau est né d’un mouvement refusé').toBeNull()
+      expect(await level(), 'un mouvement refusé a bougé le niveau').toBe('0.000')
+      expect(await lastMovement(), 'un mouvement refusé a posé sa date').toBeNull()
     })
   })
 
@@ -727,7 +856,8 @@ describe('la policy d’insertion exige la capacité du type', () => {
         CLOSED_BY_DEFAULT,
       )
 
-      expect(await level(), 'un niveau est né d’un mouvement refusé').toBeNull()
+      expect(await level(), 'un mouvement refusé a bougé le niveau').toBe('0.000')
+      expect(await lastMovement(), 'un mouvement refusé a posé sa date').toBeNull()
     })
   })
 

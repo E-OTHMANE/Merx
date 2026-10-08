@@ -618,6 +618,39 @@ export async function seedTwoTenants(client: Client): Promise<Seeded> {
     ]),
   )
 
+  /*
+   * Une dépendance que `pg_constraint` ne porte pas. Depuis E3-02, insérer une
+   * `variant` déclenche `open_stock_level`, qui ouvre sa ligne de `stock_level`
+   * sur le dépôt par défaut du commerce — et refuse en `55000` s'il n'y en a
+   * pas. Aucune colonne de `variant` ne pointe sur `warehouse`, donc l'ordre
+   * dérivé des clés étrangères peut poser la variante avant le dépôt, et c'est
+   * ce qui s'est produit.
+   *
+   * Déclarée, et non contournée en suspendant les triggers de `variant` : sous
+   * suspension le balayage passerait sans créer aucune ligne de stock, et le
+   * jour où un autre trigger de `variant` portera une propriété d'isolation, il
+   * ne tournerait pas davantage. La déclaration se périme bruyamment — si l'une
+   * des deux tables quitte le registre, le peuplement s'arrête en le disant.
+   */
+  const TRIGGER_DEPENDENCIES: ReadonlyArray<readonly [string, string]> = [
+    ['variant', 'warehouse'],
+    // Et `product`, parce que la chaîne a un maillon de plus : insérer un
+    // produit déclenche le trigger d'E2-01 qui crée sa variante par défaut,
+    // laquelle déclenche `open_stock_level`. La dépendance est transitive, et
+    // aucune colonne ne la porte à aucun des deux étages.
+    ['product', 'warehouse'],
+  ]
+
+  for (const [table, dependency] of TRIGGER_DEPENDENCIES) {
+    if (!dependencies.has(table) || !dependencies.has(dependency)) {
+      throw new Error(
+        `Dépendance par trigger déclarée de ${table} vers ${dependency}, dont l'une n'est ` +
+          'pas au registre de conventions : la déclaration est périmée (isolation.ts).',
+      )
+    }
+    dependencies.get(table)!.add(dependency)
+  }
+
   const order = topologicalOrder(dependencies)
   let seed = 0
 
@@ -692,7 +725,62 @@ export async function seedTwoTenants(client: Client): Promise<Seeded> {
   const needsTriggerBypass = (table: string): boolean =>
     audited.has(table) || derived.has(table) || appendOnly.get(table) === 'restricted'
 
+  /*
+   * `stock_level` ne s'insère plus : depuis E3-02 sa ligne naît avec la
+   * variante, et l'unicité `(variant_id, warehouse_id)` refuse la seconde. Le
+   * balayage prend donc celle qui est là, au lieu d'en poser une — et c'est la
+   * bonne ligne, celle que l'application rencontrera.
+   *
+   * Lue plutôt que devinée, et exigée : une table déclarée peuplée d'office
+   * dont aucune ligne n'existe arrête le peuplement. Sans quoi le jour où le
+   * trigger cesserait d'ouvrir la ligne, le balayage sauterait silencieusement
+   * la table — et `stock_level` sortirait du contrôle d'isolation sans que rien
+   * ne le dise.
+   */
+  const SEEDED_BY_TRIGGER: Readonly<Record<string, { column: string; parent: string }>> = {
+    stock_level: { column: 'variant_id', parent: 'variant' },
+  }
+
+  /*
+   * La ligne est désignée par son parent, jamais par « la première du
+   * commerce » : le peuplement crée deux variantes par commerce — la sienne, et
+   * celle que le trigger d'E2-01 pose sous le produit — donc deux lignes de
+   * stock. Adopter la plus ancienne reviendrait à laisser la seconde derrière,
+   * et la suppression de la variante du balayage buterait sur sa clé étrangère.
+   * Mesuré : c'est exactement ce qui s'est produit.
+   */
+  const adopt = async (
+    table: string,
+    tenant: string,
+    rows: TenantRows,
+    link: { column: string; parent: string },
+  ): Promise<string> => {
+    const parent = rows.get(link.parent)
+    if (parent === undefined) {
+      throw new Error(
+        `${table} est déclarée peuplée d'office à partir de ${link.parent}, dont aucune ligne ` +
+          "n'a été créée. Vérifier l'ordre topologique (isolation.ts).",
+      )
+    }
+
+    const { rows: found } = await client.query<{ id: string }>(
+      `select id from public."${table}" where tenant_id = $1 and "${link.column}" = $2`,
+      [tenant, parent],
+    )
+    const id = found[0]?.id
+    if (id === undefined) {
+      throw new Error(
+        `${table} est déclarée peuplée d'office par un trigger, mais ${link.parent} ${parent} ` +
+          "n'en a aucune ligne : le trigger ne l'ouvre plus (isolation.ts).",
+      )
+    }
+    return id
+  }
+
   const insert = async (table: string, tenant: string | null, rows: TenantRows): Promise<string> => {
+    const link = SEEDED_BY_TRIGGER[table]
+    if (tenant !== null && link !== undefined) return adopt(table, tenant, rows, link)
+
     const run = () => client.query<{ id: string }>(insertSql(table, tenant, rows))
     const { rows: inserted } = needsTriggerBypass(table)
       ? await withoutTriggers(client, run)

@@ -616,12 +616,28 @@ describe('les quatre opérations, à travers la frontière', () => {
        * est la même : sa ligne n'a rien à faire dans ce contrôle positif, et
        * elle est ôtée garde levé pour que la boucle puisse continuer.
        */
+      /*
+       * **Toutes** les lignes du commerce, et non la seule que le peuplement a
+       * retenue. Depuis E3-02 une table dérivée en porte plus que cela : la
+       * ligne de `stock_level` naît avec sa variante, et un commerce en a deux
+       * — celle du balayage, et celle que le trigger d'E2-01 pose sous le
+       * produit. Laisser la seconde derrière fait buter la suppression du
+       * produit sur `stock_level_variant_id_fkey`, et le test rapporterait un
+       * schéma là où il veut rapporter une policy. Mesuré : c'est ce qui s'est
+       * produit.
+       */
       if (APPEND_ONLY.has(table) || DERIVED.has(table)) {
         await client.query('reset role')
         await client.query('set session_replication_role = replica')
-        const removed = await rowsTouched(`delete from public."${table}" where id = '${id}'::uuid`)
+        const scope = DERIVED.has(table)
+          ? `tenant_id = '${seeded.tenants.a}'::uuid`
+          : `id = '${id}'::uuid`
+        const removed = await rowsTouched(`delete from public."${table}" where ${scope}`)
         await client.query('set session_replication_role = origin')
-        expect(removed, `${table} : ménage de la ligne gardée impossible`).toBe(1)
+        expect(
+          removed,
+          `${table} : ménage de la ligne gardée impossible`,
+        ).toBeGreaterThanOrEqual(1)
         await actAs(client, tokenFor(seeded.tenants.a, 'owner'))
         continue
       }

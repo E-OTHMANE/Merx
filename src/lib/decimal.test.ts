@@ -6,6 +6,7 @@ import {
   decimalInput,
   inputText,
   parseDecimal,
+  quantityText,
   toSqlDecimal,
 } from '@/lib/decimal'
 
@@ -85,5 +86,24 @@ describe('decimalInput', () => {
     ['2,5', 0, '25'],
   ])('« %s » à l’échelle %i devient « %s »', (raw, scale, expected) => {
     expect(decimalInput(raw, scale)).toBe(expected)
+  })
+})
+
+/*
+ * Les quantités signées. E3-02 — RÈGLE M2-3 : le stock peut passer sous zéro,
+ * et il se lit. `parseDecimal()` refuse le signe, par choix : aucun champ de
+ * saisie ne l'accepte. Une quantité lue, elle, le porte.
+ */
+describe('quantityText', () => {
+  it.each([
+    ['0.000', '0'],
+    ['10.000', '10'],
+    ['2.500', '2,5'],
+    ['-7.500', '-7,5'],
+    ['-0.001', '-0,001'],
+    // Un zéro n'a pas de signe : « -0 » ne veut rien dire au comptoir.
+    ['-0.000', '0'],
+  ])('rend %s « %s »', (stored, shown) => {
+    expect(quantityText(stored)).toBe(shown)
   })
 })
