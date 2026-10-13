@@ -33,6 +33,7 @@ import {
   ProductFormScreen,
   ProductListScreen,
 } from '@/modules/catalogue'
+import { VariantStockScreen } from '@/modules/stock'
 
 /**
  * Le pendant du garde : un utilisateur déjà connecté n'a rien à faire sur le
@@ -122,6 +123,19 @@ export function AppRoutes() {
               et le figer — c'est une modification du catalogue, pas une
               consultation. */}
           <Route path="/products/:id/labels" element={<LabelSheetScreen />} />
+        </Route>
+
+        {/* Le stock d'un produit et l'historique de ses variantes. E3-02.
+            Sous `view_catalogue` et non `manage_product` : l'acteur de la story
+            est le vendeur, et consulter n'écrit rien — aucun type de mouvement
+            n'est ouvert à l'écriture avant E3-03. C'est aussi pourquoi son
+            retour mène à `/products` et non à la fiche produit, que le vendeur
+            ne peut pas ouvrir : un retour vers un écran interdit est une
+            impasse. Le garde de route masque l'écran ; ce qui protège sont les
+            policies de `stock_level` et les trois gardes de
+            `list_stock_movements()`. */}
+        <Route element={<RequireCapability capability="view_catalogue" />}>
+          <Route path="/products/:id/stock" element={<VariantStockScreen />} />
         </Route>
 
         {/* La grille de prix. E2-03. « Modifier la grille de prix »

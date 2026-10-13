@@ -807,6 +807,49 @@ const DERIVED_GUARDS = `
   union all
 
   /*
+   * L'écrivain déclaré doit être **branché**, et branché actif.
+   *
+   * Le registre nomme la fonction, pas ses triggers : rien ne vérifiait qu'un
+   * trigger l'appelle encore. maintain_stock_level désactivé sur variant, et
+   * les lignes de stock cessent de s'ouvrir — en silence, le filtre « stock à
+   * zéro » redevenant aveugle à presque tout le catalogue, sans qu'aucune
+   * règle ne bouge. Même famille que tgenabled ci-dessous, et même remède.
+   *
+   * (Sans accent grave : ce commentaire vit dans un littéral de gabarit.)
+   *
+   * Zéro trigger est une faute distincte d'un trigger éteint : on ne répare pas
+   * l'une comme l'autre, et le message les sépare. Le trigger est nommé, avec
+   * la table qui le porte — un écrivain peut en avoir plusieurs, sur plusieurs
+   * tables, et savoir lequel manque est tout l'intérêt.
+   */
+  select r.table_name,
+         format('écrivain déclaré merx.%s() branché à aucun trigger — la table '
+                'dérivée ne se remplit plus', r.writer_function) as detail
+  from registered r
+  where not exists (
+    select 1
+    from pg_trigger tg
+    join pg_proc p on p.oid = tg.tgfoid
+    join pg_namespace n on n.oid = p.pronamespace and n.nspname = 'merx'
+    where p.proname = r.writer_function and not tg.tgisinternal
+  )
+
+  union all
+
+  select r.table_name,
+         format('trigger %s sur %s désactivé (tgenabled = %L) — il appelle '
+                'l''écrivain merx.%s(), qui ne tourne donc plus',
+                tg.tgname, tgrel.relname, tg.tgenabled, r.writer_function) as detail
+  from registered r
+  join pg_proc p on p.proname = r.writer_function
+  join pg_namespace n on n.oid = p.pronamespace and n.nspname = 'merx'
+  join pg_trigger tg on tg.tgfoid = p.oid and not tg.tgisinternal
+  join pg_class tgrel on tgrel.oid = tg.tgrelid
+  where tg.tgenabled not in ('O', 'A')
+
+  union all
+
+  /*
    * Un trigger désactivé existe toujours dans pg_trigger : tgfoid et tgtype
    * sont intacts, et les quatre contrôles ci-dessus passaient. Seul tgenabled
    * change — d'où cette branche. E3-02 lève le garde d'insertion le temps d'un

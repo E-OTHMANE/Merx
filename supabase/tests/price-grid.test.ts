@@ -144,6 +144,8 @@ afterAll(async () => {
     // garde voyant la variante disparue.
     await client.query('delete from public.product where tenant_id = $1', [fixture.tenant])
     await client.query('delete from public.app_user where tenant_id = $1', [fixture.tenant])
+    // Le dépôt avant le commerce : `warehouse_tenant_id_fkey` ne cascade pas.
+    await client.query('delete from public.warehouse where tenant_id = $1', [fixture.tenant])
     await client.query('delete from public.tenant where id = $1', [fixture.tenant])
   }
   for (const role of ['owner', 'worker'] as const) {

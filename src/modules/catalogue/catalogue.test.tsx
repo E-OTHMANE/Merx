@@ -72,6 +72,16 @@ vi.mock('@/lib/supabase', () => ({
           call.filters.push(['is', column, value])
           return builder
         },
+        // E3-02 : la liste demande les niveaux des variantes rendues.
+        in: (column: string, value: unknown) => {
+          call.filters.push(['in', column, value])
+          return builder
+        },
+        lt: (column: string, value: unknown) => {
+          call.filters.push(['lt', column, value])
+          return builder
+        },
+        limit: () => builder,
         order: () => builder,
         maybeSingle: () => {
           call.single = true
@@ -267,11 +277,21 @@ describe('le garde de route', () => {
     expect(nameField()).toBeInTheDocument()
   })
 
-  it('l’employé lit la liste, sans lien vers les fiches ni bouton d’ajout', async () => {
+  /*
+   * E2-02 disait « aucun lien » pour l'employé, et sa ligne ne menait nulle
+   * part. Depuis E3-02 elle mène au stock : c'est le seul chemin par lequel il
+   * y accède, la fiche produit lui étant fermée. Ce qui doit rester vrai, et
+   * que ce test tient, est qu'elle ne mène **pas à la fiche** et qu'aucun
+   * bouton d'ajout ne s'offre à lui.
+   */
+  it('l’employé lit la liste : sa ligne mène au stock, jamais à la fiche', async () => {
     renderAt('/products', 'worker')
 
     expect(await screen.findByText('Eau de toilette')).toBeInTheDocument()
-    expect(screen.queryByRole('link', { name: /Eau de toilette/ })).toBeNull()
+    expect(screen.getByRole('link', { name: /Eau de toilette/ })).toHaveAttribute(
+      'href',
+      '/products/p1/stock',
+    )
     expect(screen.queryByRole('link', { name: 'Ajouter un produit' })).toBeNull()
   })
 

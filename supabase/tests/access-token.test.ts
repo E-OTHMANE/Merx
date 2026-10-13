@@ -231,6 +231,8 @@ describe('un jeton émis par Supabase Auth porte le tenant', () => {
       await admin(`/auth/v1/admin/users/${authUser}`, { method: 'DELETE' })
     }
     if (tenant !== undefined) {
+      // Le dépôt avant le commerce : `warehouse_tenant_id_fkey` ne cascade pas.
+      await client?.query('delete from public.warehouse where tenant_id = $1', [tenant])
       await client?.query('delete from public.tenant where id = $1', [tenant])
     }
     await client?.end()

@@ -58,8 +58,24 @@ vi.mock('@/lib/supabase', () => ({
         return Promise.resolve(answer(args.q)).then(resolve, reject)
       },
     }),
-    from: () => {
-      throw new Error('la liste ne lit aucune table : elle passe par search_products()')
+    /*
+     * La liste ne lit **aucune table du catalogue** : elle passe par
+     * `search_products()`. Le garde est conservé tel quel, à une exception
+     * près — depuis E3-02 l'écran demande les quantités des variantes rendues,
+     * et `stock_level` est la seule table qu'il lui est permis de lire. Toute
+     * autre reste une erreur : c'est ce qui a attrapé le changement.
+     */
+    from: (table: string) => {
+      if (table !== 'stock_level') {
+        throw new Error(`la liste ne lit aucune table : elle passe par search_products() (${table})`)
+      }
+      const builder = {
+        select: () => builder,
+        in: () => builder,
+        then: (resolve: (value: Response) => unknown) =>
+          Promise.resolve({ data: [], error: null }).then(resolve),
+      }
+      return builder
     },
     storage: {
       from: () => ({ createSignedUrls: (...args: unknown[]) => createSignedUrls(...args) }),

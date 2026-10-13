@@ -232,6 +232,43 @@ alter table public.stock_level enable trigger reject_derived_insert;
 
 
 -- ============================================================================
+-- 3 bis. L'agrégat suit sa variante ; l'historique, lui, la retient
+--
+-- E3-01 avait posé les deux clés de `stock_level` sans cascade, par le même
+-- raisonnement que pour `stock_movement` : « un mouvement ne se supprime pas,
+-- donc rien ne doit pouvoir l'emporter ». Juste pour le mouvement, trop large
+-- pour l'agrégat — et sans conséquence tant qu'une variante sans mouvement
+-- n'avait pas de ligne. Depuis § 2 elles en ont toutes une, et plus aucune
+-- variante n'est supprimable nulle part.
+--
+-- La ligne de `stock_level` **suit** donc sa variante. Ce n'est pas un
+-- relâchement : ce qui protège l'historique est la clé de `stock_movement`,
+-- qui reste restrictive. Une variante qui a bougé ne se supprime pas — sa
+-- première ligne de mouvement la retient, et c'est la bonne barrière. Une
+-- variante qui n'a jamais bougé n'emporte qu'un agrégat de rien : zéro, et
+-- `last_movement_at` nul.
+--
+-- Autrement dit la suppression reste refusée exactement là où elle détruirait
+-- quelque chose, et nulle part ailleurs. Sans cela, chaque jeu d'essai — et
+-- plus tard chaque purge de commerce — doit lever le garde de la table dérivée
+-- pour effacer un zéro.
+-- ============================================================================
+
+alter table public.stock_level
+  drop constraint stock_level_variant_id_fkey;
+
+alter table public.stock_level
+  add constraint stock_level_variant_id_fkey
+  foreign key (tenant_id, variant_id) references public.variant (tenant_id, id)
+  on delete cascade;
+
+comment on constraint stock_level_variant_id_fkey on public.stock_level is
+  'En cascade : l''agrégat suit sa variante. Ce qui retient une variante qui a '
+  'bougé est la clé de stock_movement, qui ne cascade pas — l''historique ne se '
+  'purge pas. E3-01, revu en E3-02.';
+
+
+-- ============================================================================
 -- 4. Les deux filtres, et pourquoi ce sont des index partiels
 --
 -- BACKLOG E3-02 : « Filtres : stock à zéro, stock négatif ».
@@ -374,6 +411,18 @@ language plpgsql
 stable
 security definer
 set search_path = ''
+/*
+ * Même réglage, et même raison, qu'en E2-04 pour `search_products()`. Après
+ * cinq exécutions, PostgreSQL remplace le plan personnalisé par un plan
+ * générique, qui ne connaît pas la valeur de `p_variant_id` : il estime la
+ * sélectivité au doigt mouillé et bascule sur un parcours séquentiel de
+ * `stock_movement`. Une connexion PostgREST du pool en sert des centaines, donc
+ * c'est le plan générique qui tourne en production, pas celui du premier appel.
+ *
+ * Constaté à la passe de sabotage d'E3-02 : l'assertion de plan passait un tour
+ * sur deux, sur les mêmes données. Ce n'était pas le test qui vacillait.
+ */
+set plan_cache_mode = force_custom_plan
 as $function$
 declare
   home_tenant uuid;

@@ -85,9 +85,14 @@ async function makeShop(name: string): Promise<Shop> {
   )
   const tenant = tenants[0]!.id
 
+
+  /*
+   * Le dépôt n'est pas créé ici : le trigger `open_default_warehouse` l'ouvre
+   * avec le commerce (E3-02). On lit le sien.
+   */
   const { rows: warehouses } = await client.query<{ id: string }>(
-    'insert into public.warehouse (tenant_id, name, is_default) values ($1, $2, true) returning id',
-    [tenant, 'Dépôt'],
+    'select id from public.warehouse where tenant_id = $1 and is_default',
+    [tenant],
   )
 
   const { rows: users } = await client.query<{ id: string }>(
@@ -166,6 +171,59 @@ async function postMovement(
     [shop.tenant, variant, shop.warehouse, movementType, quantity, shop.owner, createdAt ?? null],
   )
 }
+
+/* ========================================================================== */
+/* SPEC § 2.4 — le dépôt naît avec le commerce, quel que soit le chemin         */
+/* ========================================================================== */
+
+describe('le dépôt par défaut', () => {
+  /*
+   * « Une seule ligne par commerce, créée automatiquement. » Jusqu'en E3-02,
+   * « automatiquement » voulait dire « par `create_tenant()` », et un commerce
+   * inséré autrement n'en avait pas — ce qui n'a été remarqué que le jour où
+   * la naissance d'une variante s'est mise à en dépendre.
+   *
+   * Le commerce est donc inséré **sans passer par `create_tenant()`**, comme le
+   * font tous les jeux d'essai du projet : c'est précisément le chemin que la
+   * garantie doit couvrir.
+   */
+  it('existe pour un commerce inséré sans passer par create_tenant()', async () => {
+    await inCase(async () => {
+      await client.query('reset role')
+      const { rows } = await client.query<{ id: string }>(
+        'insert into public.tenant (tenant_id, business_name)' +
+          " values (gen_random_uuid(), 'Commerce sans create_tenant') returning id",
+      )
+      const tenant = rows[0]!.id
+
+      const { rows: depots } = await client.query<{ name: string; is_default: boolean }>(
+        'select name, is_default from public.warehouse where tenant_id = $1',
+        [tenant],
+      )
+
+      expect(depots, 'aucun dépôt pour un commerce créé à la main').toHaveLength(1)
+      expect(depots[0]!.is_default).toBe(true)
+    })
+  })
+
+  /*
+   * Et exactement un : le trigger en garantit au moins un, l'index partiel
+   * `warehouse_one_default_per_tenant` au plus un. Si `create_tenant()`
+   * écrivait encore le sien, ce commerce-ci en aurait deux — ou la fonction
+   * échouerait sur l'unicité.
+   */
+  it('reste unique quand le commerce passe par create_tenant()', async () => {
+    await client.query('reset role')
+    const { rows } = await client.query<{ n: string }>(`
+      select count(*)::text as n
+      from public.tenant t
+      join public.warehouse w on w.tenant_id = t.id and w.is_default
+      group by t.id
+      having count(*) <> 1
+    `)
+    expect(rows, 'un commerce a plus d’un dépôt par défaut').toHaveLength(0)
+  })
+})
 
 /* ========================================================================== */
 /* La ligne de stock naît avec la variante                                     */
@@ -340,6 +398,43 @@ describe('les filtres de stock empruntent leur index partiel', () => {
         await inCase(async () => {
           await openType('sale', 'create_sale')
           await postMovement(shops.a, shops.a.variant, 'sale', '-3')
+
+          /*
+           * Une table peuplée, et **dont la forme est connue** : beaucoup de
+           * lignes non nulles, une poignée à zéro ou en négatif. Deux raisons,
+           * payées toutes les deux :
+           *
+           *   — sur les six lignes du peuplement, un parcours séquentiel est le
+           *     bon plan, et l'assertion tomberait en accusant l'index alors
+           *     que le planificateur a raison (même leçon qu'E2-04) ;
+           *   — surtout, un index partiel ne sert que si son prédicat est
+           *     **sélectif**. Quand presque tout le catalogue est à zéro — ce
+           *     qui est exactement l'état d'un commerce qui vient d'importer
+           *     ses 2 000 références — balayer est le bon plan, et le refuser
+           *     serait exiger du planificateur qu'il ait tort. Le filtre
+           *     « stock à zéro » doit emprunter son index quand les zéros sont
+           *     une minorité ; c'est cela qui se mesure ici.
+           *
+           * Et `analyze` : `product-import` laisse derrière lui des
+           * statistiques qui décrivent une table immense et presque toute à
+           * zéro. Sans rafraîchir, ce test lisait le plan d'une table qui
+           * n'existe plus — vert seul, rouge dans la suite complète.
+           *
+           * Les lignes sont posées en `replica` : la table dérivée refuse toute
+           * écriture directe (RÈGLE M2-1) et les clés étrangères refuseraient
+           * des variantes inventées. C'est un peuplement de harnais, et il
+           * disparaît avec la transaction.
+           */
+          await client.query('reset role')
+          await client.query('set session_replication_role = replica')
+          await client.query(
+            'insert into public.stock_level' +
+              ' (tenant_id, variant_id, warehouse_id, quantity, last_movement_at)' +
+              ' select $1, gen_random_uuid(), $2, 7, now() from generate_series(1, 3000)',
+            [shops.a.tenant, shops.a.warehouse],
+          )
+          await client.query('set session_replication_role = origin')
+          await client.query('analyze public.stock_level')
 
           const nodes = await planOfStatement(
             client,
@@ -530,6 +625,44 @@ describe('list_stock_movements — l’historique d’une variante', () => {
     })
   })
 
+  /*
+   * Le cas que **seul** le garde 2 peut arrêter, et sans lequel son test
+   * n'existe que pour la forme.
+   *
+   * Demander l'historique d'une variante du voisin ne prouve rien : le garde 3
+   * filtre déjà les mouvements sur le commerce du jeton, et rend zéro ligne de
+   * lui-même. Retirer le garde 2 laissait la suite entièrement verte — constaté
+   * à la passe de sabotage, deuxième cas.
+   *
+   * Il faut donc un mouvement que le garde 3 **laisserait passer** : porté par
+   * le commerce du jeton, mais posé sur une variante du voisin. La clé composite
+   * `(tenant_id, variant_id)` l'interdit, et la RLS aussi — il est écrit en
+   * `postgres`, gardes levés, parce que c'est exactement la forme qu'aurait une
+   * ligne produite par une fonction `security definer` mal écrite en E4, ou par
+   * une synchronisation qui confond deux variantes (E9). Le garde 2 est ce qui
+   * fait que la question ne se pose pas.
+   */
+  it('refuse la question elle-même, même quand un mouvement du commerce la suivrait', async () => {
+    await withHistory(async () => {
+      await client.query('reset role')
+      await client.query('set session_replication_role = replica')
+      await client.query(
+        'insert into public.stock_movement' +
+          ' (tenant_id, variant_id, warehouse_id, movement_type, quantity, created_by)' +
+          " values ($1, $2, $3, 'receipt', 42, $4)",
+        [shops.a.tenant, shops.b.variant, shops.a.warehouse, shops.a.owner],
+      )
+      await client.query('set session_replication_role = origin')
+
+      await actAs(client, tokenFor(shops.a.tenant, 'worker'))
+      const rows = await history(shops.b.variant)
+
+      // Le garde 3 rendrait cette ligne : son `tenant_id` est le bon.
+      expect(rows, 'FUITE — une variante du voisin rend un mouvement').toHaveLength(0)
+      expect(rows.map((r) => r.quantity)).not.toContain('42.000')
+    })
+  })
+
   /* ---------------------------------------------------------------------- */
   /* Garde 3 — le filtre du commerce sur les mouvements rendus                */
   /* ---------------------------------------------------------------------- */
@@ -581,10 +714,14 @@ describe('list_stock_movements — l’historique d’une variante', () => {
        * lit l'historique reste à ses trois mouvements : c'est le cas réel — une
        * variante parmi des milliers de mouvements.
        *
-       * Posées en `postgres`, triggers d'agrégat actifs : ce sont de vrais
-       * mouvements, et `stock_level` suit.
+       * Posées **triggers suspendus** : ce sont du lest pour le planificateur,
+       * pas des mouvements dont on lit le résultat. Avec l'agrégat actif, le
+       * trigger tournait 4 000 fois et le cas dépassait les cinq secondes dès
+       * qu'un autre fichier l'avait précédé — un échec de délai qui se lisait
+       * comme un mauvais plan.
        */
       await client.query('reset role')
+      await client.query('set session_replication_role = replica')
       await client.query(
         'insert into public.stock_movement' +
           ' (tenant_id, variant_id, warehouse_id, movement_type, quantity, created_by, created_at)' +
@@ -593,7 +730,11 @@ describe('list_stock_movements — l’historique d’une variante', () => {
           ' from generate_series(1, 4000) n',
         [shops.b.tenant, shops.b.quiet, shops.b.warehouse, shops.b.owner],
       )
+      await client.query('set session_replication_role = origin')
       await client.query('analyze public.stock_movement')
+      // Même raison que pour les filtres : des statistiques fraîches, sinon le
+      // plan lu est celui d'une table que les autres fichiers ont laissée.
+      await client.query('analyze public.stock_level')
 
       const nodes = await planOfStatement(
         client,

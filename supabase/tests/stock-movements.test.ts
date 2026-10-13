@@ -132,9 +132,13 @@ beforeAll(async () => {
   )
   fixture.tenant = tenants[0]!.id
 
+  /*
+   * Le dépôt n'est pas créé ici : le trigger `open_default_warehouse` l'ouvre
+   * avec le commerce (E3-02). On lit le sien.
+   */
   const { rows: warehouses } = await client.query<{ id: string }>(
-    'insert into public.warehouse (tenant_id, name, is_default) values ($1, $2, true) returning id',
-    [fixture.tenant, 'Dépôt'],
+    'select id from public.warehouse where tenant_id = $1 and is_default',
+    [fixture.tenant],
   )
   fixture.warehouse = warehouses[0]!.id
 

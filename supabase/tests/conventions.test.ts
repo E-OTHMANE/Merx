@@ -302,6 +302,12 @@ describe('les règles attrapent une table fautive', () => {
 
         select merx.apply_derived_from(
           'public.derived_probe', 'stock_movement', 'write_derived_probe');
+
+        -- L'écrivain déclaré doit être branché : une table dérivée dont
+        -- personne n'appelle l'écrivain ne se remplit plus (E3-02).
+        create trigger write_derived_probe
+          after insert on public.stock_movement
+          for each row execute function merx.write_derived_probe();
       `)
     }
 
@@ -320,6 +326,35 @@ describe('les règles attrapent une table fautive', () => {
     it('laisse passer une table posée par le helper', async () => {
       await createDerivedProbe()
       expect(onProbe(await violations(client, rule), 'derived_probe')).toEqual([])
+    })
+
+    /*
+     * Le registre nomme la fonction, pas ses triggers. Sans ces deux cas,
+     * `maintain_stock_level` pouvait être débranché ou éteint sans qu'aucune
+     * règle ne bouge — et les lignes de stock cessaient de s'ouvrir en
+     * silence. Débranché n'est pas éteint, et les deux messages le disent :
+     * on ne répare pas l'un comme l'autre.
+     */
+    it('signale un écrivain déclaré que plus aucun trigger n’appelle', async () => {
+      await createDerivedProbe()
+      await client.query('drop trigger write_derived_probe on public.stock_movement')
+
+      const found = onProbe(await violations(client, rule), 'derived_probe')
+      expect(describeViolations(found)).toContain('branché à aucun trigger')
+    })
+
+    it('signale un trigger d’écrivain désactivé, en le nommant', async () => {
+      await createDerivedProbe()
+      await client.query(
+        'alter table public.stock_movement disable trigger write_derived_probe',
+      )
+
+      const found = onProbe(await violations(client, rule), 'derived_probe')
+      const detail = describeViolations(found)
+      expect(detail).toContain('write_derived_probe')
+      expect(detail).toContain('stock_movement')
+      expect(detail).toContain('désactivé')
+      expect(detail).not.toContain('branché à aucun trigger')
     })
 
     it('signale un garde d\'INSERT posé en BEFORE au lieu d\'AFTER', async () => {

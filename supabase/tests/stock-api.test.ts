@@ -84,10 +84,14 @@ async function seedShop(side: 'a' | 'b'): Promise<void> {
     )
   ).id
 
+  /*
+   * Le dépôt n'est pas créé ici : le trigger `open_default_warehouse` l'ouvre
+   * avec le commerce (E3-02). On lit le sien.
+   */
   shop.warehouse = (
     await one<{ id: string }>(
-      'insert into public.warehouse (tenant_id, name, is_default) values ($1, $2, true) returning id',
-      [shop.tenant, 'Dépôt'],
+      'select id from public.warehouse where tenant_id = $1 and is_default',
+      [shop.tenant],
     )
   ).id
 
@@ -173,6 +177,8 @@ afterAll(async () => {
       await client.query('set session_replication_role = origin')
       await client.query('delete from public.product where tenant_id = $1', [tenant])
       await client.query('delete from public.app_user where tenant_id = $1', [tenant])
+      // Le dépôt avant le commerce : `warehouse_tenant_id_fkey` ne cascade pas.
+      await client.query('delete from public.warehouse where tenant_id = $1', [tenant])
       await client.query('delete from public.tenant where id = $1', [tenant])
     }
     // Refermer les types ouverts pour le peuplement : la migration n'en ouvre aucun.

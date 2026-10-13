@@ -586,6 +586,16 @@ function ProductForm({ productId }: { productId: string | null }) {
               </Link>
             )}
 
+            {/* E3-02. Le stock et l'historique des mouvements. Depuis la liste,
+                le vendeur y va directement — la fiche lui est fermée ; le patron
+                passe par ici. Consultation seule : aucun type de mouvement n'est
+                ouvert à l'écriture avant E3-03. */}
+            {!creating && (
+              <Link to={`/products/${productId}/stock`} className={SECONDARY}>
+                Stock et mouvements
+              </Link>
+            )}
+
             {/* E2-06. L'écran d'étiquettes suit `manage_product`, comme cette
                 fiche : imprimer peut attribuer un code au produit, et le figer. */}
             {!creating && (

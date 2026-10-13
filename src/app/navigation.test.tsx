@@ -73,6 +73,16 @@ const DETAIL: Readonly<Record<string, { visit: string; parent: string; label: st
     parent: '/products/p-1',
     label: 'Fiche produit',
   },
+  /*
+   * E3-02. Son parent est `/products`, et non la fiche produit comme ses
+   * voisins : la fiche exige `manage_product`, que le vendeur n'a pas, et c'est
+   * lui l'acteur de la story. Un retour vers un écran interdit est une impasse.
+   */
+  '/products/:id/stock': {
+    visit: '/products/p-1/stock',
+    parent: '/products',
+    label: 'Produits',
+  },
   '/users': { visit: '/users', parent: '/', label: 'Accueil' },
   '/users/new': { visit: '/users/new', parent: '/users', label: 'Employés' },
   '/devices': { visit: '/devices', parent: '/', label: 'Accueil' },

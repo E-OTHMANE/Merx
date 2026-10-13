@@ -739,6 +739,10 @@ export async function seedTwoTenants(client: Client): Promise<Seeded> {
    */
   const SEEDED_BY_TRIGGER: Readonly<Record<string, { column: string; parent: string }>> = {
     stock_level: { column: 'variant_id', parent: 'variant' },
+    // Depuis E3-02 le dépôt naît avec le commerce (SPEC § 2.4, « créée
+    // automatiquement ») : en insérer un second heurterait
+    // `warehouse_one_default_per_tenant`.
+    warehouse: { column: 'tenant_id', parent: tenantTable },
   }
 
   /*

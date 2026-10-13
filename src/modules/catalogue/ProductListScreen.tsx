@@ -28,6 +28,14 @@ import { Link, useLocation } from 'react-router-dom'
 
 import { useCan } from '@/lib/auth'
 import { signedPhotoUrls } from '@/modules/catalogue/photo'
+import {
+  Quantity,
+  STOCK_FILTER_LIMIT,
+  listByStockFilter,
+  stockLevelsFor,
+  type StockFilter,
+  type StockLevel,
+} from '@/modules/stock'
 import { restoreProduct } from '@/modules/catalogue/products'
 import {
   SEARCH_DELAY_MS,
@@ -58,10 +66,31 @@ function storeView(view: View): void {
   }
 }
 
+/*
+ * Ce que la liste montre : les résultats de la recherche, ou l'une des deux
+ * questions de stock. **Une source par état** (E3-02).
+ *
+ * Les deux ne se combinent pas, et c'est une décision : croiser un texte avec
+ * un filtre demanderait de replier les accents côté appareil pour recouper les
+ * deux listes, donc une seconde copie de `merx.search_fold()` — et les deux
+ * divergeraient sans que rien le dise. Un filtre actif remplace donc la
+ * recherche, l'écran le dit, et « Tous les produits » y ramène.
+ *
+ * Le filtre porte sur **tout** le catalogue, pas sur les 50 résultats
+ * affichés : « qu'est-ce qui est en négatif » n'a de sens que sur l'ensemble.
+ */
+type Source = 'search' | StockFilter
+
 type State =
   | { status: 'loading' }
   | { status: 'error'; message: string }
-  | { status: 'loaded'; query: string; hits: SearchHit[]; photos: Map<string, string> }
+  | {
+      status: 'loaded'
+      query: string
+      hits: SearchHit[]
+      photos: Map<string, string>
+      levels: Map<string, StockLevel>
+    }
 
 /** Ce que la fiche transmet en revenant à la liste. */
 export interface ProductListNavigation {
@@ -139,54 +168,104 @@ interface ItemProps {
   hit: SearchHit
   photoUrl: string | undefined
   editable: boolean
+  /** Absent tant que la seconde lecture n'est pas revenue : la ligne n'invente rien. */
+  level: StockLevel | undefined
 }
 
-function ProductRow({ hit, photoUrl, editable }: ItemProps) {
+/*
+ * Où mène une ligne. Le patron va à la fiche, comme depuis E2-02 — c'est son
+ * geste quotidien, et le stock y est à un lien de là. Le vendeur, qui ne peut
+ * pas ouvrir la fiche (`manage_product`), va au stock : jusqu'ici la ligne ne
+ * menait nulle part pour lui.
+ */
+function destinationOf(hit: SearchHit, editable: boolean): string {
+  return editable ? `/products/${hit.productId}` : `/products/${hit.productId}/stock`
+}
+
+function ProductRow({ hit, photoUrl, editable, level }: ItemProps) {
   const reference = referenceOf(hit)
-  const content = (
-    <>
-      <Thumbnail url={photoUrl} name={hit.name} size="row" />
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-subtitle text-paper-900">{hit.name}</p>
-        {/* Une référence est une donnée : 16 px, chiffres tabulaires (BRAND-UI § 6). */}
-        {reference !== null && <p className="tabular truncate text-body text-paper-700">{reference}</p>}
-      </div>
-    </>
-  )
 
   return (
     <li className="border-b border-paper-200">
-      {editable ? (
-        <Link to={`/products/${hit.productId}`} className="flex min-h-row items-center gap-4 py-2">
-          {content}
-        </Link>
-      ) : (
-        <div className="flex min-h-row items-center gap-4 py-2">{content}</div>
-      )}
+      <Link
+        to={destinationOf(hit, editable)}
+        className="flex min-h-row items-center gap-4 py-2"
+      >
+        <Thumbnail url={photoUrl} name={hit.name} size="row" />
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-subtitle text-paper-900">{hit.name}</p>
+          {/* Une référence est une donnée : 16 px, chiffres tabulaires (BRAND-UI § 6). */}
+          {reference !== null && (
+            <p className="tabular truncate text-body text-paper-700">{reference}</p>
+          )}
+        </div>
+        {/* BRAND-UI § 8 : le stock se lit au bord opposé, en chiffres tabulaires.
+            Le négatif y est un repère, jamais un blocage (RÈGLE M2-3). */}
+        {level !== undefined && (
+          <span className="shrink-0">
+            <Quantity level={level} />
+          </span>
+        )}
+      </Link>
     </li>
   )
 }
 
-function ProductCard({ hit, photoUrl, editable }: ItemProps) {
+function ProductCard({ hit, photoUrl, editable, level }: ItemProps) {
   const reference = referenceOf(hit)
-  const content = (
-    <>
-      <Thumbnail url={photoUrl} name={hit.name} size="card" />
-      <p className="line-clamp-2 text-body text-paper-900">{hit.name}</p>
-      {reference !== null && <p className="tabular truncate text-body text-paper-700">{reference}</p>}
-    </>
-  )
 
   return (
     <li className="rounded-card border border-paper-200 bg-white">
-      {editable ? (
-        <Link to={`/products/${hit.productId}`} className="flex h-full flex-col gap-2 p-2">
-          {content}
-        </Link>
-      ) : (
-        <div className="flex h-full flex-col gap-2 p-2">{content}</div>
-      )}
+      <Link
+        to={destinationOf(hit, editable)}
+        className="flex h-full flex-col gap-2 p-2"
+      >
+        <Thumbnail url={photoUrl} name={hit.name} size="card" />
+        <p className="line-clamp-2 text-body text-paper-900">{hit.name}</p>
+        {reference !== null && (
+          <p className="tabular truncate text-body text-paper-700">{reference}</p>
+        )}
+        {level !== undefined && <Quantity level={level} />}
+      </Link>
     </li>
+  )
+}
+
+/*
+ * Les trois états de la liste. « Tous les produits » est la recherche ; les
+ * deux autres sont les filtres du critère, et ils portent sur tout le
+ * catalogue.
+ *
+ * Pas de troisième filtre : le critère en nomme deux. « Stock à zéro » rend
+ * aussi bien le zéro compté que le stock jamais saisi — la question du vendeur
+ * est « ai-je quelque chose à vendre », et la réponse est non dans les deux
+ * cas. C'est la ligne qui dit de quelle sorte de non il s'agit, pas le filtre.
+ */
+const SOURCES: ReadonlyArray<readonly [Source, string]> = [
+  ['search', 'Tous les produits'],
+  ['zero', 'Stock à zéro'],
+  ['negative', 'Stock négatif'],
+]
+
+function SourceSwitch({ source, onChange }: { source: Source; onChange: (next: Source) => void }) {
+  return (
+    <div role="group" aria-label="Filtrer le stock" className="flex flex-wrap gap-2">
+      {SOURCES.map(([value, label]) => (
+        <button
+          key={value}
+          type="button"
+          aria-pressed={source === value}
+          onClick={() => onChange(value)}
+          className={
+            source === value
+              ? 'h-touch rounded-button bg-ink-600 px-4 text-body text-white'
+              : 'h-touch rounded-button border border-paper-300 bg-white px-4 text-body text-ink-700'
+          }
+        >
+          {label}
+        </button>
+      ))}
+    </div>
   )
 }
 
@@ -221,6 +300,7 @@ export function ProductListScreen() {
   const canManage = useCan('manage_product')
 
   const [query, setQuery] = useState('')
+  const [source, setSource] = useState<Source>('search')
   const [view, setView] = useState<View>(storedView)
   const [state, setState] = useState<State>({ status: 'loading' })
   const [attempt, setAttempt] = useState(0)
@@ -236,16 +316,63 @@ export function ProductListScreen() {
    * Une recherche par saisie, après SEARCH_DELAY_MS sans frappe. Pendant la
    * frappe, les résultats précédents restent affichés : un écran qui clignote
    * à chaque touche se lit plus mal qu'une liste qui change une fois.
+   *
+   * Sous un filtre de stock, il n'y a rien à attendre — aucune frappe n'est en
+   * cours — et la liste vient de `listByStockFilter()`, qui porte déjà sa
+   * quantité : une seule lecture au lieu de deux.
+   *
+   * Les photos sont demandées après coup, dans les deux cas : elles sont
+   * signées une par une et ne doivent pas retenir l'affichage des quantités.
    */
   useEffect(() => {
-    const delay = query.trim() === '' ? 0 : SEARCH_DELAY_MS
+    const delay = source !== 'search' || query.trim() === '' ? 0 : SEARCH_DELAY_MS
+
     const timer = window.setTimeout(() => {
-      search(query)
-        .then(async (outcome) => {
-          if (!outcome.current) return
-          const hits = outcome.value
-          setState({ status: 'loaded', query: query.trim(), hits, photos: new Map() })
-          const paths = [...new Set(hits.map((h) => h.photoPath).filter((p): p is string => p !== null))]
+      const load = async (): Promise<{
+        query: string
+        hits: SearchHit[]
+        levels: Map<string, StockLevel>
+      } | null> => {
+        if (source !== 'search') {
+          const entries = await listByStockFilter(source)
+          return {
+            query: '',
+            // Les mêmes champs que la recherche, pour que la ligne et la carte
+            // ne connaissent qu'une seule forme. Le code-barres n'est pas lu
+            // par cet écran : rien ne l'affiche.
+            hits: entries.map((entry) => ({
+              variantId: entry.variantId,
+              productId: entry.productId,
+              name: entry.name,
+              nameAr: entry.nameAr,
+              code: entry.code,
+              sku: entry.sku,
+              barcode: null,
+              photoPath: entry.photoPath,
+            })),
+            levels: new Map(entries.map((entry) => [entry.variantId, entry])),
+          }
+        }
+
+        const outcome = await search(query)
+        if (!outcome.current) return null
+        const hits = outcome.value
+        return {
+          query: query.trim(),
+          hits,
+          levels: await stockLevelsFor(hits.map((hit) => hit.variantId)),
+        }
+      }
+
+      load()
+        .then(async (loaded) => {
+          if (loaded === null) return
+          const { hits } = loaded
+          setState({ status: 'loaded', ...loaded, photos: new Map() })
+
+          const paths = [
+            ...new Set(hits.map((h) => h.photoPath).filter((p): p is string => p !== null)),
+          ]
           const photos = await signedPhotoUrls(paths)
           setState((current) =>
             current.status === 'loaded' && current.hits === hits ? { ...current, photos } : current,
@@ -258,8 +385,9 @@ export function ProductListScreen() {
           }),
         )
     }, delay)
+
     return () => window.clearTimeout(timer)
-  }, [query, attempt, search])
+  }, [query, source, attempt, search])
 
   const retry = useCallback(() => {
     setState({ status: 'loading' })
@@ -317,6 +445,10 @@ export function ProductListScreen() {
           </p>
         )}
 
+        {/* Sous un filtre, la liste ne vient pas de la recherche : le champ
+            n'aurait rien à filtrer, et le laisser là laisserait croire le
+            contraire. « Tous les produits » le ramène. */}
+        {source === 'search' && (
         <div className="flex flex-col gap-2">
           <label htmlFor="product-search" className="text-label text-paper-700">
             Rechercher un produit
@@ -334,6 +466,9 @@ export function ProductListScreen() {
             className="h-field rounded-field border border-paper-300 bg-white px-4 text-body text-paper-900 focus-visible:border-ink-600"
           />
         </div>
+        )}
+
+        <SourceSwitch source={source} onChange={setSource} />
 
         <ViewSwitch view={view} onChange={chooseView} />
 
@@ -357,11 +492,17 @@ export function ProductListScreen() {
         {state.status === 'loaded' && state.hits.length === 0 && (
           <div className="rounded-card border border-paper-200 bg-white p-6">
             <p className="text-body text-paper-700">
-              {state.query !== ''
-                ? `Aucun produit ne correspond à « ${state.query} ».`
-                : canManage
-                  ? 'Aucun produit. Ajoutez le premier.'
-                  : 'Aucun produit pour l’instant.'}
+              {/* Un filtre vide est une bonne nouvelle, et se lit comme telle :
+                  « aucun produit » laisserait croire à un catalogue vide. */}
+              {source === 'zero'
+                ? 'Aucun produit à zéro.'
+                : source === 'negative'
+                  ? 'Aucun stock négatif.'
+                  : state.query !== ''
+                    ? `Aucun produit ne correspond à « ${state.query} ».`
+                    : canManage
+                      ? 'Aucun produit. Ajoutez le premier.'
+                      : 'Aucun produit pour l’instant.'}
             </p>
           </div>
         )}
@@ -376,6 +517,7 @@ export function ProductListScreen() {
                     hit={hit}
                     photoUrl={hit.photoPath === null ? undefined : state.photos.get(hit.photoPath)}
                     editable={canManage}
+                    level={state.levels.get(hit.variantId)}
                   />
                 ))}
               </ul>
@@ -387,15 +529,23 @@ export function ProductListScreen() {
                     hit={hit}
                     photoUrl={hit.photoPath === null ? undefined : state.photos.get(hit.photoPath)}
                     editable={canManage}
+                    level={state.levels.get(hit.variantId)}
                   />
                 ))}
               </ul>
             )}
             {state.hits.length === SEARCH_LIMIT && (
               <p className="text-body text-paper-700">
-                {state.query === ''
-                  ? `Les ${SEARCH_LIMIT} premiers produits, par ordre alphabétique. Tapez pour chercher.`
-                  : `Les ${SEARCH_LIMIT} meilleurs résultats. Précisez la recherche pour affiner.`}
+                {/* Sous un filtre, la liste n'est pas alphabétique : le plus
+                    négatif d'abord. Le dire évite de lire la coupe comme un
+                    inventaire complet. */}
+                {source === 'negative'
+                  ? `Les ${STOCK_FILTER_LIMIT} stocks les plus négatifs.`
+                  : source === 'zero'
+                    ? `${STOCK_FILTER_LIMIT} produits à zéro au plus. Il y en a peut-être d’autres.`
+                    : state.query === ''
+                      ? `Les ${SEARCH_LIMIT} premiers produits, par ordre alphabétique. Tapez pour chercher.`
+                      : `Les ${SEARCH_LIMIT} meilleurs résultats. Précisez la recherche pour affiner.`}
               </p>
             )}
           </>

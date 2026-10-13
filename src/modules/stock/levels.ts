@@ -190,3 +190,108 @@ export async function listByStockFilter(filter: StockFilter): Promise<StockEntry
     ]
   })
 }
+
+/* -------------------------------------------------------------------------- */
+/* La fiche stock d'un produit                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Une variante d'un produit, avec son niveau.
+ *
+ * `quantity` est nullable, et n'étend donc pas `StockLevel` : depuis E3-02 la
+ * ligne de stock naît avec la variante, mais rien dans le type ne l'impose, et
+ * un `null` tu dans un transtypage réapparaîtrait à l'écran en « 0 » — un stock
+ * inconnu présenté comme compté, ce que SPEC § 2.5 refuse. L'écran affiche
+ * « indisponible » et le cas reste visible.
+ */
+export interface VariantStock {
+  variantId: string
+  quantity: string | null
+  lastMovementAt: string | null
+  sku: string | null
+  isDefault: boolean
+}
+
+/** Ce que l'écran `/products/:id/stock` affiche en tête, et dans sa liste. */
+export interface ProductStock {
+  productId: string
+  name: string
+  nameAr: string | null
+  code: string | null
+  variants: VariantStock[]
+}
+
+interface ProductStockRow {
+  id: string
+  name_fr: string
+  name_ar: string | null
+  code: string | null
+  variant: Array<{
+    id: string
+    sku: string | null
+    is_default: boolean
+    stock_level: Array<{ quantity: string; last_movement_at: string | null }>
+  }>
+}
+
+/**
+ * Le produit, ses variantes vivantes et leurs niveaux, en une lecture.
+ *
+ * Lu ici plutôt qu'emprunté à `@/modules/catalogue` : la liste des produits
+ * importe `@/modules/stock` pour afficher les quantités, et l'inverse ferait un
+ * cycle entre les deux modules. Le peu dont le stock a besoin — un nom, une
+ * référence, un SKU — est lisible par tout le commerce (`view_catalogue`,
+ * SPEC § 3.1) et ne coûte pas une dépendance.
+ *
+ * `null` quand le produit n'existe pas, ou n'est pas celui du commerce du
+ * jeton : la policy ne distingue pas les deux, et l'écran n'a pas à le faire
+ * non plus.
+ */
+export async function loadProductStock(productId: string): Promise<ProductStock | null> {
+  const { data, error } = await supabase
+    .from('product')
+    .select(
+      'id, name_fr, name_ar, code,' +
+        ' variant(id, sku, is_default, deleted_at,' +
+        ' stock_level(quantity::text, last_movement_at))',
+    )
+    .eq('id', productId)
+    .is('deleted_at', null)
+    .is('variant.deleted_at', null)
+    .maybeSingle()
+
+  if (error !== null) throw new Error(error.message)
+  if (data === null) return null
+
+  const row = data as unknown as ProductStockRow
+
+  return {
+    productId: row.id,
+    name: row.name_fr,
+    nameAr: row.name_ar,
+    code: row.code,
+    /*
+     * La variante par défaut en tête, puis le SKU : le même ordre que
+     * `listVariants()` du catalogue, pour que les deux écrans se lisent pareil.
+     * Un produit a toujours au moins une variante (CLAUDE.md), donc la liste
+     * n'est jamais vide.
+     */
+    variants: row.variant
+      .map((v) => ({
+        variantId: v.id,
+        sku: v.sku,
+        isDefault: v.is_default,
+        /*
+         * Depuis E3-02 la ligne naît avec la variante : il y en a toujours une.
+         * Son absence n'est donc pas un zéro à inventer — c'est un état qui ne
+         * doit pas exister, et l'écran le dit plutôt que de le maquiller.
+         */
+        quantity: v.stock_level[0]?.quantity ?? null,
+        lastMovementAt: v.stock_level[0]?.last_movement_at ?? null,
+      }))
+      .sort((a, b) => {
+        if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1
+        return (a.sku ?? '').localeCompare(b.sku ?? '', 'fr')
+      }),
+  }
+}

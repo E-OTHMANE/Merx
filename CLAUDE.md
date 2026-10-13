@@ -66,6 +66,12 @@ No `config.toml` change is needed for password login: Kong publishes 54521 on al
 
 **Afterwards, put `.env.local` back to `http://127.0.0.1:54521`.** The LAN IP changes with every network; left in place, the app dials an address that no longer exists, and the failure reads like a broken migration or a stack that is down.
 
+**Two files whose names differ only by case are the same file on this machine.** Windows and macOS have a case-insensitive filesystem; Vite's resolver is case-sensitive. `src/modules/stock/Quantity.tsx` beside `quantity.ts` meant `import { Quantity } from '@/modules/stock/Quantity'` resolved to `quantity.ts`, which exports no component — React got `undefined` and twelve tests went red on `Element type is invalid`. **`tsc` and `eslint` see nothing**, because both paths exist; a Linux CI sees nothing either, because there the two files are genuinely distinct and everything imports correctly. The failure is local, at runtime, and reads like a broken component.
+
+Worse, the filesystem hides the cleanup too: `rm QuantityReading.ts` deletes `quantityReading.ts`, and `echo > QuantityReading.ts` overwrites it. A file lost that way is gone unless it was committed — this cost the file twice in E3-02.
+
+`src/test/caseCollision.test.ts` now refuses it on any machine: it reads `git ls-files` rather than walking the disk, because a case-insensitive walk cannot see both entries — exactly where the check is needed. Renaming is the fix; `quantityReading.ts` is the current spelling.
+
 Run `npm run typecheck` and `npm run lint` before saying a task is done.
 
 ## Layout
@@ -130,6 +136,14 @@ Module code stays inside its own folder. A module may import from `src/lib` and 
 **A GIN index with the default `fastupdate` loses the plan after every bulk insert.** New entries wait in a pending list, read in full on every scan until the next vacuum; the planner counts it and prefers another index. Measured in E2-04, twelve search queries: 12/12 through the trigram index on clean indexes, **3/12 right after inserting 10,000 products**, 12/12 again once the list was flushed, 12/12 immediately with `fastupdate = off`. A test that seeds then asserts a plan sees this; production after an import does too, silently.
 
 **A plan sabotage that stays green on one run proves nothing — read the plan of a warm session.** Plan choice is borderline and flips between runs on the same data. In E2-04, removing `tenant_id` from the composite search indexes stayed green once; I concluded the composite was useless and removed it. The next run, with the plan read after eight warm-up calls in the same session — the way a pooled PostgREST connection runs — failed on « creme », « crème » and « nivea creme 200 », and `tenant_id` went back into the indexes. A plan assertion warms the session first; a plan sabotage is judged on more than one run.
+
+## Memory
+
+**The memory directory lives on the same drive as the project root, at `<drive>:\D--Merx\memory\`, indexed by `MEMORY.md` beside it.** Root `D:\Merx` → `D:\D--Merx\memory\`; root `E:\Merx` → `E:\D--Merx\memory\`. Derive it from the root, never from a path carried over from another machine.
+
+The harness announces `C:\Users\<user>\.claude\projects\D--Merx\memory\` instead. On this project that copy is **stale** — on 2026-10-12 it was four files and several days behind the one on `D:`, and a memory written there was invisible to every later session. Read and write the drive-local one; if both exist, the drive-local one wins.
+
+This project moves between machines mid-story, and the drive letter moves with it. That is the whole reason the rule is written as a derivation and not as a path.
 
 ## Working style
 

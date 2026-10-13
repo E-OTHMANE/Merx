@@ -133,6 +133,8 @@ afterAll(async () => {
       await client.query('delete from public.product where tenant_id = $1', [tenant])
       await client.query('delete from public.category where tenant_id = $1', [tenant])
       await client.query('delete from public.app_user where tenant_id = $1', [tenant])
+      // Le dépôt avant le commerce : `warehouse_tenant_id_fkey` ne cascade pas.
+      await client.query('delete from public.warehouse where tenant_id = $1', [tenant])
       await client.query('delete from public.tenant where id = $1', [tenant])
     }
   }
