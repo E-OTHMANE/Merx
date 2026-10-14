@@ -206,7 +206,7 @@ Sans cela, la protection de `variant_cost` ne vaut rien : un employé qui lit le
 - Montants : `numeric(12,2)`. **Jamais de flottant.**
 - Quantités : `numeric(12,3)`.
 - Dates : `timestamptz`, UTC en base, affichage `Africa/Casablanca`.
-- Suppression : `deleted_at` sur les tables de référence. Documents et mouvements jamais supprimés, seulement annulés.
+- Suppression : `deleted_at` sur les tables de référence. Documents et mouvements jamais supprimés, seulement annulés. **Une seule exception, un brouillon** : un document sans numéro ni mouvement — au statut `draft` — peut se supprimer, avec ses lignes, et rien d'autre (§ 8, RÈGLE M3-3). C'est pour cela que le numéro n'est attribué qu'à la confirmation : un brouillon abandonné ne laisse aucun trou dans la séquence. Corrigé en E4-01.
 - Toute table porte `created_at`, `updated_at`, `created_by`, `device_id`.
 - `tenant_id` a pour défaut `merx.current_tenant_id()`, le commerce du jeton, sur toute table conventionnée. L'application n'écrit jamais `tenant_id` ; une valeur étrangère envoyée explicitement reste refusée par le `with check` de `tenant_isolation`. Hors session (migration, peuplement de test), le défaut vaut NULL et la valeur doit être donnée. Arbitré en E2-02 ; contrôlé par `conventions.test.ts`.
 
@@ -351,7 +351,7 @@ Unicité sur `(variant_id, warehouse_id)`.
 `stock_movement`
 `id, tenant_id, variant_id, warehouse_id, movement_type, quantity, source_type, source_id, note, device_id, created_by, created_at`
 
-- `movement_type` : `sale | return | receipt | adjustment | inventory`
+- `movement_type` : `sale | return | receipt | adjustment | inventory | sale_cancellation` — le sixième, ajouté en E4-01 : l'inverse d'un mouvement `sale` quand son document est annulé (RÈGLE M2-5, addendum E4-01)
 - `quantity` signée, négative en sortie.
 - `note` : le motif, obligatoire sur un `adjustment` et libre partout ailleurs — RÈGLE M2-5.
 - `created_by` a pour défaut `merx.current_app_user()` : le jeton ne porte pas l'identifiant `app_user`, donc l'écran ne peut pas le remplir, et l'auteur d'un mouvement se lit à l'historique (E3-02). Arbitré en E3-03.
@@ -373,6 +373,8 @@ La table est vide à la création du module : tant qu'aucun écran n'écrit un t
 
 *Rectificatif E3-03.* E3-01 annonçait qu'aucune story n'aurait à inventer de capacité, celles de § 3.1 suffisant toutes. C'est faux dès la première : aucune capacité `owner` seul ne veut dire « corriger une quantité ». `approve_stock_variance` est la validation d'un écart d'inventaire — l'emprunter rendrait impossible de retirer l'ajustement à quelqu'un sans lui retirer l'inventaire, et ferait mentir la matrice sur ce qu'un droit gouverne. **`adjustment` est donc ouvert sur `adjust_stock`**, capacité ajoutée à § 3.1 en E3-03, `owner` seul. Une story qui ouvre un type vérifie d'abord qu'une capacité existante dit bien ce qu'elle garde ; sinon elle en ajoute une, à § 3.1 et à ses trois copies.
 
+*Addendum E4-01.* L'annulation d'un document confirmé écrit des mouvements inverses (RÈGLE M3-3), et aucun type existant ne convient : `sale` et `return` s'ouvriront sur `create_sale` (E4-03 à E4-06), parce que les employés les écrivent, et un type n'a qu'une capacité ; les ouvrir maintenant, ou les rattacher à `cancel_document` en attendant, ferait de l'API un `POST` de mouvements sans écran, ou ferait mentir la matrice. **`sale_cancellation` est donc un sixième type, ouvert sur `cancel_document`**, `owner` seul — aucune capacité nouvelle, `cancel_document` est à § 3.1 depuis le début. Il inverse les mouvements `sale` **écrits** pour le document (même variante, même dépôt, même `source_id`, quantité opposée), pas un recalcul depuis les lignes. `sale`, `return`, `receipt` et `inventory` restent fermés.
+
 **Le motif d'un ajustement est obligatoire**, en base comme à l'écran : `stock_movement_adjustment_reason` refuse un `adjustment` dont `note` est vide ou en blancs, et ne regarde aucun autre type — une vente, une réception, un inventaire sont justifiés par leur document. § 2.6 ne s'y applique pas : cette RÈGLE-là vise les formulaires de création d'entités de référence, inscrits par `merx.register_creation_form()`, et le motif n'est pas un accessoire de l'ajustement, il en est le contenu. Un ajustement sans motif est un chiffre changé à la main sans raison, ce que la trace exigée ci-dessous existe pour empêcher. Arbitré en E3-03.
 
 **RÈGLE M2-4** — En inventaire, saisie en cartons quand `pieces_per_carton` existe, avec conversion automatique. On compte des cartons sur une étagère, pas des pièces.
@@ -386,7 +388,11 @@ La table est vide à la création du module : tant qu'aucun écran n'écrit un t
 **Entités**
 
 `sale_document`
-`id, tenant_id, doc_type, doc_number, device_id, client_id, warehouse_id, status, subtotal, discount_total, total, notes, created_by, issued_at`
+`id, tenant_id, doc_type, doc_number, device_id, client_id, warehouse_id, status, subtotal, discount_total, total, notes, created_by, issued_at, cancellation_reason`
+
+- `client_id` arrive avec la table `client`, en E6-01, **avec sa clé composite dans le même geste** : posée avant, la colonne laisserait passer l'identifiant d'un autre commerce (§ 4).
+- `doc_number` et `issued_at` sont nuls tant que le document est un brouillon (RÈGLE M3-2).
+- `cancellation_reason` est le motif de l'annulation, obligatoire dès que `status = 'cancelled'` — en base, par `sale_document_cancellation_reason`, pas seulement à l'écran. Ajouté en E4-01 : sans lui une annulation par l'API serait anonyme, et l'entrée `document_cancellation` du journal n'aurait rien à retenir (même raisonnement que le motif d'un ajustement, § 7).
 
 - `doc_type` : `quote | order | delivery_note`
 - `status` : `draft | confirmed | delivered | cancelled`
@@ -408,6 +414,10 @@ La table est vide à la création du module : tant qu'aucun écran n'écrit un t
 **RÈGLE M3-2** — Numérotation **locale**, préfixée par l'appareil : `BL-A-0001`. Séquence par `(tenant, device, doc_type, year)`, sans trou. Attribuée à la confirmation. Le serveur n'attribue rien.
 
 **RÈGLE M3-3** — Un document `confirmed` n'est jamais modifié ni supprimé. On l'annule, ce qui génère les mouvements de stock inverses.
+
+*Lecture de M3-3, arbitrée en E4-01 — pour qu'on ne la réinterprète pas :* **le contenu est figé, le statut avance.** Lignes, montants, notes, client, dépôt, numéro : plus rien ne change dès la confirmation. Le statut, lui, avance le long de transitions déclarées en données (`merx.frozen_transition`) : `draft → confirmed` (le brouillon est libre jusque-là, et reçoit à ce moment son numéro et sa date), `confirmed → delivered`, `confirmed → cancelled` et `delivered → cancelled` — ces deux dernières ne changent en plus que `cancellation_reason`. `cancelled` est terminal. Il n'y a ni `draft → delivered` ni `draft → cancelled` : un brouillon se supprime, il ne s'annule pas (§ 4). Un document naît brouillon, jamais confirmé. Tout est tenu par la base, pas par l'écran : `merx.apply_frozen_when()`, un mécanisme à part de l'ajout seul, qui vaut pour toute la table alors qu'un brouillon doit rester modifiable.
+
+*Annulation.* Seul le `owner` annule (`cancel_document`, § 3.1), avec un motif. La transition vers `cancelled` écrit, dans la même transaction, l'inverse de chaque mouvement `sale` du document (type `sale_cancellation`, § 7) et une entrée `document_cancellation` au journal (§ 9, RÈGLE M8-1). Un devis ou une commande n'ayant écrit aucun mouvement, leur annulation n'en inverse aucun. La confirmation qui écrit les mouvements `sale` est E4-05 (RÈGLE M3-5).
 
 **RÈGLE M3-4** — Une transformation (devis → commande → bon) crée un **nouveau** document lié au précédent, sans muter l'original.
 
@@ -528,6 +538,8 @@ Lecture seule, aucune entité. Doit fonctionner **hors-ligne**, calculé depuis 
 **RÈGLE M8-1** — Écrivent obligatoirement dans `audit_log` : forçage de prix, annulation de document, dépassement de plafond, validation d'écart, modification de rôle, changement de prix d'achat, **ajustement manuel de stock**.
 
 Ces sept actions sont l'enum `public.audit_action` — `price_override`, `document_cancellation`, `credit_limit_override`, `stock_variance_approval`, `role_change`, `purchase_price_change`, `stock_adjustment`. Les six premières sont posées en E1-04 et arrivent avec leurs modules, en employant ces étiquettes-là. `purchase_price_change` est branchée sur `variant_cost` depuis la clôture d'E2-04 (addendum E2-03), par un trigger que pose `merx.apply_audit()` — la même forme servira `goods_receipt_line_cost` en E8-03, et `supabase/tests/conventions.ts` refuse toute relation restreinte par `view_cost` qui n'est pas journalisée.
+
+**`document_cancellation` est branchée en E4-01** sur `sale_document`, par le même helper, avec une condition de ligne et un événement explicite : seule la transition vers `cancelled` est journalisée (`old.status is distinct from new.status and new.status = 'cancelled'`, `AFTER UPDATE` seul) — ni la création d'un brouillon, ni sa confirmation, ni sa livraison. `merx.apply_audit()` y gagne le paramètre `only_events`, car une table qui n'est pas en ajout seul ne pouvait pas porter de condition de ligne. L'entrée retient `doc_type`, `doc_number`, `status`, `total` et `cancellation_reason`.
 
 **`stock_adjustment` est ajoutée en E3-03**, septième étiquette, branchée sur `stock_movement` par le même helper avec une condition de ligne — seul un `adjustment` est journalisé, une vente ne l'est pas. Le mouvement n'était pas une trace suffisante : il est lu par tout le commerce (`view_catalogue`), noyé parmi les mouvements de vente, et son `created_by` vient du client. `audit_log` tient l'inverse des trois — lecture réservée à `view_audit_log`, ajout seul pour tous, commerce et auteur pris au jeton signé. La liste ci-dessus est un plancher, pas un plafond : une story qui doit tracer une action vérifie qu'une étiquette existante la nomme, et sinon ajoute la sienne ici et à l'enum, par une migration dédiée — une valeur d'enum n'est pas utilisable dans la transaction qui la crée. **Hors session, une écriture journalisée est refusée** : sans commerce ni auteur dans le jeton, `merx.log_audit()` lève, et l'écriture avec — `service_role` et `postgres` compris. Seul le harnais de test suspend les triggers, pour peupler et ranger.
 

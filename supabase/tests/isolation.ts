@@ -948,6 +948,13 @@ export const INSUFFICIENT_PRIVILEGE = '42501'
 export const DERIVED_WRITE = '55000'
 
 /**
+ * Le code SQLSTATE des gardes des tables figées — *object_in_use*. Celui
+ * d'aucun autre refus du projet, pour qu'un test qui l'assert mesure ces
+ * gardes-là. RÈGLE M3-3, E4-01.
+ */
+export const FROZEN_WRITE = '55006'
+
+/**
  * Exécute `body` triggers suspendus (`session_replication_role = replica`),
  * puis les rétablit. À appeler en `postgres` : le réglage est réservé.
  *

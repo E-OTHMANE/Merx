@@ -797,16 +797,25 @@ describe('RÈGLE M2-2 — stock_movement est en ajout seul', () => {
 /* ========================================================================== */
 
 describe('l’écriture d’un mouvement est fermée par défaut', () => {
-  it('ne connaît les cinq types du spec, et rien de plus', () => {
-    expect(MOVEMENT_TYPES).toEqual(['sale', 'return', 'receipt', 'adjustment', 'inventory'])
+  it('ne connaît les six types du spec, et rien de plus', () => {
+    // Les cinq de SPEC § 7 M2, plus `sale_cancellation` (E4-01, RÈGLE M2-5).
+    expect(MOVEMENT_TYPES).toEqual([
+      'sale',
+      'return',
+      'receipt',
+      'adjustment',
+      'inventory',
+      'sale_cancellation',
+    ])
   })
 
   /*
    * Un type ouvert est un écran livré, et rien d'autre. E3-03 a ouvert
-   * `adjustment` ; `inventory` attend E3-04, `sale` et `return` E4, `receipt`
-   * E8-02. Ce test est ce qui empêche une porte de s'ouvrir sans story : il
-   * tombe aussi bien sur un type ouvert trop tôt que sur un type fermé par
-   * mégarde.
+   * `adjustment` ; E4-01 a ouvert `sale_cancellation`, que l'annulation d'un
+   * document écrit ; `inventory` attend E3-04, `sale` et `return` E4-05 et
+   * E4-06, `receipt` E8-02. Ce test est ce qui empêche une porte de s'ouvrir
+   * sans story : il tombe aussi bien sur un type ouvert trop tôt que sur un
+   * type fermé par mégarde.
    */
   it('n’ouvre que les types dont une story a livré l’écran', async () => {
     await client.query('reset role')
@@ -814,7 +823,10 @@ describe('l’écriture d’un mouvement est fermée par défaut', () => {
       'select movement_type::text, capability from merx.movement_type_capability' +
         ' order by movement_type::text',
     )
-    expect(rows).toEqual([{ movement_type: 'adjustment', capability: 'adjust_stock' }])
+    expect(rows).toEqual([
+      { movement_type: 'adjustment', capability: 'adjust_stock' },
+      { movement_type: 'sale_cancellation', capability: 'cancel_document' },
+    ])
   })
 
   /*

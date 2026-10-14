@@ -499,14 +499,32 @@ L'épique la plus critique. L'écran de vente décide de l'adoption.
 **En tant que** développeur, **je veux** des documents non modifiables, **afin que** l'historique reste fiable.
 
 **Critères d'acceptation**
-- [ ] Tables `sale_document`, `sale_line`, `document_sequence`
-- [ ] `doc_type` : `quote | order | delivery_note`. **Aucune facture fiscale.**
-- [ ] `status` : `draft | confirmed | delivered | cancelled`
-- [ ] Un document `confirmed` ne peut être ni modifié ni supprimé, contrainte en base
-- [ ] L'annulation passe le statut à `cancelled` et génère les mouvements de stock inverses
-- [ ] `price_source` par ligne : `auto | manual`
+- [x] Tables `sale_document`, `sale_line`, `document_sequence`
+- [x] `doc_type` : `quote | order | delivery_note`. **Aucune facture fiscale.**
+- [x] `status` : `draft | confirmed | delivered | cancelled`
+- [x] Un document `confirmed` ne peut être ni modifié ni supprimé, contrainte en base
+- [x] L'annulation passe le statut à `cancelled` et génère les mouvements de stock inverses
+- [x] `price_source` par ligne : `auto | manual`
 
 **Notes** — `SPEC.md` RÈGLES M3-1, M3-3.
+
+**Un mécanisme neuf, pas `apply_append_only()`.** Le garde de l'ajout seul vaut pour toute la table (privilèges retirés, refus sans condition) ; un brouillon doit rester modifiable et `confirmed → cancelled` est un UPDATE. Son registre est aussi ce que `isolation.ts` lit pour inverser son contrôle positif : y inscrire `sale_document` aurait fait attendre « UPDATE refusé » sur des brouillons. D'où `merx.frozen_registry` + `merx.apply_frozen_when()` (cinq gardes : naissance, mise à jour, suppression, TRUNCATE, lignes de l'enfant), SQLSTATE `55006`, transitions en données (`merx.frozen_transition`). La mise à jour refuse de trois façons distinctes — transition non déclarée, contenu changé sous un statut figé, colonne étrangère à la transition — chacune sa phrase. Les colonnes qui ont changé sont calculées sur `to_jsonb(new)` contre `to_jsonb(old)` : une colonne ajoutée plus tard, `client_id` en E6-01, est figée d'office.
+
+**Lecture de M3-3, écrite à SPEC § 8 : le contenu est figé, le statut avance.** `draft → confirmed` (libre : le brouillon reçoit son numéro, sa date, ses totaux), `confirmed → delivered`, `confirmed → cancelled`, `delivered → cancelled` ; `cancelled` est terminal. Un document naît brouillon. Un brouillon — et lui seul — se supprime, avec ses lignes (SPEC § 4 corrigé).
+
+**Un sixième type de mouvement, `sale_cancellation`, ouvert sur `cancel_document`** (`owner` seul, aucune capacité neuve). `sale` et `return` s'ouvriront sur `create_sale` en E4-05/E4-06 parce que les employés les écrivent, et un type n'a qu'une capacité ; les ouvrir maintenant, ou les rattacher à `cancel_document` en attendant, ferait de l'API un `POST` de mouvements sans écran, ou ferait mentir la matrice (même objection qu'`adjust_stock`, E3-03). `sale`, `return`, `receipt`, `inventory` restent fermés. SPEC § 7 et la RÈGLE M2-5 sont corrigés dans la même story. Deux migrations — une valeur d'enum n'est pas utilisable dans la transaction qui la crée.
+
+**Le mouvement `sale_cancellation` ne s'écrit pas à la main.** Ouvert au patron, il lui aurait permis de corriger un stock sans motif et **sans entrée de journal** — l'`adjustment` est audité, lui pas. `merx.require_cancellation_origin()` refuse toute insertion directe par `pg_trigger_depth()`, comme le garde des tables dérivées ; AFTER, pour ne pas refuser avant la policy. Limite : le garde ne dit pas *quel* trigger écrit, seulement qu'un trigger écrit — une seconde fonction qui insérerait ce type passerait. `reverse_sale_movements()` est la seule aujourd'hui.
+
+**L'annulation, en deux gardes, deux phrases.** `merx.require_cancel_capability()` exige `cancel_document` sur la transition elle-même — sans lui, un employé annulerait un devis, qui n'a aucun mouvement pour qu'une policy se prononce. `merx.reverse_sale_movements()` (`security invoker`, donc la policy du type s'applique) écrit l'inverse des mouvements `sale` **écrits** pour le document, pas un recalcul depuis les lignes. Un test par niveau, qui contourne l'autre.
+
+**Le motif, `cancellation_reason`, est obligatoire en base** (`sale_document_cancellation_reason`) : sans lui, une annulation par l'API serait anonyme et l'entrée de journal n'aurait rien à retenir — même raisonnement que le motif d'un ajustement. SPEC § 8 le liste désormais.
+
+**`document_cancellation`, tracée.** L'étiquette existait depuis E1-04, mais `merx.apply_audit()` refusait une condition de ligne sur une table qui n'est pas en ajout seul. Elle gagne `only_events` (ici `update`) ; le registre d'audit retient les événements posés, que `conventions.ts` compare au trigger réel au lieu de les dériver.
+
+**Laissé pour plus tard, et écrit là où ça se décidera :** `client_id` (E6-01), l'année dans le numéro et l'unicité de `doc_number` (E4-02), l'arrondi de `line_total` et les contraintes de cohérence des totaux (E4-04), l'écriture des mouvements `sale` à la confirmation (E4-05). `document_sequence` n'a ni fonction ni trigger : le serveur n'attribue rien.
+
+**Sabotages (25 gardes retirés, un par un) :** tous font rougir au moins un test. Les gardes de la table figée (naissance, mise à jour dans ses trois branches, suppression, TRUNCATE par trigger et par privilège, lignes), la transition ajoutée à la liste, le droit d'annuler, l'inversion et son filtre de type, le motif, l'ouverture du type et sa capacité, le garde d'origine, la policy des mouvements, le trigger d'audit et sa condition, les trois clés composites, l'unicité et le `NOT NULL` de `document_sequence`, `quantity > 0`. Un cas est resté vert à la première passe — `TRUNCATE ... cascade` sur `sale_document` était refusé par le garde de `sale_line`, avec la même phrase ; le test exige maintenant que le message nomme la table.
 
 ---
 
@@ -524,6 +542,8 @@ L'épique la plus critique. L'écran de vente décide de l'adoption.
 - [ ] Test : deux appareils créant chacun 100 documents ne produisent aucune collision
 
 **Notes** — `SPEC.md` RÈGLE M3-2. Une numérotation serveur rendrait E9 impossible.
+
+**À trancher ici, relevé en E4-01 : le format n'a pas d'année.** `BL-A-0001` ne porte pas l'année, alors que la séquence est annuelle `(tenant, device, doc_type, year)`. Le premier bon de 2027 serait `BL-A-0001`, comme celui de 2026 : collision de texte, et aucune unicité sur `doc_number` ne peut être posée tant que ce n'est pas réglé. E4-01 n'en pose donc aucune. E4-02 choisit : soit l'année dans le numéro (`BL-A-2027-0001`), soit une séquence qui ne repart pas à zéro au 1er janvier — et corrige alors M3-2 et le critère « par `(tenant, device, doc_type, year)` » en conséquence. Le numéro est attribué par l'appareil, à la confirmation, dans la transition `draft → confirmed` que le garde de `sale_document` laisse écrire (le contenu d'un brouillon est libre jusqu'à elle).
 
 ---
 
@@ -562,6 +582,8 @@ L'épique la plus critique. L'écran de vente décide de l'adoption.
 - [ ] Tout forçage est tracé dans `audit_log`
 
 **Notes** — `SPEC.md` RÈGLES M1-3, M1-4. L'incitation au palier est une fonction produit, pas une décoration.
+
+**À trancher ici, relevé en E4-01 : la règle d'arrondi de `line_total`.** Une quantité à 3 décimales (`numeric(12,3)`) multipliée par un prix à 2 (`numeric(12,2)`) donne 5 décimales, et le spec n'écrit nulle part comment on revient à 2 : arrondi au plus proche, demi vers le haut ou vers le pair, au niveau de la ligne ou du document. E4-01 ne pose donc **aucune contrainte de cohérence des totaux** (`total = subtotal - discount_total`, `line_total = quantity × unit_price - line_discount`, somme des lignes). Cette règle se tranche avant toute contrainte de ce genre, puis s'écrit à un seul endroit — en SQL, car les documents sont figés en base et le total qui s'imprime doit être celui qui est stocké.
 
 ---
 
@@ -672,6 +694,8 @@ L'épique la plus critique. L'écran de vente décide de l'adoption.
 - [ ] Création possible depuis l'écran de vente, sans le quitter
 - [ ] Recherche par nom et par téléphone, tolérante aux fautes
 - [ ] Suppression douce
+
+**À faire ici, relevé en E4-01 : `sale_document.client_id`.** Le spec (§ 8) liste `client_id` sur `sale_document`, mais la table `client` n'existe pas à l'étape 4. E4-01 **omet la colonne** plutôt que de la poser sans clé : un `client_id` sans clé composite laisserait passer l'identifiant d'un autre commerce, ce que la RÈGLE de § 4 existe pour empêcher. La migration de cette story crée `client` (avec `unique (tenant_id, id)`), **puis ajoute `sale_document.client_id uuid` nullable avec sa clé composite `(tenant_id, client_id) references client (tenant_id, id)`, dans le même geste** — jamais la colonne seule. Le garde « figé » de `sale_document` compare la ligne entière hors statut : la colonne neuve y entre d'office, un document confirmé ne change pas de client. Le balayage d'isolation et `conventions.ts` la prennent d'eux-mêmes.
 
 ---
 

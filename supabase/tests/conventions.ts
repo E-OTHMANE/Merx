@@ -639,11 +639,13 @@ const RLS_EXCEPTION_REGISTRY = `
  * échapperait au registre que le harnais de test lit — même raison que pour
  * l'ajout seul.
  *
- * Les événements ne sont plus écrits ici : ils se **dérivent** de
- * `merx.append_only_registry`, comme `merx.apply_audit()` les dérive (E3-03).
- * Une table en ajout seul ne reçoit qu'un AFTER INSERT — un trigger UPDATE ou
- * DELETE y serait mort-né, et Postgres refuse un `when (new....)` sur un
- * DELETE. Les autres portent les trois, comme `variant_cost`.
+ * Les événements ne sont pas écrits ici : ils sont lus au registre, où
+ * `merx.apply_audit()` les inscrit — dérivés de `merx.append_only_registry`
+ * quand le helper n'en reçoit pas (E3-03), explicites sinon (E4-01). Une table
+ * en ajout seul ne reçoit qu'un AFTER INSERT : un trigger UPDATE ou DELETE y
+ * serait mort-né, et Postgres refuse un `when (new....)` sur un DELETE. Les
+ * autres portent les trois, comme `variant_cost`, ou l'événement qu'on leur a
+ * demandé, comme `sale_document` (UPDATE seul).
  *
  * Et la clause `when`, qui restreint la journalisation à une partie des lignes,
  * est comparée au registre. C'est ce qui empêche une condition posée après coup
@@ -653,7 +655,7 @@ const RLS_EXCEPTION_REGISTRY = `
  */
 const AUDITED_TRIGGERS = `
   with registered as (
-    select r.table_name, r.row_condition, c.oid,
+    select r.table_name, r.row_condition, r.events, c.oid,
            exists (
              select 1 from merx.append_only_registry a where a.table_name = r.table_name
            ) as append_only
@@ -681,18 +683,26 @@ const AUDITED_TRIGGERS = `
   union all
 
   select r.table_name,
-         format('trigger d''audit posé sur %s, attendu %s — événements dérivés de '
-                'merx.append_only_registry, RÈGLE M8-1',
+         format('trigger d''audit posé sur %s, attendu %s — événements inscrits au '
+                'registre par merx.apply_audit(), RÈGLE M8-1',
                 concat_ws(', ',
                   case when (p.tgtype & 4) <> 0 then 'INSERT' end,
                   case when (p.tgtype & 16) <> 0 then 'UPDATE' end,
                   case when (p.tgtype & 8) <> 0 then 'DELETE' end),
-                case when r.append_only then 'INSERT' else 'INSERT, UPDATE, DELETE' end) as detail
+                upper(replace(r.events, ' or ', ', '))) as detail
   from registered r
   join posed p on p.tgrelid = r.oid
-  where (p.tgtype & 4) = 0
-     or (r.append_only and ((p.tgtype & 8) <> 0 or (p.tgtype & 16) <> 0))
-     or (not r.append_only and ((p.tgtype & 8) = 0 or (p.tgtype & 16) = 0))
+  where ((p.tgtype & 4) <> 0) <> (r.events like '%insert%')
+     or ((p.tgtype & 16) <> 0) <> (r.events like '%update%')
+     or ((p.tgtype & 8) <> 0) <> (r.events like '%delete%')
+
+  union all
+
+  select r.table_name,
+         format('table en ajout seul dont le registre d''audit annonce %s — un trigger '
+                'UPDATE ou DELETE y serait mort-né, RÈGLE M8-1', r.events) as detail
+  from registered r
+  where r.append_only and r.events <> 'insert'
 
   union all
 
@@ -981,6 +991,166 @@ const DERIVED_DIRECT_WRITE = `
   order by 1, 2
 `
 
+/*
+ * SPEC RÈGLE M3-3, E4-01 — une table figée porte ses gardes, et le registre qui
+ * les nomme est celui que lit `sale-document.test.ts` pour savoir quoi éprouver.
+ * Même forme que les gardes de l'ajout seul et des tables dérivées, et pour la
+ * même raison : le registre nomme la table, pas ses triggers. Un garde retiré
+ * ou éteint à la main laisserait la table inscrite, intacte au catalogue, et
+ * plus rien ne refuserait.
+ *
+ * Racine (`root`, figée par son propre statut) : quatre gardes, chacun sa ligne
+ * — naissance, mise à jour, suppression, TRUNCATE. Enfant (`child`, figée avec
+ * son parent) : le garde d'écriture, qui doit couvrir les trois événements, et
+ * celui de TRUNCATE. Et le privilège : TRUNCATE retiré à `authenticated`, qui
+ * est la première porte.
+ *
+ * Une racine sans transition déclarée est une table dont le statut ne peut
+ * jamais avancer : la seule suppression possible est celle du brouillon, et
+ * l'annulation n'existe pas. Signalé.
+ */
+const FROZEN_GUARDS = `
+  with registered as (
+    select r.table_name, r.kind, r.parent_table, c.oid
+    from merx.frozen_registry r
+    left join pg_class c
+      on c.relname = r.table_name
+     and c.relnamespace = 'public'::regnamespace
+     and c.relkind = 'r'
+  ),
+  guard as (
+    select t.table_name, t.kind,
+           bool_or(tg.tgfoid = 'merx.reject_frozen_birth()'::regprocedure
+                   and (tg.tgtype & 1) <> 0 and (tg.tgtype & 2) <> 0
+                   and (tg.tgtype & 4) <> 0)  as blocks_birth,
+           bool_or(tg.tgfoid = 'merx.reject_frozen_update()'::regprocedure
+                   and (tg.tgtype & 1) <> 0 and (tg.tgtype & 2) <> 0
+                   and (tg.tgtype & 16) <> 0) as blocks_update,
+           bool_or(tg.tgfoid = 'merx.reject_frozen_delete()'::regprocedure
+                   and (tg.tgtype & 1) <> 0 and (tg.tgtype & 2) <> 0
+                   and (tg.tgtype & 8) <> 0)  as blocks_delete,
+           bool_or(tg.tgfoid = 'merx.reject_frozen_child_write()'::regprocedure
+                   and (tg.tgtype & 1) <> 0 and (tg.tgtype & 2) <> 0
+                   and (tg.tgtype & 28) = 28) as blocks_child,
+           bool_or(tg.tgfoid = 'merx.reject_frozen_truncate()'::regprocedure
+                   and (tg.tgtype & 1) = 0 and (tg.tgtype & 2) <> 0
+                   and (tg.tgtype & 32) <> 0) as blocks_truncate
+    from registered t
+    left join pg_trigger tg on tg.tgrelid = t.oid and not tg.tgisinternal
+    where t.oid is not null
+    group by 1, 2
+  )
+  select r.table_name,
+         'inscrite au registre des tables figées, absente de public' as detail
+  from registered r where r.oid is null
+
+  union all
+
+  select g.table_name,
+         'aucun trigger BEFORE INSERT merx.reject_frozen_birth — un document naît confirmé, '
+         'et ses lignes ne s''écriront jamais' as detail
+  from guard g where g.kind = 'root' and not coalesce(g.blocks_birth, false)
+
+  union all
+
+  select g.table_name,
+         'aucun trigger BEFORE UPDATE merx.reject_frozen_update — le contenu figé se modifie'
+         as detail
+  from guard g where g.kind = 'root' and not coalesce(g.blocks_update, false)
+
+  union all
+
+  select g.table_name,
+         'aucun trigger BEFORE DELETE merx.reject_frozen_delete — un document confirmé se supprime'
+         as detail
+  from guard g where g.kind = 'root' and not coalesce(g.blocks_delete, false)
+
+  union all
+
+  select g.table_name,
+         'aucun trigger BEFORE INSERT OR UPDATE OR DELETE merx.reject_frozen_child_write — '
+         'les lignes d''un document figé se modifient' as detail
+  from guard g where g.kind = 'child' and not coalesce(g.blocks_child, false)
+
+  union all
+
+  select g.table_name,
+         'aucun trigger BEFORE TRUNCATE merx.reject_frozen_truncate — la table se vide d''un '
+         'coup, et les gardes de ligne ne le voient pas' as detail
+  from guard g where not coalesce(g.blocks_truncate, false)
+
+  union all
+
+  select r.table_name,
+         format('authenticated détient %s sur une table figée', g.privilege_type) as detail
+  from registered r
+  join information_schema.role_table_grants g
+    on g.table_schema = 'public' and g.table_name = r.table_name and g.grantee = 'authenticated'
+  where g.privilege_type = 'TRUNCATE'
+
+  union all
+
+  select r.table_name,
+         format('garde %s désactivé (tgenabled = %L) — il existe toujours au catalogue '
+                'et ne refuse plus rien', tg.tgname, tg.tgenabled) as detail
+  from registered r
+  join pg_trigger tg on tg.tgrelid = r.oid and not tg.tgisinternal
+  where tg.tgfoid in ('merx.reject_frozen_birth()'::regprocedure,
+                      'merx.reject_frozen_update()'::regprocedure,
+                      'merx.reject_frozen_delete()'::regprocedure,
+                      'merx.reject_frozen_child_write()'::regprocedure,
+                      'merx.reject_frozen_truncate()'::regprocedure)
+    and tg.tgenabled not in ('O', 'A')
+
+  union all
+
+  select r.table_name,
+         'table figée par son statut sans aucune transition déclarée à '
+         'merx.frozen_transition — son statut ne peut jamais avancer' as detail
+  from registered r
+  where r.kind = 'root'
+    and not exists (select 1 from merx.frozen_transition t where t.table_name = r.table_name)
+
+  union all
+
+  select r.table_name,
+         format('enfant d''une table figée, mais son parent %s n''est pas une racine du registre',
+                r.parent_table) as detail
+  from registered r
+  where r.kind = 'child'
+    and not exists (
+      select 1 from merx.frozen_registry p
+      where p.table_name = r.parent_table and p.kind = 'root'
+    )
+
+  order by 1, 2
+`
+
+/*
+ * L'inverse : une table gardée sans être inscrite. Le registre n'est pas une
+ * étiquette — c'est ce que les tests de document lisent pour savoir quoi
+ * éprouver. Une table figée à la main y échapperait.
+ */
+const UNREGISTERED_FROZEN = `
+  select c.relname as table_name,
+         'gardée comme figée sans inscription au registre — passer par '
+         'merx.apply_frozen_when() ou merx.apply_frozen_child()' as detail
+  from pg_class c
+  join pg_namespace n on n.oid = c.relnamespace and n.nspname = 'public'
+  join pg_trigger tg on tg.tgrelid = c.oid and not tg.tgisinternal
+  where c.relkind = 'r'
+    and tg.tgfoid in ('merx.reject_frozen_birth()'::regprocedure,
+                      'merx.reject_frozen_update()'::regprocedure,
+                      'merx.reject_frozen_delete()'::regprocedure,
+                      'merx.reject_frozen_child_write()'::regprocedure,
+                      'merx.reject_frozen_truncate()'::regprocedure)
+    and not exists (
+      select 1 from merx.frozen_registry r where r.table_name = c.relname
+    )
+  group by 1
+  order by 1
+`
+
 export const RULES = {
   'table non enregistrée': UNREGISTERED,
   'registre périmé': STALE_REGISTRY,
@@ -997,6 +1167,8 @@ export const RULES = {
   'aucun ajout seul hors registre': UNREGISTERED_APPEND_ONLY,
   'gardes des tables dérivées': DERIVED_GUARDS,
   'aucune table dérivée hors registre': UNREGISTERED_DERIVED,
+  'gardes des tables figées': FROZEN_GUARDS,
+  'aucune table figée hors registre': UNREGISTERED_FROZEN,
   'aucun autre écrivain d\'une table dérivée': DERIVED_DIRECT_WRITE,
   'aucune écriture directe dans audit_log': AUDIT_DIRECT_WRITE,
   'clés étrangères composites sur tenant_id': TENANT_SCOPED_FOREIGN_KEYS,

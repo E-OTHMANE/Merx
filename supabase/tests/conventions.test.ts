@@ -734,6 +734,249 @@ describe('les règles attrapent une table fautive', () => {
     })
   })
 
+  /*
+   * E4-01, RÈGLE M8-1 — les événements d'audit sont inscrits au registre, et la
+   * règle les compare au trigger réel. `sale_document` ne journalise que
+   * l'UPDATE ; un trigger retouché à la main pour y ajouter l'INSERT, ou pour
+   * en retirer l'UPDATE, doit être nommé.
+   */
+  describe('le journal — événements explicites', () => {
+    const createProbe = async (): Promise<void> => {
+      await client.query('begin')
+      await client.query(`
+        create table public.events_probe (id uuid primary key default gen_random_uuid());
+        select merx.apply_reference_conventions('public.events_probe');
+        alter table public.events_probe add column state text, add column unit_cost public.money_amount;
+        select merx.apply_audit(
+          'public.events_probe', 'document_cancellation', array['state'],
+          $$new.state = 'done'$$, array['update']);
+      `)
+    }
+
+    it('inscrit l\'événement posé, et laisse passer la table gardée', async () => {
+      await createProbe()
+      const { rows } = await client.query<{ events: string }>(
+        "select events from merx.audited_registry where table_name = 'events_probe'",
+      )
+      expect(rows).toEqual([{ events: 'update' }])
+      expect(
+        onProbe(await violations(client, 'tables auditées gardées'), 'events_probe'),
+      ).toEqual([])
+    })
+
+    it('signale un trigger auquel on a ajouté un événement que le registre ne connaît pas', async () => {
+      await createProbe()
+      await client.query('drop trigger audit_row_change on public.events_probe')
+      await client.query(`
+        create trigger audit_row_change after insert or update on public.events_probe
+          for each row when (new.state = 'done')
+          execute function merx.audit_row_change('document_cancellation', 'state')
+      `)
+
+      const found = onProbe(await violations(client, 'tables auditées gardées'), 'events_probe')
+      expect(describeViolations(found)).toContain('attendu UPDATE')
+    })
+
+    it('signale un trigger qui a perdu l\'événement que le registre annonce', async () => {
+      await createProbe()
+      await client.query('drop trigger audit_row_change on public.events_probe')
+      await client.query(`
+        create trigger audit_row_change after delete on public.events_probe
+          for each row execute function merx.audit_row_change('document_cancellation', 'state')
+      `)
+
+      const found = describeViolations(
+        onProbe(await violations(client, 'tables auditées gardées'), 'events_probe'),
+      )
+      expect(found).toContain('attendu UPDATE')
+      expect(found).toContain('posé sur DELETE')
+    })
+
+    it('refuse une condition de ligne sur une table dont les événements incluent delete', async () => {
+      await client.query('begin')
+      await client.query(`
+        create table public.events_probe (id uuid primary key default gen_random_uuid());
+        select merx.apply_reference_conventions('public.events_probe');
+        alter table public.events_probe add column state text;
+      `)
+      await expect(
+        client.query(
+          `select merx.apply_audit('public.events_probe', 'document_cancellation', array['state'], $$new.state = 'done'$$)`,
+        ),
+      ).rejects.toThrow('dont les événements incluent delete')
+    })
+
+    it('refuse un événement inconnu, et un UPDATE sur une table en ajout seul', async () => {
+      await client.query('begin')
+      await client.query(`
+        create table public.events_probe (id uuid primary key default gen_random_uuid());
+        select merx.apply_reference_conventions('public.events_probe');
+        alter table public.events_probe add column state text;
+      `)
+      await client.query('savepoint refusal')
+      await expect(
+        client.query(
+          "select merx.apply_audit('public.events_probe', 'document_cancellation', array['state'], null, array['upsert'])",
+        ),
+      ).rejects.toThrow('Événements d\'audit inconnus')
+      await client.query('rollback to savepoint refusal')
+      await expect(
+        client.query(
+          "select merx.apply_audit('public.stock_movement', 'stock_adjustment', array['quantity'], null, array['update'])",
+        ),
+      ).rejects.toThrow('est en ajout seul')
+    })
+  })
+
+  /*
+   * E4-01, RÈGLE M3-3 — les tables figées. Même forme que les tables dérivées :
+   * le registre nomme la table, pas ses triggers, et chaque garde se retire
+   * séparément.
+   */
+  describe('gardes des tables figées', () => {
+    const rule: RuleName = 'gardes des tables figées'
+
+    const createFrozenProbe = async (): Promise<void> => {
+      await client.query('begin')
+      await client.query(`
+        create table public.frozen_probe (
+          id     uuid primary key default gen_random_uuid(),
+          status public.sale_doc_status not null default 'draft',
+          note   text
+        );
+        select merx.apply_business_conventions('public.frozen_probe');
+        alter table public.frozen_probe add constraint frozen_probe_tenant_id_id_key unique (tenant_id, id);
+        select merx.apply_frozen_when('public.frozen_probe', 'status', 'draft');
+        select merx.allow_frozen_transition('public.frozen_probe', 'draft', 'confirmed');
+
+        create table public.frozen_child_probe (
+          id              uuid primary key default gen_random_uuid(),
+          frozen_probe_id uuid not null
+        );
+        select merx.apply_business_conventions('public.frozen_child_probe');
+        alter table public.frozen_child_probe add constraint frozen_child_probe_fkey
+          foreign key (tenant_id, frozen_probe_id) references public.frozen_probe (tenant_id, id)
+          on delete cascade;
+        select merx.apply_frozen_child('public.frozen_child_probe', 'public.frozen_probe', 'frozen_probe_id');
+      `)
+    }
+
+    it('connaît sale_document et sale_line, et leurs gardes sont en place', async () => {
+      const { rows } = await client.query<{ table_name: string; kind: string }>(
+        'select table_name, kind from merx.frozen_registry order by table_name',
+      )
+      expect(rows).toEqual([
+        { table_name: 'sale_document', kind: 'root' },
+        { table_name: 'sale_line', kind: 'child' },
+      ])
+      expect(describeViolations(await violations(client, rule))).toBe('')
+    })
+
+    it('laisse passer une racine et un enfant posés par les helpers', async () => {
+      await createFrozenProbe()
+      expect(onProbe(await violations(client, rule), 'frozen_probe')).toEqual([])
+      expect(onProbe(await violations(client, rule), 'frozen_child_probe')).toEqual([])
+    })
+
+    const removals: Array<[string, string, string]> = [
+      ['la naissance', 'drop trigger reject_frozen_birth on public.frozen_probe', 'BEFORE INSERT merx.reject_frozen_birth'],
+      ['la mise à jour', 'drop trigger reject_frozen_update on public.frozen_probe', 'BEFORE UPDATE merx.reject_frozen_update'],
+      ['la suppression', 'drop trigger reject_frozen_delete on public.frozen_probe', 'BEFORE DELETE merx.reject_frozen_delete'],
+      ['TRUNCATE', 'drop trigger reject_frozen_truncate on public.frozen_probe', 'BEFORE TRUNCATE merx.reject_frozen_truncate'],
+    ]
+    for (const [label, sql, expected] of removals) {
+      it(`signale le garde de ${label} manquant`, async () => {
+        await createFrozenProbe()
+        await client.query(sql)
+        const found = onProbe(await violations(client, rule), 'frozen_probe')
+        expect(describeViolations(found)).toContain(expected)
+        expect(found).toHaveLength(1)
+      })
+    }
+
+    it('signale le garde d\'écriture de l\'enfant manquant', async () => {
+      await createFrozenProbe()
+      await client.query('drop trigger reject_frozen_child_write on public.frozen_child_probe')
+      const found = onProbe(await violations(client, rule), 'frozen_child_probe')
+      expect(describeViolations(found)).toContain('reject_frozen_child_write')
+    })
+
+    it('signale un garde d\'écriture d\'enfant qui ne couvre pas les trois événements', async () => {
+      await createFrozenProbe()
+      await client.query('drop trigger reject_frozen_child_write on public.frozen_child_probe')
+      await client.query(`
+        create trigger reject_frozen_child_write before insert on public.frozen_child_probe
+          for each row execute function merx.reject_frozen_child_write(
+            'frozen_probe', 'frozen_probe_id', 'status', 'draft')
+      `)
+      const found = onProbe(await violations(client, rule), 'frozen_child_probe')
+      expect(describeViolations(found)).toContain('reject_frozen_child_write')
+    })
+
+    it('signale TRUNCATE laissé à authenticated', async () => {
+      await createFrozenProbe()
+      await client.query('grant truncate on public.frozen_probe to authenticated')
+      const found = onProbe(await violations(client, rule), 'frozen_probe')
+      expect(describeViolations(found)).toContain('authenticated détient TRUNCATE')
+    })
+
+    it('signale un garde désactivé, en le nommant', async () => {
+      await createFrozenProbe()
+      await client.query('alter table public.frozen_probe disable trigger reject_frozen_update')
+      const found = onProbe(await violations(client, rule), 'frozen_probe')
+      const detail = describeViolations(found)
+      expect(detail).toContain('reject_frozen_update')
+      expect(detail).toContain('désactivé')
+    })
+
+    it('signale une table figée dont aucune transition n\'est déclarée', async () => {
+      await createFrozenProbe()
+      await client.query("delete from merx.frozen_transition where table_name = 'frozen_probe'")
+      const found = onProbe(await violations(client, rule), 'frozen_probe')
+      expect(describeViolations(found)).toContain('aucune transition déclarée')
+    })
+
+    it('signale une table figée à la main, sans inscription au registre', async () => {
+      await client.query('begin')
+      await client.query(`
+        create table public.rogue_frozen_probe (id uuid primary key default gen_random_uuid());
+        select merx.apply_business_conventions('public.rogue_frozen_probe');
+        create trigger reject_frozen_delete before delete on public.rogue_frozen_probe
+          for each row execute function merx.reject_frozen_delete();
+      `)
+      const found = onProbe(
+        await violations(client, 'aucune table figée hors registre'),
+        'rogue_frozen_probe',
+      )
+      expect(describeViolations(found)).toContain('merx.apply_frozen_when()')
+    })
+
+    it('refuse à la pose un statut, une colonne ou un parent qui n\'existent pas', async () => {
+      await createFrozenProbe()
+      await client.query(`
+        create table public.frozen_other_probe (
+          id uuid primary key default gen_random_uuid(),
+          status public.sale_doc_status not null default 'draft'
+        );
+        select merx.apply_business_conventions('public.frozen_other_probe');
+      `)
+      const refusals: Array<[string, string]> = [
+        ["select merx.apply_frozen_when('public.frozen_other_probe', 'absente', 'draft')", 'Colonne de statut inconnue'],
+        ["select merx.apply_frozen_when('public.frozen_other_probe', 'status', 'brouillon')", 'Statut ouvert inconnu'],
+        ["select merx.allow_frozen_transition('public.frozen_probe', 'draft', 'archived')", 'Statut inconnu'],
+        ["select merx.allow_frozen_transition('public.frozen_probe', 'confirmed', 'delivered', array['absente'])", 'Colonne inconnue'],
+        ["select merx.allow_frozen_transition('public.frozen_other_probe', 'draft', 'confirmed')", 'n\'est pas une table figée'],
+        ["select merx.apply_frozen_child('public.frozen_other_probe', 'public.frozen_other_probe', 'id')", 'son enfant ne peut pas la suivre'],
+        ["select merx.apply_frozen_child('public.frozen_child_probe', 'public.frozen_probe', 'absente')", 'Colonne de clé inconnue'],
+      ]
+      for (const [sql, message] of refusals) {
+        await client.query('savepoint refusal')
+        await expect(client.query(sql), sql).rejects.toThrow(message)
+        await client.query('rollback to savepoint refusal')
+      }
+    })
+  })
+
   it('signale une entrée de registre sans table', async () => {
     await client.query('begin')
     await client.query(
