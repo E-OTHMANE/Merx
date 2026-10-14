@@ -12,9 +12,6 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
 La story a été vérifiée sur un Postgres 16 nu, avec des stubs `auth` et `storage`
 et un faux service d'authentification — pas sur le stack local.
 
-- [ ] **Commit non poussé.** `5a5b633` (E4-01) n'existe que dans le conteneur de
-      cette session : GitHub répondait 403 sur `E-OTHMANE/Merx`. À pousser sur
-      `claude/dreamy-goodall-akd2jm`, jamais sur `main`.
 - [ ] **`npx supabase db reset` sur le vrai stack** (Postgres 17), avec les deux
       migrations `20261014090000_sale_cancellation_type.sql` et
       `20261014100000_sale_documents.sql`. Juger sur « Finished supabase db reset ».
