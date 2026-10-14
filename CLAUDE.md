@@ -74,6 +74,10 @@ Worse, the filesystem hides the cleanup too: `rm QuantityReading.ts` deletes `qu
 
 Run `npm run typecheck` and `npm run lint` before saying a task is done.
 
+**"typecheck and lint clean" is written from the output of the command, in the same session as the sentence, after the last edit.** Not from the last time it was run, not from the expectation that nothing has changed since, and never from the test suite being green. A story does not close on a red `typecheck`.
+
+E3-02 did. Its closing note recorded "`typecheck` et `lint` propres"; `npm run typecheck` returned two errors — `src/modules/stock/levels.ts` (`GenericStringError[] → EntryRow[]`, cast through `unknown`) and `supabase/tests/stock-api.test.ts` (`one<T>` with no `QueryResultRow` constraint) — both in files created by `be59ae7`, the mid-story machine-change commit, and both still red when E3-03 opened a week later. Nothing hid them: `tsc -b --noEmit` prints them and exits 2, even with a `tsbuildinfo` newer than the source (it compares content, not timestamps). The gate had simply not been re-run after that code arrived, and the suite being green was read as the whole answer. Fixed in E3-03.
+
 ## Layout
 
 ```
