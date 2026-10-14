@@ -183,3 +183,9 @@ Each story ends with a sabotage pass: remove a guard, run the tests, and check t
 **Run only the test files the sabotaged guard touches**, with a reporter that prints failures only. The full suite runs once, at the end of the pass — not after each case.
 
 **Report one line per case**: the guard removed, the files run, how many tests went red, and which. A count is the whole report; a green case is a hole to fix, not a line to explain away.
+
+## Vérifications en attente
+
+**`docs/PENDING-CHECKS.md` liste ce qu'une session n'a pas pu vérifier. Lis-le à l'ouverture, et rappelle-le à l'utilisateur — au début de la session et à la clôture de chaque story — jusqu'à ce qu'il dise de les faire.** Ne retire une ligne que lorsqu'elle a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire. Toute vérification sautée faute d'environnement s'y ajoute avant de rendre la main : un test non lancé se dit, il ne se suppose pas.
+
+**Jamais de push direct sur `main`.** Le travail va sur la branche désignée de la session.
