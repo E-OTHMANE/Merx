@@ -21,6 +21,7 @@ const OWNER_ONLY: readonly Capability[] = [
   'set_credit_limit',
   'exceed_credit_limit',
   'approve_stock_variance',
+  'adjust_stock',
   'view_reports',
   'manage_users',
   'manage_devices',

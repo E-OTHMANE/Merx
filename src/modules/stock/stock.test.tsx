@@ -37,6 +37,8 @@ import { createFakeAuthClient, fakeSession } from '@/test/fakeAuth'
 interface Call {
   table: string
   filters: Array<[string, string, unknown]>
+  /** Ce qu'un `insert` envoie — l'ajustement d'E3-03 est la première écriture. */
+  payload?: unknown
 }
 
 interface Response {
@@ -67,6 +69,10 @@ vi.mock('@/lib/supabase', () => ({
       }
       const builder = {
         select: () => builder,
+        insert: (payload: unknown) => {
+          call.payload = payload
+          return builder
+        },
         eq: filter('eq'),
         is: filter('is'),
         lt: filter('lt'),
@@ -153,7 +159,9 @@ const PRODUCT_NEGATIVE = {
       sku: 'SAV-500',
       is_default: true,
       deleted_at: null,
-      stock_level: [{ quantity: '-4.500', last_movement_at: '2026-10-06T08:00:00Z' }],
+      stock_level: [
+        { quantity: '-4.500', last_movement_at: '2026-10-06T08:00:00Z', warehouse_id: 'w1' },
+      ],
     },
   ],
 }
@@ -297,14 +305,16 @@ describe('un zéro compté ne se lit pas comme un stock jamais saisi', () => {
         sku: 'A',
         is_default: true,
         deleted_at: null,
-        stock_level: [{ quantity: '0.000', last_movement_at: '2026-10-06T08:00:00Z' }],
+        stock_level: [
+          { quantity: '0.000', last_movement_at: '2026-10-06T08:00:00Z', warehouse_id: 'w1' },
+        ],
       },
       {
         id: 'v-jamais',
         sku: 'B',
         is_default: false,
         deleted_at: null,
-        stock_level: [{ quantity: '0.000', last_movement_at: null }],
+        stock_level: [{ quantity: '0.000', last_movement_at: null, warehouse_id: 'w1' }],
       },
     ],
   }
@@ -455,5 +465,219 @@ describe('la liste des produits porte le stock', () => {
 
     const rows = await productRows()
     expect(within(rows[0]!).getByRole('link')).toHaveAttribute('href', destination)
+  })
+})
+
+/* ========================================================================== */
+/* E3-03 — l'ajustement manuel                                                 */
+/* ========================================================================== */
+
+/*
+ * Ce qui est mesuré ici est l'écran : qui voit la section, ce qu'elle envoie, et
+ * ce qu'elle refuse d'envoyer. Ce qui *protège* est ailleurs et s'éprouve sur la
+ * base réelle (`supabase/tests/stock-adjustment.test.ts`) : la policy
+ * `column_capability_insert` pour le rôle, la contrainte
+ * `stock_movement_adjustment_reason` pour le motif, le trigger d'audit pour la
+ * trace. Masquer n'est pas interdire.
+ */
+describe('l’ajustement d’une quantité', () => {
+  const SECTION = 'Ajuster la quantité'
+
+  const withProduct = (movements: unknown = []): void => {
+    respond.mockImplementation((call) =>
+      call.table === 'product' ? { data: PRODUCT_NEGATIVE, error: null } : { data: [], error: null },
+    )
+    respondRpc.mockImplementation(() => ({ data: movements, error: null }))
+  }
+
+  const fill = async (quantity: string, reason: string): Promise<void> => {
+    await userEvent.type(screen.getByLabelText('Quantité corrigée'), quantity)
+    if (reason !== '') await userEvent.type(screen.getByLabelText('Motif (obligatoire)'), reason)
+  }
+
+  const submit = (): HTMLElement =>
+    screen.getByRole('button', { name: 'Enregistrer l’ajustement' })
+
+  it('n’est pas offert au vendeur', async () => {
+    withProduct()
+    renderAt('/products/p1/stock', 'worker')
+
+    await screen.findByText('Savon 500 g')
+    expect(screen.queryByText(SECTION)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Quantité corrigée')).not.toBeInTheDocument()
+  })
+
+  it('est offert au patron', async () => {
+    withProduct()
+    renderAt('/products/p1/stock', 'owner')
+
+    expect(await screen.findByText(SECTION)).toBeInTheDocument()
+  })
+
+  /*
+   * Le critère : ce qui part en base est la **différence**, pas la quantité
+   * saisie. Le stock vaut -4,5 ; corrigé à 12, l'ajustement est de +16,5 — et
+   * il est écrit en texte, à trois décimales, jamais en flottant (CLAUDE.md).
+   */
+  it('envoie un mouvement adjustment de la différence, motif compris', async () => {
+    withProduct()
+    renderAt('/products/p1/stock', 'owner')
+    await screen.findByText(SECTION)
+
+    await fill('12', 'Carton retrouvé en réserve')
+    expect(screen.getByText('+16,5')).toBeInTheDocument()
+
+    await userEvent.click(submit())
+
+    const written = await waitFor(() => {
+      const call = calls.find((c) => c.table === 'stock_movement')
+      expect(call, 'aucune écriture de mouvement').toBeDefined()
+      return call!
+    })
+
+    expect(written.payload).toEqual({
+      variant_id: 'p1',
+      warehouse_id: 'w1',
+      movement_type: 'adjustment',
+      quantity: '16.500',
+      note: 'Carton retrouvé en réserve',
+    })
+  })
+
+  /*
+   * Ni `tenant_id` ni `created_by` : le commerce et l'auteur viennent du jeton,
+   * par les défauts de la colonne (SPEC § 4 ; E3-03 pour l'auteur). Les envoyer
+   * serait laisser l'appareil signer à la place du jeton — et la trace ne
+   * prouverait plus rien.
+   */
+  it('ne signe pas l’écriture lui-même', async () => {
+    withProduct()
+    renderAt('/products/p1/stock', 'owner')
+    await screen.findByText(SECTION)
+
+    await fill('12', 'Carton retrouvé')
+    await userEvent.click(submit())
+
+    const written = await waitFor(() => calls.find((c) => c.table === 'stock_movement')!)
+    expect(Object.keys(written.payload as object).sort()).toEqual([
+      'movement_type',
+      'note',
+      'quantity',
+      'variant_id',
+      'warehouse_id',
+    ])
+  })
+
+  it('sans motif, le bouton reste inerte et rien n’est envoyé', async () => {
+    withProduct()
+    renderAt('/products/p1/stock', 'owner')
+    await screen.findByText(SECTION)
+
+    await fill('12', '')
+    expect(submit()).toBeDisabled()
+
+    await userEvent.click(submit())
+    expect(calls.find((c) => c.table === 'stock_movement')).toBeUndefined()
+  })
+
+  /*
+   * La différence se calcule depuis un niveau **négatif** sans que le signe se
+   * perde : le stock vaut -4,5, et compter 4,5 sur l'étagère est un ajustement
+   * de +9, pas de 0. C'est l'erreur que `quantityText()` et `adjustmentDelta()`
+   * traitent chacun de leur côté, et celle qui ferait écrire un mouvement faux.
+   */
+  it('calcule la différence depuis un niveau négatif', async () => {
+    withProduct()
+    renderAt('/products/p1/stock', 'owner')
+    await screen.findByText(SECTION)
+
+    await fill('4,5', 'Vérifié')
+    expect(screen.getByText('+9')).toBeInTheDocument()
+    expect(submit()).toBeEnabled()
+  })
+
+  /*
+   * Une quantité déjà juste n'est pas une erreur de saisie, et elle n'écrit
+   * rien : `stock_movement` refuse une quantité de zéro depuis E3-01, et un
+   * mouvement qui ne dit rien encombrerait l'historique qu'on relit pour
+   * comprendre un écart.
+   */
+  it('une quantité identique au stock n’envoie rien', async () => {
+    const counted = {
+      ...PRODUCT_NEGATIVE,
+      variant: [
+        {
+          ...PRODUCT_NEGATIVE.variant[0]!,
+          stock_level: [
+            { quantity: '12.000', last_movement_at: '2026-10-06T08:00:00Z', warehouse_id: 'w1' },
+          ],
+        },
+      ],
+    }
+    respond.mockImplementation((call) =>
+      call.table === 'product' ? { data: counted, error: null } : { data: [], error: null },
+    )
+    respondRpc.mockImplementation(() => ({ data: [], error: null }))
+    renderAt('/products/p1/stock', 'owner')
+    await screen.findByText(SECTION)
+
+    await fill('12', 'Vérifié')
+    expect(screen.getByText('0')).toBeInTheDocument()
+    expect(submit()).toBeDisabled()
+
+    await userEvent.click(submit())
+    expect(calls.find((c) => c.table === 'stock_movement')).toBeUndefined()
+  })
+
+  /*
+   * Après l'écriture, le niveau et l'historique sont **relus**. Un écran qui
+   * ajouterait la ligne localement afficherait une quantité qu'aucune base n'a
+   * confirmée — exactement ce que SPEC § 2.5 refuse.
+   */
+  it('relit le stock et l’historique après l’écriture', async () => {
+    withProduct()
+    renderAt('/products/p1/stock', 'owner')
+    await screen.findByText(SECTION)
+
+    const readsBefore = calls.filter((c) => c.table === 'product').length
+    const historyBefore = rpcCalls.filter((c) => c.name === 'list_stock_movements').length
+
+    await fill('12', 'Carton retrouvé')
+    await userEvent.click(submit())
+
+    await waitFor(() => {
+      expect(calls.filter((c) => c.table === 'product').length).toBeGreaterThan(readsBefore)
+      expect(rpcCalls.filter((c) => c.name === 'list_stock_movements').length).toBeGreaterThan(
+        historyBefore,
+      )
+    })
+  })
+
+  /*
+   * Le refus du serveur se dit en une phrase, sous le formulaire. L'employé n'a
+   * pas la section ; cette phrase est donc pour le patron dont le jeton ne porte
+   * pas ce qu'il croit — un rôle changé pendant sa session, par exemple.
+   */
+  it('dit le refus du serveur sans perdre la saisie', async () => {
+    withProduct()
+    respond.mockImplementation((call) => {
+      if (call.table === 'product') return { data: PRODUCT_NEGATIVE, error: null }
+      if (call.table === 'stock_movement') {
+        return { data: null, error: { code: '42501', message: 'new row violates row-level…' } }
+      }
+      return { data: [], error: null }
+    })
+    renderAt('/products/p1/stock', 'owner')
+    await screen.findByText(SECTION)
+
+    await fill('12', 'Carton retrouvé')
+    await userEvent.click(submit())
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Seul le patron peut ajuster une quantité.',
+    )
+    // La saisie reste : la refaire après un refus est le meilleur moyen de la
+    // retaper autrement.
+    expect(screen.getByLabelText('Motif (obligatoire)')).toHaveValue('Carton retrouvé')
   })
 })

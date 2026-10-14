@@ -23,7 +23,7 @@
  * Exige le stack local : npx supabase start && npx supabase db reset
  */
 
-import { Client } from 'pg'
+import { Client, type QueryResultRow } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { createAuthUser, deleteAuthUser, rest, sessionFor } from './rest'
@@ -56,22 +56,29 @@ const shops: Record<'a' | 'b', Shop> = {
   b: { tenant: '', warehouse: '', owner: '', negative: '', counted: '', never: '' },
 }
 
-async function one<T>(sql: string, values: unknown[] = []): Promise<T> {
+async function one<T extends QueryResultRow>(sql: string, values: unknown[] = []): Promise<T> {
   const { rows } = await client.query<T>(sql, values)
   if (rows[0] === undefined) throw new Error(`aucune ligne rendue : ${sql}`)
   return rows[0]
 }
 
 /*
- * Les types de mouvement sont ouverts le temps du fichier. La migration n'en
- * ouvre aucun — fermé par défaut, RÈGLE M2-5 — et le peuplement a besoin d'un
- * `receipt` et d'un `sale` pour produire un stock. Remis en place à la fin.
+ * Les types de mouvement ouverts le temps du fichier. La migration n'ouvre que
+ * l'`adjustment` (E3-03) — fermé par défaut, RÈGLE M2-5 — et le peuplement a
+ * besoin d'un `receipt` et d'un `sale` pour produire un stock. Refermés à la
+ * fin, et eux seuls : voir le démontage.
  */
+const SEEDED_TYPES = [
+  ['receipt', 'receive_goods'],
+  ['sale', 'create_sale'],
+] as const
+
 async function openTypes(): Promise<void> {
   await client.query(
-    "insert into merx.movement_type_capability (movement_type, capability) values" +
-      " ('receipt', 'receive_goods'), ('sale', 'create_sale')" +
+    'insert into merx.movement_type_capability (movement_type, capability)' +
+      ' select * from unnest($1::public.stock_movement_type[], $2::text[])' +
       ' on conflict (movement_type) do update set capability = excluded.capability',
+    [SEEDED_TYPES.map(([type]) => type), SEEDED_TYPES.map(([, capability]) => capability)],
   )
 }
 
@@ -181,8 +188,17 @@ afterAll(async () => {
       await client.query('delete from public.warehouse where tenant_id = $1', [tenant])
       await client.query('delete from public.tenant where id = $1', [tenant])
     }
-    // Refermer les types ouverts pour le peuplement : la migration n'en ouvre aucun.
-    await client.query('delete from merx.movement_type_capability')
+    /*
+     * Refermer les deux types ouverts pour le peuplement, **et eux seuls**. Un
+     * `delete` sans clause effacerait aussi la ligne que la migration d'E3-03
+     * installe — `adjustment` sur `adjust_stock` — et le fichier suivant
+     * mesurerait un type fermé que la base est censée ouvrir. Un démontage ne
+     * retire que ce qu'il a posé.
+     */
+    await client.query(
+      'delete from merx.movement_type_capability where movement_type = any($1::public.stock_movement_type[])',
+      [SEEDED_TYPES.map(([movementType]) => movementType)],
+    )
   }
   for (const role of ['worker', 'neighbour'] as const) {
     if (authUsers[role] !== '') await deleteAuthUser(authUsers[role])

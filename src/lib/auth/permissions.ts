@@ -35,6 +35,7 @@ export type Capability =
   | 'exceed_credit_limit'
   | 'collect_payment'
   | 'receive_goods'
+  | 'adjust_stock'
   | 'count_stock'
   | 'approve_stock_variance'
   | 'view_reports'
@@ -70,6 +71,14 @@ export const CAPABILITIES: Readonly<Record<Capability, readonly UserRole[]>> = {
   exceed_credit_limit: ['owner'],
   collect_payment: ['owner', 'worker'],
   receive_goods: ['owner', 'worker'],
+  /*
+   * E3-03. Corriger une quantité à la main, et c'est le patron seul : aucune
+   * autre capacité de § 3.1 ne dit cela. `approve_stock_variance` est la
+   * validation d'un écart d'inventaire (E3-04) — l'emprunter rendrait
+   * impossible de retirer l'ajustement sans retirer l'inventaire. La RÈGLE M2-5
+   * annonçait l'inverse ; c'est elle qui a été corrigée, pas la matrice.
+   */
+  adjust_stock: ['owner'],
   count_stock: ['owner', 'worker'],
   approve_stock_variance: ['owner'],
   view_reports: ['owner'],

@@ -420,7 +420,7 @@ Le filtre du commerce retiré fait tomber les deux tests d'isolation, les assert
 
 **Arbitrages rendus** — `stock_level` est la première **table dérivée** : troisième registre à côté de l'ajout seul et de l'audit (`merx.derived_registry`, `merx.apply_derived_from()`), parce qu'un agrégat n'est ni immuable ni simplement journalisé — il n'a aucun écrivain applicatif. Le garde repose sur `pg_trigger_depth()`, qui dit « écrit par un trigger » et non « écrit par le trigger d'agrégat » : le registre nomme donc l'écrivain, et `conventions.ts` refuse toute autre fonction de `public` ou de `merx` qui écrirait dans la table. Refus en `55000`, code d'aucun autre garde du projet.
 
-**L'écriture d'un mouvement est fermée par défaut, ouverte type par type.** `merx.movement_type_capability` est **vide** en E3-01 : aucun écran n'écrit de mouvement, donc personne n'a besoin d'en écrire un, et laisser la porte ouverte deux stories durant laisserait un employé poster un `adjustment` de −1000 par PostgREST. E3-03 ouvrira `adjustment`, E3-04 `inventory`, E4 `sale` et `return`, E8-02 `receipt` — chaque story ouvre son type et seulement le sien, sans inventer de capacité, celles de § 3.1 suffisant toutes. Deux gardes s'en partagent la charge, avec deux refus distincts : la policy `column_capability_insert` (via `merx.can_move_stock()`, donc via `merx.can()`) répond pour le rôle, le trigger `require_open_movement_type` répond pour le type et le nomme. Chemin d'écriture `restricted`, troisième valeur du registre d'ajout seul.
+**L'écriture d'un mouvement est fermée par défaut, ouverte type par type.** `merx.movement_type_capability` est **vide** en E3-01 : aucun écran n'écrit de mouvement, donc personne n'a besoin d'en écrire un, et laisser la porte ouverte deux stories durant laisserait un employé poster un `adjustment` de −1000 par PostgREST. E3-03 ouvrira `adjustment`, E3-04 `inventory`, E4 `sale` et `return`, E8-02 `receipt` — chaque story ouvre son type et seulement le sien. *(Corrigé en E3-03 : il était écrit ici qu'aucune story n'aurait à inventer de capacité, celles de § 3.1 suffisant toutes. La première a dû en ajouter une — `adjust_stock`. Voir la note d'E3-03.)* Deux gardes s'en partagent la charge, avec deux refus distincts : la policy `column_capability_insert` (via `merx.can_move_stock()`, donc via `merx.can()`) répond pour le rôle, le trigger `require_open_movement_type` répond pour le type et le nomme. Chemin d'écriture `restricted`, troisième valeur du registre d'ajout seul.
 
 **Ordre des gardes.** Les deux gardes d'insertion — celui des tables dérivées et celui du fermé par défaut — sont posés **AFTER**, délibérément : la RLS d'une insertion est vérifiée entre les triggers BEFORE et les AFTER, et en BEFORE ils auraient refusé une ligne destinée au commerce voisin avant `tenant_isolation`, laissant le balayage d'isolation au vert si la policy disparaissait.
 
@@ -450,10 +450,22 @@ Le filtre du commerce retiré fait tomber les deux tests d'isolation, les assert
 **En tant que** patron, **je veux** corriger une quantité fausse, **afin de** repartir juste sans attendre l'inventaire.
 
 **Critères d'acceptation**
-- [ ] Saisie d'une quantité corrigée, générant un `adjustment` de la différence
-- [ ] Motif obligatoire, en texte libre
-- [ ] Réservé au `owner`
-- [ ] Tracé dans `audit_log`
+- [x] Saisie d'une quantité corrigée, générant un `adjustment` de la différence
+- [x] Motif obligatoire, en texte libre
+- [x] Réservé au `owner`
+- [x] Tracé dans `audit_log`
+
+**Notes** — `SPEC.md` RÈGLES M2-5, M8-1 ; § 3.1.
+
+**Une capacité neuve, `adjust_stock`, `owner` seul.** E3-01 annonçait qu'aucune story n'aurait à en inventer une : faux dès la première. Aucune capacité `owner` seul de § 3.1 ne dit « corriger une quantité » — `approve_stock_variance` est la validation d'un écart d'inventaire (E3-04), et l'emprunter rendrait impossible de retirer l'ajustement sans retirer l'inventaire. La matrice n'a pas été pliée, c'est la RÈGLE M2-5 qui a été corrigée. **Quatre copies bougent ensemble**, et non trois : `merx.role_capability`, le type `Capability` et l'objet `CAPABILITIES` de `src/lib/auth/permissions.ts` (que `supabase/tests/permissions.test.ts` compare ligne à ligne), **et** les listes `OWNER_ONLY`/`SHARED` de `src/lib/auth/permissions.test.ts`, qu'aucune des trois premières ne fait tomber. Oubliée ici, elle n'est apparue qu'à la suite complète ; la règle de `CLAUDE.md` les nomme désormais toutes les quatre.
+
+**Le motif est obligatoire en base, pas seulement à l'écran.** `stock_movement_adjustment_reason` ne regarde que l'`adjustment`. § 2.6 ne s'y applique pas : elle vise les formulaires de création d'entités de référence, et le motif n'est pas un accessoire de l'ajustement — il en est le contenu. À l'écran seulement, un `POST` direct poserait des ajustements anonymes (leçon E1-02).
+
+**Septième étiquette d'`audit_action`, `stock_adjustment`.** Le mouvement ne suffisait pas comme trace : lu par tout le commerce, noyé parmi les ventes, `created_by` fourni par le client. Deux migrations, parce qu'une valeur d'enum n'est pas utilisable dans la transaction qui la crée. `merx.apply_audit()` gagne une condition de ligne et dérive ses événements de `merx.append_only_registry` — une table en ajout seul ne reçoit qu'un `AFTER INSERT`, et un `when (new....)` ne se pose pas sur un DELETE. La clause posée est relue du catalogue et inscrite au registre, que `conventions.ts` confronte au trigger réel.
+
+**`stock_movement.created_by` prend pour défaut `merx.current_app_user()`** : le jeton ne porte pas l'identifiant `app_user`, l'écran ne peut donc pas le remplir, et l'historique d'E3-02 aurait affiché « Auteur inconnu » sur le mouvement le plus sensible de la table.
+
+**La différence est calculée sur le niveau lu à l'écran.** Une vente concurrente entre la lecture et l'écriture décale le résultat du nombre saisi : assumé — un appareil par commerce en V1 (§ 2.5), mouvements additifs, et une correction se corrige par une autre correction (M2-2). Aucun verrou n'est construit en avance pour E10.
 
 ---
 

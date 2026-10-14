@@ -179,6 +179,7 @@ Conséquence : l'absence est structurelle, pas conditionnelle. Même un défaut 
 | Dépasser le plafond | ✓ | — |
 | Encaisser | ✓ | ✓ |
 | Saisir une réception | ✓ | ✓** |
+| Ajuster une quantité manuellement | ✓ | — |
 | Compter un inventaire | ✓ | ✓ |
 | Valider les écarts | ✓ | — |
 | Voir les rapports | ✓ | — |
@@ -352,6 +353,8 @@ Unicité sur `(variant_id, warehouse_id)`.
 
 - `movement_type` : `sale | return | receipt | adjustment | inventory`
 - `quantity` signée, négative en sortie.
+- `note` : le motif, obligatoire sur un `adjustment` et libre partout ailleurs — RÈGLE M2-5.
+- `created_by` a pour défaut `merx.current_app_user()` : le jeton ne porte pas l'identifiant `app_user`, donc l'écran ne peut pas le remplir, et l'auteur d'un mouvement se lit à l'historique (E3-02). Arbitré en E3-03.
 
 `inventory_session` + `inventory_line`
 `inventory_line : variant_id, counted_qty, system_qty, variance, reason, validated`
@@ -367,6 +370,10 @@ Unicité sur `(variant_id, warehouse_id)`.
 **RÈGLE M2-5** — **L'écriture d'un mouvement est fermée par défaut, ouverte type par type.** La policy d'insertion de `stock_movement` exige une capacité qui dépend de `movement_type`, lue dans `merx.movement_type_capability` et vérifiée par `merx.can()` — § 3, RÈGLE un seul helper. Un type sans capacité inscrite est refusé, par un garde distinct dont le message le nomme.
 
 La table est vide à la création du module : tant qu'aucun écran n'écrit un type de mouvement, personne ne doit pouvoir en écrire un. Chaque story ouvre le type dont elle a besoin, et seulement celui-là — `adjustment` en E3-03, `inventory` en E3-04, `sale` et `return` en E4, `receipt` en E8-02. Sans cela, un employé poste un `adjustment` arbitraire par l'API pendant les deux étapes qui séparent la table de son écran. Arbitré en E3-01.
+
+*Rectificatif E3-03.* E3-01 annonçait qu'aucune story n'aurait à inventer de capacité, celles de § 3.1 suffisant toutes. C'est faux dès la première : aucune capacité `owner` seul ne veut dire « corriger une quantité ». `approve_stock_variance` est la validation d'un écart d'inventaire — l'emprunter rendrait impossible de retirer l'ajustement à quelqu'un sans lui retirer l'inventaire, et ferait mentir la matrice sur ce qu'un droit gouverne. **`adjustment` est donc ouvert sur `adjust_stock`**, capacité ajoutée à § 3.1 en E3-03, `owner` seul. Une story qui ouvre un type vérifie d'abord qu'une capacité existante dit bien ce qu'elle garde ; sinon elle en ajoute une, à § 3.1 et à ses trois copies.
+
+**Le motif d'un ajustement est obligatoire**, en base comme à l'écran : `stock_movement_adjustment_reason` refuse un `adjustment` dont `note` est vide ou en blancs, et ne regarde aucun autre type — une vente, une réception, un inventaire sont justifiés par leur document. § 2.6 ne s'y applique pas : cette RÈGLE-là vise les formulaires de création d'entités de référence, inscrits par `merx.register_creation_form()`, et le motif n'est pas un accessoire de l'ajustement, il en est le contenu. Un ajustement sans motif est un chiffre changé à la main sans raison, ce que la trace exigée ci-dessous existe pour empêcher. Arbitré en E3-03.
 
 **RÈGLE M2-4** — En inventaire, saisie en cartons quand `pieces_per_carton` existe, avec conversion automatique. On compte des cartons sur une étagère, pas des pièces.
 
@@ -518,9 +525,11 @@ Lecture seule, aucune entité. Doit fonctionner **hors-ligne**, calculé depuis 
 - **Les défauts vivent à un seul endroit : `merx.setting_default`.** Le code applicatif n'en porte aucun. `merx.seed_tenant_settings()` matérialise les lignes manquantes ; `create_tenant()` l'appelle, donc tout commerce a une ligne par clé dès sa création. Toute migration qui ajoute une clé ajoute son défaut et rappelle la fonction sur tous les commerces.
 - Lecture ouverte à tout le commerce — l'employé imprime le bon et travaille dans la langue du commerce. Écriture réservée à `manage_settings`, par `merx.apply_write_capability_restriction()`.
 
-**RÈGLE M8-1** — Écrivent obligatoirement dans `audit_log` : forçage de prix, annulation de document, dépassement de plafond, validation d'écart, modification de rôle, changement de prix d'achat.
+**RÈGLE M8-1** — Écrivent obligatoirement dans `audit_log` : forçage de prix, annulation de document, dépassement de plafond, validation d'écart, modification de rôle, changement de prix d'achat, **ajustement manuel de stock**.
 
-Ces six actions sont l'enum `public.audit_action` — `price_override`, `document_cancellation`, `credit_limit_override`, `stock_variance_approval`, `role_change`, `purchase_price_change`. Aucune n'est implémentée en E1-04 : elles arrivent avec leurs modules et emploient ces étiquettes-là. `purchase_price_change` est branchée sur `variant_cost` depuis la clôture d'E2-04 (addendum E2-03), par un trigger que pose `merx.apply_audit()` — la même forme servira `goods_receipt_line_cost` en E8-03, et `supabase/tests/conventions.ts` refuse toute relation restreinte par `view_cost` qui n'est pas journalisée. **Hors session, une écriture journalisée est refusée** : sans commerce ni auteur dans le jeton, `merx.log_audit()` lève, et l'écriture avec — `service_role` et `postgres` compris. Seul le harnais de test suspend les triggers, pour peupler et ranger.
+Ces sept actions sont l'enum `public.audit_action` — `price_override`, `document_cancellation`, `credit_limit_override`, `stock_variance_approval`, `role_change`, `purchase_price_change`, `stock_adjustment`. Les six premières sont posées en E1-04 et arrivent avec leurs modules, en employant ces étiquettes-là. `purchase_price_change` est branchée sur `variant_cost` depuis la clôture d'E2-04 (addendum E2-03), par un trigger que pose `merx.apply_audit()` — la même forme servira `goods_receipt_line_cost` en E8-03, et `supabase/tests/conventions.ts` refuse toute relation restreinte par `view_cost` qui n'est pas journalisée.
+
+**`stock_adjustment` est ajoutée en E3-03**, septième étiquette, branchée sur `stock_movement` par le même helper avec une condition de ligne — seul un `adjustment` est journalisé, une vente ne l'est pas. Le mouvement n'était pas une trace suffisante : il est lu par tout le commerce (`view_catalogue`), noyé parmi les mouvements de vente, et son `created_by` vient du client. `audit_log` tient l'inverse des trois — lecture réservée à `view_audit_log`, ajout seul pour tous, commerce et auteur pris au jeton signé. La liste ci-dessus est un plancher, pas un plafond : une story qui doit tracer une action vérifie qu'une étiquette existante la nomme, et sinon ajoute la sienne ici et à l'enum, par une migration dédiée — une valeur d'enum n'est pas utilisable dans la transaction qui la crée. **Hors session, une écriture journalisée est refusée** : sans commerce ni auteur dans le jeton, `merx.log_audit()` lève, et l'écriture avec — `service_role` et `postgres` compris. Seul le harnais de test suspend les triggers, pour peupler et ranger.
 
 **RÈGLE M8-2** — `audit_log` est en ajout seul, pour tous : ni UPDATE, ni DELETE, ni TRUNCATE, `owner` compris. L'unique chemin d'écriture est `merx.log_audit()`, que l'application ne peut pas appeler — `authenticated` n'a ni le privilège d'INSERT sur la table ni celui d'exécuter la fonction. Le commerce et l'auteur y viennent du jeton signé, jamais des paramètres : un journal dont l'appelant choisit la signature ne prouve rien.
 

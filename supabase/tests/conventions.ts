@@ -634,35 +634,88 @@ const RLS_EXCEPTION_REGISTRY = `
 
 /*
  * RÈGLE M8-1, addendum E2-03 — une table inscrite à `merx.audited_registry`
- * porte son trigger `merx.audit_row_change()`, AFTER, pour chaque ligne, sur
- * INSERT, UPDATE et DELETE. Et l'inverse : un trigger posé à la main, hors de
- * `merx.apply_audit()`, échapperait au registre que le harnais de test lit —
- * même raison que pour l'ajout seul.
+ * porte son trigger `merx.audit_row_change()`, AFTER, pour chaque ligne. Et
+ * l'inverse : un trigger posé à la main, hors de `merx.apply_audit()`,
+ * échapperait au registre que le harnais de test lit — même raison que pour
+ * l'ajout seul.
+ *
+ * Les événements ne sont plus écrits ici : ils se **dérivent** de
+ * `merx.append_only_registry`, comme `merx.apply_audit()` les dérive (E3-03).
+ * Une table en ajout seul ne reçoit qu'un AFTER INSERT — un trigger UPDATE ou
+ * DELETE y serait mort-né, et Postgres refuse un `when (new....)` sur un
+ * DELETE. Les autres portent les trois, comme `variant_cost`.
+ *
+ * Et la clause `when`, qui restreint la journalisation à une partie des lignes,
+ * est comparée au registre. C'est ce qui empêche une condition posée après coup
+ * de soustraire des écritures au journal sans que rien ne le dise : le registre
+ * est écrit par le helper à partir du catalogue, donc les deux ne peuvent
+ * différer que si le trigger a été retouché à la main.
  */
 const AUDITED_TRIGGERS = `
   with registered as (
-    select r.table_name, c.oid
+    select r.table_name, r.row_condition, c.oid,
+           exists (
+             select 1 from merx.append_only_registry a where a.table_name = r.table_name
+           ) as append_only
     from merx.audited_registry r
     left join pg_class c
       on c.relname = r.table_name and c.relnamespace = 'public'::regnamespace and c.relkind = 'r'
   ),
-  guarded as (
-    select tg.tgrelid
+  posed as (
+    select tg.tgrelid, tg.tgtype,
+           (regexp_match(pg_get_triggerdef(tg.oid), 'WHEN \\((.*)\\) EXECUTE'))[1]
+             as row_condition
     from pg_trigger tg
     where not tg.tgisinternal
       and tg.tgfoid = 'merx.audit_row_change()'::regprocedure
       and (tg.tgtype & 1) <> 0
       and (tg.tgtype & 2) = 0
       and (tg.tgtype & 64) = 0
-      and (tg.tgtype & 4) <> 0
-      and (tg.tgtype & 8) <> 0
-      and (tg.tgtype & 16) <> 0
   )
   select r.table_name,
-         'inscrite au registre d''audit sans trigger merx.audit_row_change() AFTER INSERT, '
-         'UPDATE, DELETE — ses écritures échappent au journal, RÈGLE M8-1' as detail
+         'inscrite au registre d''audit sans trigger merx.audit_row_change() AFTER, pour '
+         'chaque ligne — ses écritures échappent au journal, RÈGLE M8-1' as detail
   from registered r
-  where r.oid is null or r.oid not in (select tgrelid from guarded)
+  where r.oid is null or r.oid not in (select tgrelid from posed)
+
+  union all
+
+  select r.table_name,
+         format('trigger d''audit posé sur %s, attendu %s — événements dérivés de '
+                'merx.append_only_registry, RÈGLE M8-1',
+                concat_ws(', ',
+                  case when (p.tgtype & 4) <> 0 then 'INSERT' end,
+                  case when (p.tgtype & 16) <> 0 then 'UPDATE' end,
+                  case when (p.tgtype & 8) <> 0 then 'DELETE' end),
+                case when r.append_only then 'INSERT' else 'INSERT, UPDATE, DELETE' end) as detail
+  from registered r
+  join posed p on p.tgrelid = r.oid
+  where (p.tgtype & 4) = 0
+     or (r.append_only and ((p.tgtype & 8) <> 0 or (p.tgtype & 16) <> 0))
+     or (not r.append_only and ((p.tgtype & 8) = 0 or (p.tgtype & 16) = 0))
+
+  union all
+
+  select r.table_name,
+         format('clause when du trigger d''audit — %s en base, %s au registre : une '
+                'condition retouchée à la main soustrait des écritures au journal, '
+                'RÈGLE M8-1',
+                coalesce(p.row_condition, '(aucune)'),
+                coalesce(r.row_condition, '(aucune)')) as detail
+  from registered r
+  join posed p on p.tgrelid = r.oid
+  /*
+   * Le qualificatif de schéma est retiré des deux côtés avant comparaison, et
+   * ce n'est pas un relâchement : pg_get_triggerdef() rend le type d'un
+   * littéral qualifié ou non selon le search_path de la session qui lit. Le
+   * registre a été écrit par merx.apply_audit(), dont le search_path est vide,
+   * donc en « public.stock_movement_type » ; ce client-ci lit « public » dans
+   * son chemin et obtient « stock_movement_type ». Les deux formes désignent le
+   * même type ; comparer les chaînes brutes ferait échouer la règle selon qui
+   * l'exécute.
+   */
+  where replace(coalesce(p.row_condition, ''), 'public.', '')
+     <> replace(coalesce(r.row_condition, ''), 'public.', '')
 
   union all
 

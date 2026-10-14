@@ -26,17 +26,40 @@
  * n'a touché la variante, la quantité vaut zéro sans que personne ait compté :
  * l'écrire « 0 » serait présenter comme certaine une valeur qui ne l'est pas.
  *
+ * **E3-03 — l'ajustement manuel.** L'écran gagne une troisième partie, et une
+ * seule écriture : corriger la quantité de la variante choisie. Elle n'apparaît
+ * qu'au patron (`adjust_stock`, § 3.1) et se place sous la quantité qu'elle
+ * corrige, pas en bas de l'écran : § 7 de BRAND-UI place l'action principale
+ * dans le tiers bas, et l'action principale de cet écran-ci reste la
+ * consultation — l'ajustement agit sur le nombre qui est juste au-dessus de
+ * lui, et l'historique qui suit montre ce qu'il a produit.
+ *
+ * Masquer n'est pas interdire : ce qui réserve l'ajustement au patron est la
+ * policy `column_capability_insert`, et ce qui rend le motif obligatoire est la
+ * contrainte `stock_movement_adjustment_reason`. Le champ requis ici évite un
+ * aller-retour, il ne garde rien.
+ *
  * BRAND-UI : quantités en chiffres tabulaires (§ 6), lignes de 64 px (§ 8),
- * quatre états (§ 8), propriétés logiques (§ 9), aucune icône sans texte (§ 11).
+ * quatre états (§ 8), propriétés logiques (§ 9), aucune icône sans texte (§ 11),
+ * champs de 56 px au libellé au-dessus (§ 8).
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useId, useMemo, useState, type FormEvent } from 'react'
 import { useParams } from 'react-router-dom'
 
 import { BackLink } from '@/components/BackLink'
+import { Field } from '@/components/Field'
+import { Button } from '@/components/ui/button'
+import { useCan } from '@/lib/auth'
 import { formatDateTime } from '@/lib/dates'
-import { quantityText } from '@/lib/decimal'
+import { QUANTITY_SCALE, decimalInput, quantityText } from '@/lib/decimal'
 import { Quantity } from '@/modules/stock/Quantity'
+import {
+  ADJUSTMENT_MESSAGES,
+  adjustStock,
+  adjustmentDelta,
+  deltaText,
+} from '@/modules/stock/adjustment'
 import { loadProductStock, type ProductStock, type VariantStock } from '@/modules/stock/levels'
 import {
   MOVEMENT_LABELS,
@@ -208,6 +231,145 @@ function VariantHistory({ variantId }: { variantId: string }) {
 }
 
 /* -------------------------------------------------------------------------- */
+/* L'ajustement manuel — E3-03                                                 */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Corriger la quantité d'une variante.
+ *
+ * Le patron saisit ce qu'il a devant lui ; ce qui part en base est la
+ * différence, en un mouvement `adjustment` (RÈGLE M2-1). La différence est
+ * affichée avant validation : c'est elle qui sera écrite dans l'historique, et
+ * la lire évite de corriger deux fois le même écart.
+ *
+ * Le motif est le seul champ obligatoire, et l'écran le dit en l'annonçant,
+ * jamais en rougissant un champ (SPEC § 2.6 pour la manière, E3-03 pour
+ * l'obligation elle-même).
+ */
+function AdjustmentForm({
+  variant,
+  onAdjusted,
+}: {
+  variant: VariantStock
+  onAdjusted: () => void
+}) {
+  const idPrefix = useId()
+  // Extraits avant le garde : deux constantes se laissent affiner par TypeScript
+  // jusque dans le gestionnaire de soumission, un champ d'objet non.
+  const { quantity, warehouseId } = variant
+  const [corrected, setCorrected] = useState('')
+  const [reason, setReason] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+
+  const delta = useMemo(
+    () => (corrected === '' ? null : adjustmentDelta(quantity ?? '0', corrected)),
+    [quantity, corrected],
+  )
+
+  /*
+   * Rien à corriger si la quantité actuelle est inconnue : la ligne de niveau
+   * naît avec la variante depuis E3-02, donc ce cas ne doit pas exister. Il est
+   * dit plutôt que maquillé en zéro — un ajustement calculé sur une base
+   * inventée écrirait un mouvement faux.
+   */
+  if (quantity === null || warehouseId === null) {
+    return (
+      <p className="text-body text-paper-700">
+        La quantité de cette variante est indisponible : elle ne peut pas être corrigée.
+      </p>
+    )
+  }
+
+  const ready = delta !== null && delta !== 0n && reason.trim() !== ''
+
+  const onSubmit = (event: FormEvent): void => {
+    event.preventDefault()
+    if (!ready || saving) return
+
+    setSaving(true)
+    setFailure(null)
+    setMessage(null)
+
+    adjustStock({
+      variantId: variant.variantId,
+      warehouseId,
+      currentQuantity: quantity,
+      correctedQuantity: corrected,
+      reason,
+    })
+      .then((written) => {
+        setCorrected('')
+        setReason('')
+        setMessage(`Stock corrigé de ${deltaText(written)}.`)
+        // Le niveau et l'historique sont relus : ce que l'écran montre après
+        // l'écriture vient de la base, jamais d'un calcul local.
+        onAdjusted()
+      })
+      .catch((error: unknown) =>
+        setFailure(error instanceof Error ? error.message : ADJUSTMENT_MESSAGES.refused),
+      )
+      .finally(() => setSaving(false))
+  }
+
+  return (
+    <form className="flex flex-col gap-4" onSubmit={onSubmit} noValidate>
+      <Field
+        id={`${idPrefix}-quantity`}
+        label="Quantité corrigée"
+        inputMode="decimal"
+        value={corrected}
+        onChange={(raw) => {
+          setMessage(null)
+          setCorrected(decimalInput(raw, QUANTITY_SCALE))
+        }}
+        hint="Ce qui est réellement en stock. La différence est enregistrée."
+      />
+
+      <Field
+        id={`${idPrefix}-reason`}
+        label="Motif (obligatoire)"
+        value={reason}
+        onChange={(raw) => {
+          setMessage(null)
+          setReason(raw)
+        }}
+        maxLength={200}
+      />
+
+      {delta !== null && (
+        <p className="text-body text-paper-700">
+          Différence : <span className="tabular text-paper-900">{deltaText(delta)}</span>
+        </p>
+      )}
+
+      {failure !== null && (
+        <p role="alert" className="text-body text-red-700">
+          {failure}
+        </p>
+      )}
+
+      {message !== null && (
+        <p role="status" className="text-body text-paper-700">
+          {message}
+        </p>
+      )}
+
+      {/* Inactif tant qu'il manque un motif ou une différence : un bouton qui
+          part pour échouer est une promesse rompue. */}
+      <Button
+        type="submit"
+        disabled={saving || !ready}
+        className="h-button w-full rounded-button bg-ink-600 text-body text-white hover:bg-ink-700 active:bg-ink-800 disabled:bg-paper-200 disabled:text-paper-700 disabled:opacity-100"
+      >
+        {saving ? 'Enregistrement…' : 'Enregistrer l’ajustement'}
+      </Button>
+    </form>
+  )
+}
+
+/* -------------------------------------------------------------------------- */
 /* Le choix de la variante                                                     */
 /* -------------------------------------------------------------------------- */
 
@@ -251,9 +413,18 @@ function VariantChoice({
 
 export function VariantStockScreen() {
   const { id: productId } = useParams<{ id: string }>()
+  const canAdjust = useCan('adjust_stock')
   const [state, setState] = useState<State>({ status: 'loading' })
   const [chosen, setChosen] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
+  /*
+   * Relu après un ajustement : il relance la lecture du produit — donc du
+   * niveau — et, par la clé de l'historique, celle des mouvements. Séparé
+   * d'`attempt`, qui est le bouton « Réessayer » : le second remet l'écran en
+   * chargement, le premier doit laisser la quantité affichée le temps de la
+   * relecture, sans faire clignoter l'écran après chaque correction.
+   */
+  const [written, setWritten] = useState(0)
 
   useEffect(() => {
     if (productId === undefined) return
@@ -282,12 +453,17 @@ export function VariantStockScreen() {
     return () => {
       current = false
     }
-  }, [productId, attempt])
+  }, [productId, attempt, written])
 
   const retry = useCallback(() => {
     setState({ status: 'loading' })
     setAttempt((n) => n + 1)
   }, [])
+
+  const chosenVariant =
+    state.status === 'loaded'
+      ? state.product.variants.find((variant) => variant.variantId === chosen)
+      : undefined
 
   return (
     <main className="min-h-dvh px-4 pt-6">
@@ -335,9 +511,26 @@ export function VariantStockScreen() {
               )}
             </section>
 
+            {/*
+              * L'ajustement, au patron seul. Sous la quantité qu'il corrige, et
+              * au-dessus de l'historique qui montrera son effet.
+              */}
+            {canAdjust && chosenVariant !== undefined && (
+              <section className="flex flex-col gap-4 rounded-card border border-paper-200 bg-white p-4">
+                <h2 className="text-subtitle text-paper-900">Ajuster la quantité</h2>
+                <AdjustmentForm
+                  key={chosenVariant.variantId}
+                  variant={chosenVariant}
+                  onAdjusted={() => setWritten((n) => n + 1)}
+                />
+              </section>
+            )}
+
             <section className="flex flex-col gap-2">
               <h2 className="text-subtitle text-paper-900">Mouvements</h2>
-              {chosen !== null && <VariantHistory key={chosen} variantId={chosen} />}
+              {chosen !== null && (
+                <VariantHistory key={`${chosen}:${written}`} variantId={chosen} />
+              )}
             </section>
           </>
         )}

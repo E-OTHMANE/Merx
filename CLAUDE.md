@@ -105,7 +105,16 @@ Module code stays inside its own folder. A module may import from `src/lib` and 
 
 **Cost and margin columns live on their own relation, never on a table everyone reads.** `variant` has no `cost_price`; `variant_cost` does. That relation carries a restrictive policy requiring `view_cost`, applied by `merx.apply_capability_restriction()`. PostgREST talks to Postgres as a single role, so column grants cannot separate `owner` from `worker`, and a conditional view returns `"cost_price": null` — present, merely masked. Absence of the key is structural or it is nothing. See SPEC § 3, RÈGLE de placement des coûts.
 
-**Every permission check goes through `merx.can(capability)`**, which reads the § 3.1 matrix stored in `merx.role_capability`. A right checked anywhere else is a right the matrix does not govern. The front-end copy in `src/lib/auth/permissions.ts` is compared to the database row by row in `supabase/tests/permissions.test.ts` — do not edit one without the other.
+**Every permission check goes through `merx.can(capability)`**, which reads the § 3.1 matrix stored in `merx.role_capability`. A right checked anywhere else is a right the matrix does not govern.
+
+**The matrix has four copies, and a new capability goes into all four.** Three on their own is the mistake that is actually made — E3-03 added `adjust_stock` to three and the full suite caught the fourth:
+
+1. `merx.role_capability`, seeded by `supabase/migrations/20260907090000_permissions.sql` — the only one that governs anything;
+2. the `Capability` union **and** the `CAPABILITIES` object of `src/lib/auth/permissions.ts`, which decide what the interface shows;
+3. `supabase/tests/permissions.test.ts`, which compares the two above row by row — it fails on a capability added to one side only, so it covers 1 against 2;
+4. `src/lib/auth/permissions.test.ts`, which keeps its **own** lists `OWNER_ONLY` and `SHARED` and asserts they cover `CAPABILITIES` exactly. Nothing in the database makes it fail, and nothing in the first three makes it pass: it only goes red in the front-end project, which `npm run test` reaches and a database-only run does not.
+
+So: migration, `permissions.ts`, then the two test files. A capability missing from the fourth leaves the suite red at the very end of the pass, long after the schema looked finished.
 
 **RLS on every business table.** Application queries never filter `tenant_id` by hand.
 

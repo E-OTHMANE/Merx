@@ -27,10 +27,18 @@
  *     le TRUNCATE a sa propre phrase, parce qu'un trigger de ligne ne le voit
  *     pas passer ;
  *
- *   — **fermé par défaut** : aucun type de mouvement n'est ouvert en E3-01,
- *     donc personne n'écrit de mouvement. Les cinq types sont lus au catalogue,
- *     pas écrits ici : un sixième type ajouté sans capacité entrerait dans ce
- *     test tout seul.
+ *   — **fermé par défaut** : un type qu'aucune story n'a ouvert n'est écrit
+ *     par personne. Les cinq types sont lus au catalogue et les types ouverts
+ *     au registre, aucune liste n'est écrite ici : un sixième type ajouté sans
+ *     capacité entre dans ce test tout seul, et le type qu'ouvrira E3-04 en
+ *     sort tout seul.
+ *
+ * E3-03 a ouvert `adjustment`, et ce type a quitté ce fichier : il exige
+ * désormais un motif et une session porteuse d'un auteur — son insertion
+ * journalise (RÈGLE M8-1) et `merx.log_audit()` refuse sans jeton. Or ce
+ * fichier ne crée aucun utilisateur d'authentification. Tout ce qui le concerne
+ * est mesuré dans `stock-adjustment.test.ts` ; ici, là où le type n'était qu'un
+ * prétexte, c'est `inventory` — encore fermé — qui sert de cas d'épreuve.
  *
  * Deux gardes se partagent le fermé par défaut, et le test doit pouvoir dire
  * lequel a refusé (CLAUDE.md, E1-02) : le trigger nomme le type, la policy rend
@@ -91,6 +99,30 @@ async function connect(): Promise<Client> {
  * s'ajoute sans capacité, c'est ce test-ci qui doit le dire.
  */
 const MOVEMENT_TYPES = await movementTypesUnderTest()
+
+/*
+ * Les types qu'une migration a ouverts, lus au registre pour la même raison que
+ * les cinq étiquettes sont lues au catalogue : le balayage du fermé par défaut
+ * doit porter sur ce qui est fermé *aujourd'hui*, sans qu'une liste écrite ici
+ * ait à suivre E3-04, E4 et E8-02 à la main.
+ */
+const OPEN_TYPES = await openMovementTypes()
+
+/** Ce qui reste fermé : c'est là que le garde du fermé par défaut se mesure. */
+const CLOSED_TYPES = MOVEMENT_TYPES.filter((type) => !OPEN_TYPES.has(type))
+
+/** Les types ouverts à l'écriture, et par quelle capacité. */
+async function openMovementTypes(): Promise<Map<string, string>> {
+  const client = await connect()
+  try {
+    const { rows } = await client.query<{ movement_type: string; capability: string }>(
+      'select movement_type::text, capability from merx.movement_type_capability',
+    )
+    return new Map(rows.map((r) => [r.movement_type, r.capability]))
+  } finally {
+    await client.end()
+  }
+}
 
 async function movementTypesUnderTest(): Promise<string[]> {
   const client = await connect()
@@ -338,7 +370,6 @@ describe('la série de mouvements', () => {
     await openType('receipt', 'receive_goods')
     await openType('sale', 'create_sale')
     await openType('return', 'create_sale')
-    await openType('adjustment', 'manage_product')
     await openType('inventory', 'approve_stock_variance')
   }
 
@@ -361,7 +392,13 @@ describe('la série de mouvements', () => {
         { type: 'sale', quantity: '-30', expected: '70.000' },
         { type: 'return', quantity: '5', expected: '75.000' },
         { type: 'sale', quantity: '-80', expected: '-5.000' },
-        { type: 'adjustment', quantity: '-0.500', expected: '-5.500' },
+        /*
+         * Une demi-pièce vendue : les trois décimales du domaine `quantity`,
+         * sur un type qui n'exige ni motif ni session. L'`adjustment` tenait ce
+         * rôle avant E3-03 ; il est désormais mesuré sous jeton, avec son
+         * motif et son entrée de journal, dans `stock-adjustment.test.ts`.
+         */
+        { type: 'sale', quantity: '-0.500', expected: '-5.500' },
         { type: 'inventory', quantity: '12.250', expected: '6.750' },
       ] as const
 
@@ -731,10 +768,17 @@ describe('RÈGLE M2-2 — stock_movement est en ajout seul', () => {
   it('laisse corriger par un mouvement inverse', async () => {
     await inCase(async () => {
       await openType('receipt', 'receive_goods')
-      await openType('adjustment', 'manage_product')
+      /*
+       * `inventory` et non `adjustment` : la correction réelle d'un zéro de
+       * trop est un ajustement, mais ce type exige depuis E3-03 un motif et une
+       * session porteuse d'un auteur, que ce fichier n'a pas. Ce qui est en jeu
+       * ici est l'ajout seul — qu'une erreur se corrige par un mouvement de
+       * plus et non par une rature — et le type n'y change rien.
+       */
+      await openType('inventory', 'approve_stock_variance')
 
       await postMovement('receipt', '400') // un zéro de trop
-      await postMovement('adjustment', '-360')
+      await postMovement('inventory', '-360')
 
       expect(await level()).toBe('40.000')
 
@@ -757,12 +801,20 @@ describe('l’écriture d’un mouvement est fermée par défaut', () => {
     expect(MOVEMENT_TYPES).toEqual(['sale', 'return', 'receipt', 'adjustment', 'inventory'])
   })
 
-  it('n’ouvre aucun type', async () => {
+  /*
+   * Un type ouvert est un écran livré, et rien d'autre. E3-03 a ouvert
+   * `adjustment` ; `inventory` attend E3-04, `sale` et `return` E4, `receipt`
+   * E8-02. Ce test est ce qui empêche une porte de s'ouvrir sans story : il
+   * tombe aussi bien sur un type ouvert trop tôt que sur un type fermé par
+   * mégarde.
+   */
+  it('n’ouvre que les types dont une story a livré l’écran', async () => {
     await client.query('reset role')
-    const { rows } = await client.query<{ count: string }>(
-      'select count(*)::text from merx.movement_type_capability',
+    const { rows } = await client.query<{ movement_type: string; capability: string }>(
+      'select movement_type::text, capability from merx.movement_type_capability' +
+        ' order by movement_type::text',
     )
-    expect(rows[0]!.count, 'un type est ouvert alors qu’aucun écran n’écrit de mouvement').toBe('0')
+    expect(rows).toEqual([{ movement_type: 'adjustment', capability: 'adjust_stock' }])
   })
 
   /*
@@ -771,7 +823,7 @@ describe('l’écriture d’un mouvement est fermée par défaut', () => {
    * message qui distingue ce garde-ci de la policy, et parce que c'est lui que
    * lit celui qui tombe dessus.
    */
-  it.each(MOVEMENT_TYPES)('refuse un mouvement de type %s à un owner', async (movementType) => {
+  it.each(CLOSED_TYPES)('refuse un mouvement de type %s à un owner', async (movementType) => {
     await inCase(async () => {
       await actAs(client, tokenFor(fixture.tenant, 'owner'))
 
@@ -789,12 +841,13 @@ describe('l’écriture d’un mouvement est fermée par défaut', () => {
   })
 
   /* Et le `super_admin` non plus : un type que personne n'a ouvert n'est pas
-   * une question de rôle. */
+   * une question de rôle. Le type est pris à la liste des types fermés, jamais
+   * écrit ici — `adjustment` est ouvert depuis E3-03. */
   it('refuse aussi à super_admin', async () => {
     await inCase(async () => {
       await actAs(client, tokenFor(fixture.tenant, 'super_admin'))
 
-      const written = await attempt(client, movementSql('adjustment', '10'))
+      const written = await attempt(client, movementSql(CLOSED_TYPES[0]!, '10'))
       expect(written.ok, 'FUITE — l’éditeur a écrit un mouvement de type fermé').toBe(false)
       if (written.ok) return
       expect(written.message).toContain(CLOSED_BY_DEFAULT)
@@ -813,15 +866,17 @@ describe('l’écriture d’un mouvement est fermée par défaut', () => {
  * aujourd'hui — tout étant refusé en amont, la retirer ne changerait rien
  * d'observable (CLAUDE.md, E1-02).
  *
- * `adjustment` sur `manage_product` : une capacité que le `owner` détient et
- * que le `worker` n'a pas (SPEC § 3.1). C'est la forme qu'E3-03 donnera à ce
- * type, et elle sert ici de cas d'épreuve, pas de livrable — la migration
- * n'ouvre rien.
+ * `inventory` sur `approve_stock_variance` : une capacité que le `owner`
+ * détient et que le `worker` n'a pas (SPEC § 3.1). C'est la forme qu'E3-04
+ * donnera à ce type, et elle sert ici de cas d'épreuve, pas de livrable — la
+ * migration ne l'ouvre pas. `adjustment`, qui tenait ce rôle avant E3-03, est
+ * désormais ouvert pour de bon : la même policy est mesurée sur lui, sous
+ * jeton et avec son motif, dans `stock-adjustment.test.ts`.
  */
 describe('la policy d’insertion exige la capacité du type', () => {
   const withOpenType = async (body: () => Promise<void>): Promise<void> => {
     await inCase(async () => {
-      await openType('adjustment', 'manage_product')
+      await openType('inventory', 'approve_stock_variance')
       await body()
     })
   }
@@ -830,7 +885,7 @@ describe('la policy d’insertion exige la capacité du type', () => {
     await withOpenType(async () => {
       await actAs(client, tokenFor(fixture.tenant, 'owner'))
 
-      const written = await attempt(client, movementSql('adjustment', '-3'))
+      const written = await attempt(client, movementSql('inventory', '-3'))
       expect(
         written.ok,
         `la policy refuse une écriture légitime : ${written.ok ? '' : `${written.code} ${written.message}`}`,
@@ -844,8 +899,8 @@ describe('la policy d’insertion exige la capacité du type', () => {
     await withOpenType(async () => {
       await actAs(client, tokenFor(fixture.tenant, 'worker'))
 
-      const written = await attempt(client, movementSql('adjustment', '-3'))
-      expect(written.ok, 'FUITE — un worker a écrit un ajustement').toBe(false)
+      const written = await attempt(client, movementSql('inventory', '-3'))
+      expect(written.ok, 'FUITE — un worker a écrit un mouvement d’inventaire').toBe(false)
       if (written.ok) return
 
       expect(written.code, written.message).toBe(INSUFFICIENT_PRIVILEGE)
@@ -900,7 +955,7 @@ describe('merx.movement_type_capability', () => {
       const written = await attempt(
         client,
         "insert into merx.movement_type_capability (movement_type, capability)" +
-          " values ('adjustment', 'manage_stock_adjustments')",
+          " values ('inventory', 'manage_stock_adjustments')",
       )
 
       expect(written.ok, 'une capacité inconnue a été inscrite').toBe(false)
@@ -912,13 +967,15 @@ describe('merx.movement_type_capability', () => {
 
   it('accepte une capacité de la matrice', async () => {
     await inCase(async () => {
-      await openType('adjustment', 'manage_product')
+      // Un type encore fermé : la ligne d'`adjustment` est posée par la
+      // migration d'E3-03, et la poser deux fois ne mesurerait rien.
+      await openType('inventory', 'approve_stock_variance')
 
       await client.query('reset role')
       const { rows } = await client.query<{ capability: string }>(
-        "select capability from merx.movement_type_capability where movement_type = 'adjustment'",
+        "select capability from merx.movement_type_capability where movement_type = 'inventory'",
       )
-      expect(rows).toEqual([{ capability: 'manage_product' }])
+      expect(rows).toEqual([{ capability: 'approve_stock_variance' }])
     })
   })
 })
@@ -930,10 +987,10 @@ describe('merx.movement_type_capability', () => {
 describe('la forme d’un mouvement', () => {
   it('refuse une quantité nulle', async () => {
     await inCase(async () => {
-      await openType('adjustment', 'manage_product')
+      await openType('inventory', 'approve_stock_variance')
       await client.query('reset role')
 
-      const written = await attempt(client, movementSql('adjustment', '0'))
+      const written = await attempt(client, movementSql('inventory', '0'))
       expect(written.ok, 'un mouvement de zéro a été accepté').toBe(false)
       if (written.ok) return
       expect(written.code, written.message).toBe(CHECK_VIOLATION)

@@ -43,7 +43,12 @@ const INVALID_TEXT_REPRESENTATION = '22P02'
 /** SQLSTATE du corollaire de `user_id NOT NULL` : aucun auteur à inscrire. */
 const NO_AUTHOR = '23502'
 
-/** Les six actions de la RÈGLE M8-1, dans l'ordre où le spec les énumère. */
+/**
+ * Les sept actions de la RÈGLE M8-1, dans l'ordre où le spec les énumère.
+ *
+ * Six en E1-04 ; `stock_adjustment` ajoutée en E3-03, en queue d'enum comme
+ * `alter type ... add value` la pose.
+ */
 const M8_1_ACTIONS = [
   'price_override',
   'document_cancellation',
@@ -51,6 +56,7 @@ const M8_1_ACTIONS = [
   'stock_variance_approval',
   'role_change',
   'purchase_price_change',
+  'stock_adjustment',
 ] as const
 
 let client: Client
@@ -220,7 +226,7 @@ async function countRows(): Promise<number> {
  * personne ne relira le spec le jour où il ajoutera une étiquette, mais tout le
  * monde verra un test rouge.
  */
-describe('les six actions de la RÈGLE M8-1', () => {
+describe('les sept actions de la RÈGLE M8-1', () => {
   it('sont exactement les étiquettes de public.audit_action', async () => {
     const { rows } = await client.query<{ label: string }>(`
       select e.enumlabel as label

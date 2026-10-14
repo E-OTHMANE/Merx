@@ -174,7 +174,7 @@ export async function listByStockFilter(filter: StockFilter): Promise<StockEntry
 
   if (error !== null) throw new Error(error.message)
 
-  return ((data ?? []) as EntryRow[]).flatMap((row) => {
+  return ((data ?? []) as unknown as EntryRow[]).flatMap((row) => {
     const product = row.variant?.product
     if (product === null || product === undefined) return []
     return [
@@ -210,6 +210,13 @@ export interface VariantStock {
   lastMovementAt: string | null
   sku: string | null
   isDefault: boolean
+  /*
+   * Le dépôt qui porte cette quantité. Jamais affiché, jamais choisi (SPEC
+   * § 2.4) — mais un mouvement en a besoin, et c'est celui de la ligne qu'on
+   * corrige, pas un dépôt relu ailleurs (E3-03). `null` seulement si la ligne
+   * de niveau manque, état qui ne doit pas exister depuis E3-02.
+   */
+  warehouseId: string | null
 }
 
 /** Ce que l'écran `/products/:id/stock` affiche en tête, et dans sa liste. */
@@ -230,7 +237,11 @@ interface ProductStockRow {
     id: string
     sku: string | null
     is_default: boolean
-    stock_level: Array<{ quantity: string; last_movement_at: string | null }>
+    stock_level: Array<{
+      quantity: string
+      last_movement_at: string | null
+      warehouse_id: string
+    }>
   }>
 }
 
@@ -253,7 +264,7 @@ export async function loadProductStock(productId: string): Promise<ProductStock 
     .select(
       'id, name_fr, name_ar, code,' +
         ' variant(id, sku, is_default, deleted_at,' +
-        ' stock_level(quantity::text, last_movement_at))',
+        ' stock_level(quantity::text, last_movement_at, warehouse_id))',
     )
     .eq('id', productId)
     .is('deleted_at', null)
@@ -288,6 +299,7 @@ export async function loadProductStock(productId: string): Promise<ProductStock 
          */
         quantity: v.stock_level[0]?.quantity ?? null,
         lastMovementAt: v.stock_level[0]?.last_movement_at ?? null,
+        warehouseId: v.stock_level[0]?.warehouse_id ?? null,
       }))
       .sort((a, b) => {
         if (a.isDefault !== b.isDefault) return a.isDefault ? -1 : 1
