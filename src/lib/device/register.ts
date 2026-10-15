@@ -38,7 +38,7 @@ export function cachedDevicePrefix(): string | null {
 export interface RegisteredDevice {
   id: string
   label: string
-  /** La lettre de numérotation : `BL-C-0001` (SPEC § 2.5, E4-02). */
+  /** La lettre de numérotation : `BL-C-26-00001` (SPEC § 8, RÈGLE M3-2). */
   prefix: string
   lastSyncAt: string | null
 }

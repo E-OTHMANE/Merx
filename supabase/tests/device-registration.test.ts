@@ -6,7 +6,7 @@
  * Le critère qui compte n'est pas « un appareil obtient une lettre » : c'est
  * qu'aucun commerce ne puisse en donner deux fois la même, y compris quand deux
  * appareils s'enregistrent au même instant. Sans cela, la numérotation locale
- * de E4-02 fabrique deux `BL-B-0001` distincts sur deux tablettes, et personne
+ * de E4-02 fabrique deux `BL-B-26-00001` distincts sur deux tablettes, et personne
  * ne s'en aperçoit avant la synchronisation — sur des bons déjà remis.
  *
  * L'unicité est tenue à deux niveaux, et ce fichier les éprouve séparément :
@@ -341,9 +341,9 @@ describe("l'unicité du préfixe", () => {
   /*
    * L'index est **total**, et c'est la décision de cette story.
    *
-   * Un appareil supprimé emporte sa ligne, pas ses numéros : les `BL-B-0001`
+   * Un appareil supprimé emporte sa ligne, pas ses numéros : les `BL-B-26-00001`
    * qu'il a produits restent en base et sur le papier du client. Rendre « B »
-   * au stock ferait recommencer une tablette neuve à `BL-B-0001`, contre un
+   * au stock ferait recommencer une tablette neuve à `BL-B-26-00001`, contre un
    * historique que plus personne ne regarde. Ce test tomberait si l'index
    * redevenait partiel (`where deleted_at is null`).
    */
@@ -388,7 +388,7 @@ describe("l'unicité du préfixe", () => {
         [tenant],
       ),
       "l'index device_prefix_per_tenant ne couvre plus les lignes supprimées : " +
-        'une lettre libérée peut être redonnée, et E4-02 produira deux BL-A-0001',
+        'une lettre libérée peut être redonnée, et E4-02 produira deux BL-A-26-00001',
     ).rejects.toMatchObject({ code: '23505' })
   })
 

@@ -540,16 +540,33 @@ L'épique la plus critique. L'écran de vente décide de l'adoption.
 **En tant que** patron, **je veux** des numéros sans trou ni doublon, **afin de** retrouver un bon.
 
 **Critères d'acceptation**
-- [ ] Format `BL-A-0001` : type, préfixe d'appareil, séquence
-- [ ] Séquence par `(tenant, device, doc_type, year)`
-- [ ] Attribué à la confirmation, jamais au brouillon
-- [ ] **Attribué localement. Le serveur n'attribue aucun numéro.**
-- [ ] Aucun trou dans la séquence
-- [ ] Test : deux appareils créant chacun 100 documents ne produisent aucune collision
+- [x] Format `BL-A-26-00001` : type, préfixe d'appareil, année, séquence
+- [x] Séquence par `(tenant, device, doc_type, year)`
+- [x] Attribué à la confirmation, jamais au brouillon
+- [x] **Attribué localement. Le serveur n'attribue aucun numéro.**
+- [x] **Aucun trou en fonctionnement normal** — un brouillon ne consomme aucun numéro. Un trou seulement après une collision de l'unicité, où l'appareil enjambe le numéro pris. **Jamais un doublon.**
+- [x] Test : deux appareils créant chacun 100 documents ne produisent aucune collision
 
 **Notes** — `SPEC.md` RÈGLE M3-2. Une numérotation serveur rendrait E9 impossible.
 
-**À trancher ici, relevé en E4-01 : le format n'a pas d'année.** `BL-A-0001` ne porte pas l'année, alors que la séquence est annuelle `(tenant, device, doc_type, year)`. Le premier bon de 2027 serait `BL-A-0001`, comme celui de 2026 : collision de texte, et aucune unicité sur `doc_number` ne peut être posée tant que ce n'est pas réglé. E4-01 n'en pose donc aucune. E4-02 choisit : soit l'année dans le numéro (`BL-A-2027-0001`), soit une séquence qui ne repart pas à zéro au 1er janvier — et corrige alors M3-2 et le critère « par `(tenant, device, doc_type, year)` » en conséquence. Le numéro est attribué par l'appareil, à la confirmation, dans la transition `draft → confirmed` que le garde de `sale_document` laisse écrire (le contenu d'un brouillon est libre jusqu'à elle).
+**Le format, tranché : `BL-A-26-00001`.** L'année entre dans le numéro — la séquence est annuelle, et sans elle le premier bon de 2027 porterait le texte du premier bon de 2026, ce qui interdisait toute unicité sur `doc_number` (E4-01 n'en avait donc posé aucune). Deux chiffres d'année et cinq de séquence : le raisonnement et le prix de chaque choix sont écrits à SPEC § 8, RÈGLE M3-2, parce que c'est là qu'on viendra les relire. M3-2 garde sa séquence annuelle ; le critère « par `(tenant, device, doc_type, year)` » n'a pas bougé.
+
+**« Aucun trou » a été réécrit, et c'est un arbitrage, pas un assouplissement.** La retente après une collision enjambe le numéro pris : elle crée un trou. Un trou se retrouve — le bon suivant existe, la séquence saute d'un rang, et l'historique reste lisible. Un doublon, lui, met deux papiers du même numéro dans les mains de deux clients, et ne se répare pas : on ne renumérote pas un papier signé. Le critère dit donc ce que le système tient réellement.
+
+**Quand une collision peut-elle arriver, puisque deux appareils ont des lettres distinctes ?** L'unicité porte sur le texte, qui contient la lettre, et une lettre n'est jamais recyclée (E1-03) : deux appareils ne peuvent pas se heurter. Une collision exige donc qu'**un même appareil** produise deux fois le même numéro, et il n'y a que deux chemins :
+
+1. **deux confirmations au même instant sur le même appareil** — deux onglets, un double appui, une écriture rejouée par la couche réseau. Les deux lisent la même borne et composent le même numéro ; l'index refuse la seconde, qui enjambe. C'est le cas réel, et le seul pour lequel la retente existe ;
+2. **un numéro posé à la main par l'API** — PostgREST est ouvert au jeton du commerce, et un `PATCH` peut écrire n'importe quel numéro bien formé. L'index est la seule chose qui empêche le doublon ; l'appareil enjambe ensuite.
+
+**Et le troisième cas, qui n'est pas une collision : il est écrit en E9-02.** Un stockage local vidé alors que des confirmations n'étaient pas encore synchronisées ne produit aucun refus côté serveur — les écritures en attente meurent avec le stockage, et ces documents n'arrivent jamais. L'appareil repart alors au-dessus de la borne *connue du serveur* et réimprime des numéros qui existent sur du papier sans exister en base. C'est une perte de documents, strictement pire qu'un trou, et aucun garde de ce côté-ci ne peut la voir : elle se tient par la durabilité de la file d'envoi, donc en E9-02, où elle est maintenant notée.
+
+**La borne se lit dans `document_sequence`, et la table devient dérivée.** E4-01 l'avait posée sans trigger. E4-02 lui en donne un qui ne distribue rien : `merx.advance_document_sequence()` y pose, sur chaque numéro écrit, `greatest(last_number, numéro)`. Le serveur **constate**, il n'attribue pas — M3-2 est intacte —, et un compteur qui ne peut pas reculer est ce qui fait qu'un appareil vidé repart au-dessus de son dernier numéro synchronisé, jamais à `00001` (même leçon que le SKU d'E2-06, où l'autorité est l'index et non le compteur).
+
+**Pourquoi pas `max(doc_number)`, qui serait la lecture évidente : mesuré.** Sous la paire de policies de § 2.1, une comparaison de texte sur `doc_number` n'emprunte aucun index — `textlike` n'est pas `leakproof` —, donc chaque confirmation parcourt toute la table, tous commerces confondus : **222 ms par appel sur 10 000 documents, 493 ms sur 20 000**, sur le chemin d'un bon qu'un client attend debout. La forme par intervalle (`>=` / `<`, tous deux `leakproof`) emprunte l'index — *parfois* : Seq Scan à 10 000 documents, Index Only Scan à 20 000, sur les mêmes données. Un plan qui bascule avec le volume n'est pas une base pour un chemin d'écriture. La borne, elle, est une poignée de lignes par commerce : **3,8 ms**, et son coût ne dépend d'aucun historique. `max(doc_number)` reste la bonne lecture pour la base locale d'E9, où il n'y a ni RLS ni voisin. Les deux plans sont assertés dans `document-numbering.test.ts`, session chauffée (E2-04).
+
+**Ce qui n'est pas ici.** Aucune contrainte « sans trou » en base : il faudrait lire la ligne précédente à chaque écriture, donc sérialiser les confirmations du commerce. La propriété est tenue par la façon dont l'appareil choisit, et éprouvée par le test des 200 documents. Et aucune unicité par `(appareil, type, année)` : le texte contient déjà les trois, l'unicité porte sur lui — « dans ce commerce, ce numéro n'existe qu'une fois ».
+
+**Deux corrections au passage, dans les tests d'E4-01** : `documentIn()` confirme désormais avec un numéro valide (la base l'exige), et le cas du gel de `issued_at` prend un autre instant *de la même année* — `now()` rendait l'horodatage de la transaction, donc une écriture qui ne changeait rien, et une autre année aurait été refusée par le garde de forme à la place du gel. `sale_document.device_id` passe NOT NULL avec sa clé composite : le garde n'a pas de lettre à comparer sans elle.
 
 ---
 
@@ -895,6 +912,8 @@ L'épique la plus coûteuse. Ne pas la démarrer avant que tout le reste tourne 
 
 **Notes** — Ce test est la story. Il est lent et ne s'accélère pas ; le prévoir.
 
+**Relevé en E4-02, et à traiter ici : un stockage local vidé avec des confirmations non synchronisées perd des documents, et réimprime leurs numéros.** La numérotation locale tient parce que l'appareil repart au-dessus de la borne connue du serveur (`document_sequence`, constatée). Mais un bon confirmé hors ligne vit d'abord dans la file d'envoi : si le stockage est vidé avant la remontée, ce bon n'arrive jamais, et le serveur ne saura jamais que son numéro a été imprimé. L'appareil réattribue alors `BL-A-26-00051` à une autre vente, et deux papiers portent le même numéro — dont un sans ligne en base. **Aucune collision n'est observable côté serveur**, et aucun garde d'E4-02 ne peut le voir : ce n'est pas un trou dans la séquence, c'est une perte de documents, et c'est strictement plus grave. La propriété à tenir est la **durabilité de la file d'envoi** : le critère « aucune perte, aucun doublon » ci-dessus se mesure donc aussi sur ce scénario — 200 documents créés hors ligne, l'application fermée brutalement, puis reconnexion, et rien de perdu.
+
 ---
 
 ### E9-03 — Réconciliation
@@ -910,6 +929,15 @@ L'épique la plus coûteuse. Ne pas la démarrer avant que tout le reste tourne 
 - [ ] Test : deux appareils hors-ligne vendant le même stock produisent un total correct après synchronisation
 
 **Notes** — `SPEC.md` § 2.5. `[À VALIDER]` L'hypothèse V1 est un appareil par commerce. Le test à deux appareils vérifie que le modèle ne se casse pas, sans que le scénario soit traité.
+
+**Le harnais doit apprendre à entrelacer deux connexions, et c'est ici que ça se paie.** Le critère « deux appareils hors ligne vendant le même stock » ne se mesure pas sur une connexion unique : il faut deux sessions ouvertes en même temps, dont on ordonne les pas — A lit, B écrit, A écrit — pour que les deux écritures se rencontrent *avant* le commit de l'une d'elles. Tout le reste de la suite tient dans **une** transaction annulée à la fin, ce qui est précisément ce qui l'empêche : deux écritures posées dans deux transactions annulées séparément ne se croisent jamais (la leçon d'E2-06, et la raison pour laquelle le cas inter-commerces d'E4-02 écrit ses deux lignes dans une seule transaction).
+
+**Les deux lignes ouvertes de `docs/PENDING-CHECKS.md` se ferment avec ce harnais**, et avec rien d'autre :
+
+- la concurrence du garde des lignes (`for share` dans `merx.reject_frozen_child_write()`, E4-01) — une confirmation qui croise l'écriture d'une ligne ;
+- une collision réelle entre deux confirmations simultanées du même appareil (E4-02) — le seul chemin par lequel l'enjambement se déclenche en fonctionnement normal.
+
+Les deux sont aujourd'hui éprouvées par morceaux, chacune de son côté de la frontière. Quand cette story se construira, les reprendre d'un bloc — c'est l'outil qui manque, pas la règle.
 
 ---
 

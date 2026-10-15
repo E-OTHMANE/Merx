@@ -2,7 +2,7 @@
  * Les appareils du commerce. M8 — E1-03.
  *
  * L'écran répond à une question précise, et c'est elle qui décide de sa forme :
- * « ce bon porte BL-C-0001 — quelle tablette l'a fait, et quand a-t-elle parlé
+ * « ce bon porte BL-C-26-00001 — quelle tablette l'a fait, et quand a-t-elle parlé
  * au serveur pour la dernière fois ? » La lettre est donc le sujet, pas une
  * mention en bas de ligne.
  *
@@ -46,7 +46,7 @@ function DeviceRow({ device }: { device: Device }) {
     <li className="flex min-h-row items-center gap-4 border-b border-paper-200 py-3">
       {/*
        * La lettre, en gros et en tabulaire : c'est par elle qu'on identifie
-       * l'appareil sur un bon (`BL-C-0001`). BRAND-UI § 6, chiffre secondaire —
+       * l'appareil sur un bon (`BL-C-26-00001`). BRAND-UI § 6, chiffre secondaire —
        * c'est bien un chiffre au sens du spec : une donnée qu'on lit dans une
        * colonne, pas un mot.
        */}
@@ -104,7 +104,7 @@ export function DeviceListScreen() {
           <BackLink to="/" label="Accueil" />
           <h1 className="text-title text-paper-900">Appareils</h1>
           <p className="mt-2 text-body text-paper-700">
-            Chaque appareil numérote ses bons avec sa propre lettre : BL-A-0001, BL-B-0001.
+            Chaque appareil numérote ses bons avec sa propre lettre : BL-A-26-00001, BL-B-26-00001.
           </p>
         </div>
 

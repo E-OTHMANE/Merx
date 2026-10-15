@@ -52,6 +52,11 @@ const PASSWORD = 'document-api-e4-01-password'
  */
 const FROZEN_HTTP = 409
 const DENIED_HTTP = 403
+/* E4-02 — l'unicité du numéro et le garde de sa forme. */
+const CONFLICT_HTTP = 409
+const INVALID_HTTP = 400
+const UNIQUE_VIOLATION = '23505'
+const INVALID_PARAMETER = '22023'
 
 /* Les phrases des gardes — chacune n'est dite que par le sien. */
 const CONTENT_FROZEN = 'ne se modifie plus'
@@ -87,6 +92,8 @@ const fixture = {
   device: '',
   variant: '',
   ownerAppUser: '',
+  /** Les deux chiffres d'année que porte un numéro — E4-02. */
+  shortYear: '',
   /** Le commerce voisin, pour le contrôle d'isolation. */
   other: { tenant: '', warehouse: '', device: '', variant: '' },
 }
@@ -161,9 +168,21 @@ async function draft(): Promise<string> {
  * suspendu nommément le temps de l'insertion — hors transaction, un
  * `session_replication_role` emporterait aussi les clés étrangères (CLAUDE.md).
  */
+let numbered = 0
+
+/*
+ * E4-02 — la confirmation porte son numéro et sa date, que la base exige
+ * valides et uniques. Le compteur est local à ce fichier : ce qu'il mesure est
+ * le statut HTTP des gardes du document, pas la numérotation.
+ */
 async function confirmedWithSale(quantity = '-3'): Promise<string> {
   const id = await draft()
-  await client.query("update public.sale_document set status = 'confirmed' where id = $1", [id])
+  numbered += 1
+  await client.query(
+    "update public.sale_document set status = 'confirmed', doc_number = $2," +
+      ' issued_at = now() where id = $1',
+    [id, `BL-A-${fixture.shortYear}-${String(numbered).padStart(5, '0')}`],
+  )
 
   await client.query('alter table public.stock_movement disable trigger require_open_movement_type')
   try {
@@ -237,6 +256,13 @@ beforeAll(async () => {
   fixture.variant = main.variant
   fixture.other = await tenantWithVariant('Voisin API E4-01')
 
+  // L'année telle que le garde du numéro la recalcule depuis `issued_at` (E4-02).
+  fixture.shortYear = (
+    await one<{ short: string }>(
+      "select to_char(merx.document_number_year(now()) % 100, 'FM00') as short",
+    )
+  ).short
+
   fixture.ownerAppUser = (
     await one<{ id: string }>(
       'insert into public.app_user (tenant_id, auth_user_id, full_name, role)' +
@@ -278,6 +304,9 @@ afterAll(async () => {
         await client.query('delete from public.stock_level where tenant_id = $1', [tenant])
         await client.query('delete from public.sale_line where tenant_id = $1', [tenant])
         await client.query('delete from public.sale_document where tenant_id = $1', [tenant])
+        // Le compteur d'E4-02 : dérivé, il ne se supprime pas par la porte
+        // ordinaire, et sa clé vers `app_user` retiendrait le rangement.
+        await client.query('delete from public.document_sequence where tenant_id = $1', [tenant])
       })
       await client.query('delete from public.product where tenant_id = $1', [tenant])
       await client.query('delete from public.app_user where tenant_id = $1', [tenant])
@@ -468,5 +497,69 @@ describe('un POST direct de sale_cancellation', () => {
     expect(result.body).toContain(RLS_REFUSAL)
     expect(result.body).not.toContain(NOT_BY_HAND)
     expect(await cancellationCount()).toBe(before)
+  })
+})
+
+/* ========================================================================== */
+/* 4. La numérotation vue de PostgREST — E4-02                                 */
+/* ========================================================================== */
+
+/*
+ * Les deux refus de la numérotation, mesurés **à travers l'API**, parce que
+ * c'est par là que l'appareil écrit et que c'est le statut rendu qui décide de
+ * ce que PowerSync fera du refus (SPEC § 4, RÈGLE des refus en 4xx). Les codes
+ * eux-mêmes sont mesurés à chaque passage par `refusal-status.test.ts` ; ce qui
+ * est éprouvé ici est que les gardes sont bien **atteints** par ce chemin — et
+ * que l'un n'est pas rendu en 5xx par un détour.
+ *
+ * `confirmDocument()` de `src/modules/sales` reconnaît le premier au nom de son
+ * index et enjambe ; le second ne doit jamais arriver, puisque l'appareil
+ * compose le numéro depuis sa propre lettre.
+ */
+describe('la numérotation, par l’API', () => {
+  const confirmBody = (docNumber: string) => ({
+    status: 'confirmed',
+    doc_number: docNumber,
+    issued_at: new Date().toISOString(),
+  })
+
+  it('refuse un numéro déjà porté, en 409, au nom de l’index', async () => {
+    const taken = `BL-A-${fixture.shortYear}-09001`
+    const first = await draft()
+    await client.query(
+      "update public.sale_document set status = 'confirmed', doc_number = $2," +
+        ' issued_at = now() where id = $1',
+      [first, taken],
+    )
+
+    const second = await draft()
+    const result = await rest(`sale_document?id=eq.${second}`, {
+      token: tokens.owner,
+      method: 'PATCH',
+      body: confirmBody(taken),
+    })
+
+    expect(result.ok, result.body).toBe(false)
+    expect(result.status, result.body).toBe(CONFLICT_HTTP)
+    expect(result.code, result.body).toBe(UNIQUE_VIOLATION)
+    expect(result.body).toContain('sale_document_number_per_tenant')
+    // Et le brouillon est resté brouillon : un refus qui numérote n'est pas un refus.
+    expect(await statusOf(second)).toBe('draft')
+  })
+
+  it('refuse la lettre d’un autre appareil, en 400, avec la phrase du garde', async () => {
+    const id = await draft()
+
+    const result = await rest(`sale_document?id=eq.${id}`, {
+      token: tokens.owner,
+      method: 'PATCH',
+      body: confirmBody(`BL-Z-${fixture.shortYear}-00001`),
+    })
+
+    expect(result.ok, result.body).toBe(false)
+    expect(result.status, result.body).toBe(INVALID_HTTP)
+    expect(result.code, result.body).toBe(INVALID_PARAMETER)
+    expect(result.body).toContain("n'est pas celui de cet appareil")
+    expect(await statusOf(id)).toBe('draft')
   })
 })

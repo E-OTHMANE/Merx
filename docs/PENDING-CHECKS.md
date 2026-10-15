@@ -7,13 +7,27 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
 
 ## Ouvertes
 
+### Depuis E4-02
+
+- [ ] **Une collision réelle entre deux confirmations simultanées** du même
+      appareil (deux onglets, un double appui). C'est le seul chemin par lequel
+      l'enjambement se déclenche en fonctionnement normal (BACKLOG E4-02), et il
+      n'est éprouvé que par morceaux : la retente est mesurée côté appareil sur
+      un refus simulé (`src/modules/sales/numbering.test.ts`), l'unicité est
+      mesurée côté base (`document-numbering.test.ts`), mais jamais les deux
+      ensemble — il faudrait deux connexions entrelacées, ce que le harnais ne
+      sait pas faire. Même limite que la ligne d'E4-01 ci-dessous, et même
+      atténuation : un appareil par commerce en V1 (§ 2.5). **Se ferme avec le
+      harnais à deux connexions entrelacées, noté en E9-03.**
+
 ### Depuis E4-01
 
 - [ ] **Concurrence du garde des lignes** (`for share` dans
       `merx.reject_frozen_child_write()`) : une confirmation qui croise l'écriture
       d'une ligne. Aucun test — il faudrait deux connexions qui s'entrelacent, ce
       que le harnais actuel ne sait pas faire. Un appareil par commerce en V1
-      (§ 2.5), donc faible risque aujourd'hui, mais non éprouvé.
+      (§ 2.5), donc faible risque aujourd'hui, mais non éprouvé. **Se ferme avec
+      le même harnais, noté en E9-03.**
 
 ## Faites
 

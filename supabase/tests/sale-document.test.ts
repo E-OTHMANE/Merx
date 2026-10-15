@@ -82,6 +82,8 @@ const fixture = {
   device: '',
   variant: '',
   variant2: '',
+  /** Les deux chiffres d'année que porte un numéro — E4-02. */
+  shortYear: '',
   appUsers: { owner: '', worker: '' } as Record<'owner' | 'worker', string>,
   /** Un second commerce, pour les clés composites. */
   other: { tenant: '', warehouse: '', device: '', variant: '' },
@@ -176,6 +178,13 @@ beforeAll(async () => {
   }
 
   fixture.other = await tenantWithVariant('Voisin E4-01')
+
+  // L'année telle que le garde du numéro la recalcule depuis `issued_at`.
+  fixture.shortYear = (
+    await one<{ short: string }>(
+      "select to_char(merx.document_number_year(now()) % 100, 'FM00') as short",
+    )
+  ).short
 })
 
 afterAll(async () => {
@@ -221,6 +230,27 @@ async function inCase(body: () => Promise<void>): Promise<void> {
 
 type Status = 'draft' | 'confirmed' | 'delivered' | 'cancelled'
 
+/*
+ * E4-02 — une confirmation porte désormais son numéro et sa date : la base les
+ * exige (`sale_document_number_when_numbered`), conformes à leur ligne
+ * (`merx.require_document_number_shape`) et uniques dans le commerce
+ * (`sale_document_number_per_tenant`). Le compteur est local à ce fichier : ce
+ * qu'il mesure est le gel du contenu, pas la numérotation — elle a son fichier.
+ */
+const DOC_CODES: Readonly<Record<string, string>> = {
+  quote: 'DV',
+  order: 'CM',
+  delivery_note: 'BL',
+}
+
+let numbered = 0
+
+/** `BL-A-26-00001`, pour l'appareil « A » du commerce et l'année du comptoir. */
+function nextNumber(docType = 'delivery_note'): string {
+  numbered += 1
+  return `${DOC_CODES[docType]}-A-${fixture.shortYear}-${String(numbered).padStart(5, '0')}`
+}
+
 /** Un brouillon de deux lignes, posé en `postgres`. Rend l'identifiant du document. */
 async function draft(docType = 'delivery_note'): Promise<string> {
   await client.query('reset role')
@@ -251,7 +281,11 @@ async function documentIn(status: Status, docType = 'delivery_note'): Promise<st
   const id = await draft(docType)
   if (status === 'draft') return id
 
-  await client.query("update public.sale_document set status = 'confirmed' where id = $1", [id])
+  await client.query(
+    "update public.sale_document set status = 'confirmed', doc_number = $2, issued_at = now()" +
+      ' where id = $1',
+    [id, nextNumber(docType)],
+  )
   if (status === 'delivered') {
     await client.query("update public.sale_document set status = 'delivered' where id = $1", [id])
   }
@@ -674,8 +708,15 @@ describe('un document qui n\'est plus brouillon est figé', () => {
         ['subtotal', '1'],
         ['discount_total', '1'],
         ['total', '1'],
-        ['doc_number', "'BL-A-0099'"],
-        ['issued_at', 'now()'],
+        // Bien formé et libre : si le gel disparaissait, l'écriture passerait —
+        // c'est ce que la passe de sabotage doit pouvoir voir. Un numéro mal
+        // formé serait refusé par le garde de forme (E4-02) à la place.
+        ['doc_number', `'${nextNumber()}'`],
+        // Un autre instant que celui de la confirmation, et dans la même année :
+        // `now()` rendrait la même valeur (horodatage de transaction), donc une
+        // écriture qui ne change rien, et une autre année serait refusée par le
+        // garde de forme d'E4-02 à la place du gel.
+        ['issued_at', "now() - interval '1 hour'"],
         ['doc_type', "'quote'"],
         ['cancellation_reason', "'motif sans annulation'"],
       ]
@@ -803,10 +844,11 @@ describe('le statut avance, le long de transitions déclarées', () => {
   it('laisse un brouillon se confirmer en recevant son numéro, sa date et ses totaux', async () => {
     await inCase(async () => {
       const id = await draft()
+      const docNumber = nextNumber()
       const confirmed = await attempt(
         client,
         `update public.sale_document
-         set status = 'confirmed', doc_number = 'BL-A-0001', issued_at = now(),
+         set status = 'confirmed', doc_number = '${docNumber}', issued_at = now(),
              subtotal = 29.50, total = 29.50
          where id = '${id}'`,
       )
@@ -814,7 +856,7 @@ describe('le statut avance, le long de transitions déclarées', () => {
 
       const stored = await row(id)
       expect(stored.status).toBe('confirmed')
-      expect(stored.doc_number).toBe('BL-A-0001')
+      expect(stored.doc_number).toBe(docNumber)
       expect(stored.total).toBe('29.50')
     })
   })
@@ -1247,7 +1289,7 @@ describe('le journal', () => {
   it('écrit une entrée document_cancellation, signée par le patron, avec le motif', async () => {
     await inCase(async () => {
       const id = await documentIn('confirmed')
-      await client.query("update public.sale_document set status = 'confirmed' where id = $1", [id])
+      const docNumber = (await row(id)).doc_number
       await postSale(id, fixture.variant, '-2')
 
       await asApplication('owner')
@@ -1266,14 +1308,14 @@ describe('le journal', () => {
       expect(entry?.user_id).toBe(fixture.appUsers.owner)
       expect(entry?.before).toEqual({
         doc_type: 'delivery_note',
-        doc_number: null,
+        doc_number: docNumber,
         status: 'confirmed',
         total: '0.00',
         cancellation_reason: null,
       })
       expect(entry?.after).toEqual({
         doc_type: 'delivery_note',
-        doc_number: null,
+        doc_number: docNumber,
         status: 'cancelled',
         total: '0.00',
         cancellation_reason: 'marchandise refusée',
@@ -1316,7 +1358,8 @@ describe('le journal', () => {
         `update public.sale_document set notes = 'ajout', total = 5 where id = '${created.id}'`,
       )
       await client.query(
-        `update public.sale_document set status = 'confirmed', doc_number = 'BL-A-0001'
+        `update public.sale_document set status = 'confirmed', doc_number = '${nextNumber()}',
+                issued_at = now()
          where id = '${created.id}'`,
       )
       await client.query(
@@ -1337,12 +1380,27 @@ describe('le journal', () => {
 /* document_sequence                                                           */
 /* ========================================================================== */
 
+/*
+ * La **forme** du compteur : son unicité, son appareil obligatoire, son
+ * compteur positif, sa clé composite. Ce que le trigger y écrit — et le fait
+ * qu'il en soit le seul écrivain — appartient à E4-02 et vit dans
+ * `document-numbering.test.ts`.
+ *
+ * La table est dérivée depuis E4-02 : son garde refuse toute pose à la main
+ * (`PT422`). Il est suspendu **nommément** le temps de l'insertion, comme le
+ * garde du type de mouvement fermé l'est ailleurs — lever les triggers d'un
+ * coup (`session_replication_role`) emporterait aussi les clés étrangères,
+ * c'est-à-dire exactement ce que deux de ces cas mesurent (CLAUDE.md).
+ */
 describe('document_sequence', () => {
+  const GUARD = 'public.document_sequence disable trigger reject_derived_insert'
+
   const insertSequence = (
     over: Partial<{ tenant: string; device: string | null; type: string; year: number; last: number }> = {},
   ): string => {
     const device = over.device === undefined ? fixture.device : over.device
     return (
+      `alter table ${GUARD};` +
       'insert into public.document_sequence (tenant_id, device_id, doc_type, year, last_number)' +
       ` values ('${over.tenant ?? fixture.tenant}', ${device === null ? 'null' : `'${device}'`},` +
       ` '${over.type ?? 'delivery_note'}', ${over.year ?? 2026}, ${over.last ?? 0})`
@@ -1419,8 +1477,9 @@ describe('clés composites', () => {
       await client.query('reset role')
       const foreign = await attempt(
         client,
-        `insert into public.sale_document (tenant_id, doc_type, warehouse_id)
-         values ('${fixture.tenant}', 'delivery_note', '${fixture.other.warehouse}')`,
+        `insert into public.sale_document (tenant_id, doc_type, warehouse_id, device_id)
+         values ('${fixture.tenant}', 'delivery_note', '${fixture.other.warehouse}',
+                 '${fixture.device}')`,
       )
       expect(foreign.ok, 'FUITE — un document sur le dépôt du voisin').toBe(false)
       if (!foreign.ok) {
@@ -1434,9 +1493,9 @@ describe('clés composites', () => {
     await inCase(async () => {
       await client.query('reset role')
       const neighbour = await one<{ id: string }>(
-        `insert into public.sale_document (tenant_id, doc_type, warehouse_id)
-         values ($1, 'delivery_note', $2) returning id`,
-        [fixture.other.tenant, fixture.other.warehouse],
+        `insert into public.sale_document (tenant_id, doc_type, warehouse_id, device_id)
+         values ($1, 'delivery_note', $2, $3) returning id`,
+        [fixture.other.tenant, fixture.other.warehouse, fixture.other.device],
       )
       const foreign = await attempt(
         client,

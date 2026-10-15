@@ -17,7 +17,7 @@ import { supabase } from '@/lib/supabase'
 export interface Device {
   id: string
   label: string
-  /** La lettre de numérotation : `BL-C-0001` (SPEC § 2.5, E4-02). */
+  /** La lettre de numérotation : `BL-C-26-00001` (SPEC § 8, RÈGLE M3-2). */
   prefix: string
   lastSyncAt: string | null
   isActive: boolean
@@ -35,7 +35,7 @@ interface DeviceRow {
  * Les appareils du commerce, dans l'ordre des lettres.
  *
  * L'ordre est celui du préfixe, et pas celui du nom ni de la création : c'est
- * par la lettre que le patron arrive ici. Il a un bon `BL-C-0001` sous les yeux
+ * par la lettre que le patron arrive ici. Il a un bon `BL-C-26-00001` sous les yeux
  * et cherche quelle tablette l'a produit.
  */
 export async function listDevices(): Promise<Device[]> {

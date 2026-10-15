@@ -95,7 +95,7 @@ La base locale est la source de vérité quand l'appareil est hors-ligne. Le ser
 
 **RÈGLE** — Ne pas écrire le moteur de synchronisation. PowerSync lit le WAL Postgres et maintient la base SQLite locale. Règles de synchronisation déclaratives, alignées sur la RLS.
 
-**RÈGLE — numérotation.** Les numéros de document sont attribués **localement**, avec un préfixe d'appareil : `BL-A-0001`, `BL-B-0001`. Séquence par `(tenant, device, doc_type, year)`. Le serveur n'attribue aucun numéro.
+**RÈGLE — numérotation.** Les numéros de document sont attribués **localement**, avec un préfixe d'appareil : `BL-A-26-00001`, `BL-B-26-00001`. Séquence par `(tenant, device, doc_type, year)`. Le serveur n'attribue aucun numéro — il refuse un doublon (§ 8, RÈGLE M3-2, où le format est détaillé et arbitré).
 
 **RÈGLE — un appareil par commerce en V1.** `[À VALIDER]` Hypothèse retenue pour garder la réconciliation simple. Le schéma supporte plusieurs appareils (préfixe d'appareil, mouvements cumulatifs) mais aucun scénario multi-appareils hors-ligne simultané n'est traité en V1.
 
@@ -424,13 +424,35 @@ La table est vide à la création du module : tant qu'aucun écran n'écrit un t
 `document_sequence`
 `id, tenant_id, device_id, doc_type, year, last_number`
 
+- **Table dérivée** depuis E4-02 : `merx.advance_document_sequence()`, un trigger sur `sale_document`, y pose le plus grand numéro que l'appareil a réellement écrit. Elle ne s'écrit pas à la main, et `last_number` ne recule jamais (`greatest`). Le serveur ne l'attribue pas, il la **constate** — RÈGLE M3-2 intacte.
+- C'est la **borne** que l'appareil lit pour choisir son prochain numéro. `year` est l'année pleine (`2026`) ; le numéro n'en porte que les deux derniers chiffres.
+
 `return_document` + `return_line`
 
 **Règles**
 
 **RÈGLE M3-1** — Le document par défaut est le **bon de livraison**. Aucune facture fiscale en V1.
 
-**RÈGLE M3-2** — Numérotation **locale**, préfixée par l'appareil : `BL-A-0001`. Séquence par `(tenant, device, doc_type, year)`, sans trou. Attribuée à la confirmation. Le serveur n'attribue rien.
+**RÈGLE M3-2** — Numérotation **locale**, préfixée par l'appareil : `BL-A-26-00001`. Séquence par `(tenant, device, doc_type, year)`, sans trou. Attribuée à la confirmation. Le serveur n'attribue rien.
+
+*Le format, arbitré en E4-02.* `BL-A-26-00001` : le code du type (`DV` devis, `CM` commande, `BL` bon de livraison), la lettre de l'appareil (§ 2.5, unique par commerce et jamais recyclée), l'année sur **deux** chiffres, la séquence sur **cinq**.
+
+- **L'année est dans le numéro** parce que la séquence est annuelle. Sans elle, le premier bon de 2027 porterait le texte du premier bon de 2026, et aucune unicité ne pouvait être posée sur `doc_number` — ce que E4-01 avait relevé en s'abstenant d'en poser une.
+- **Deux chiffres et non quatre**, et c'est le papier qui décide : le numéro se lit à haute voix au comptoir et se dicte au téléphone. `BL-A-26-00001` fait douze caractères, `BL-A-2026-00001` quinze. Le siècle n'est jamais en doute sur un bon qu'un grossiste garde, et l'ordre du texte n'est comparé qu'à l'intérieur d'une même année, puisque l'année est dans la clé de la séquence.
+- **Cinq chiffres**, largeur fixe. Quatre plafonnent à 9 999 bons par an et par appareil, qu'un grossiste à 40 bons par jour dépasse. La largeur fixe fait que l'ordre du texte est l'ordre des nombres — c'est ce qui permet de lire le plus grand numéro en une requête, notamment dans la base locale d'E9.
+- **L'année est celle d'`issued_at` lue en `Africa/Casablanca`** (§ 4) : un bon émis le 31 décembre à 23 h 30 porte l'année du comptoir, pas celle d'UTC. L'appareil et le garde de la base la calculent de la même façon, sans quoi un numéro juste serait refusé.
+
+*Ce que le serveur refuse, puisqu'il n'attribue pas.* Trois gardes, trois phrases, trois codes mesurés (§ 4, RÈGLE des refus en 4xx) :
+
+| Garde | Ce qu'il tient | Code | Statut |
+|---|---|---|---|
+| `sale_document_number_per_tenant` | un numéro n'est porté qu'une fois par commerce. **L'autorité** : l'appareil choisit, l'index tranche — même partage qu'`variant_sku_per_tenant` pour le SKU engendré (§ 6) | `23505` | 409 |
+| `merx.require_document_number_shape()` | le numéro dit la vérité sur sa ligne : son code est celui du type, sa lettre celle de `device_id`, son année celle d'`issued_at`. Quatre branches, quatre phrases | `22023` | 400 |
+| `sale_document_number_when_numbered`, `sale_document_issued_at_when_numbered` | numéro et date nuls tant que brouillon, posés dès la confirmation | `23514` | 400 |
+
+La branche « appareil » n'est pas une politesse : la lettre est tout ce qui sépare deux tablettes qui ne se parlent pas. Si l'appareil A pouvait écrire un numéro en « B », il prendrait un numéro que B imprimera légitimement plus tard — et c'est B que l'unicité refuserait, des jours après, sur un papier déjà remis.
+
+*La séquence n'a pas de trou en fonctionnement normal*, parce qu'un brouillon n'en consomme aucun (§ 4) : le numéro n'est posé qu'à la confirmation, et un bon abandonné ne laisse rien derrière lui. Après un refus de l'unicité, l'appareil enjambe le numéro pris et retente : un trou, jamais un doublon. Un trou se retrouve, un papier en double ne se répare pas (BACKLOG E4-02).
 
 **RÈGLE M3-3** — Un document `confirmed` n'est jamais modifié ni supprimé. On l'annule, ce qui génère les mouvements de stock inverses.
 

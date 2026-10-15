@@ -200,4 +200,4 @@ Each story ends with a sabotage pass: remove a guard, run the tests, and check t
 
 **`docs/PENDING-CHECKS.md` liste ce qu'une session n'a pas pu vérifier. Lis-le à l'ouverture, et rappelle-le à l'utilisateur — au début de la session et à la clôture de chaque story — jusqu'à ce qu'il dise de les faire.** Ne retire une ligne que lorsqu'elle a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire. Toute vérification sautée faute d'environnement s'y ajoute avant de rendre la main : un test non lancé se dit, il ne se suppose pas.
 
-**Jamais de push direct sur `main`.** Le travail va sur la branche désignée de la session.
+**L'utilisateur commite lui-même, sur `main`. Claude ne commite pas, et ne pousse pas.** Il laisse le travail dans l'arbre, dit ce qu'il a changé, et propose un message de commit si on le lui demande. (La « branche désignée de la session » était un reste de la session cloud d'E4-01 : il n'y en a pas.)
