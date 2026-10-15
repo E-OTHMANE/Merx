@@ -5,6 +5,7 @@ import {
   QUANTITY_SCALE,
   decimalInput,
   inputText,
+  moneyText,
   parseDecimal,
   quantityText,
   toSqlDecimal,
@@ -105,5 +106,38 @@ describe('quantityText', () => {
     ['-0.000', '0'],
   ])('rend %s « %s »', (stored, shown) => {
     expect(quantityText(stored)).toBe(shown)
+  })
+})
+
+/*
+ * L'affichage d'un montant. E4-03 — BRAND-UI § 6 : « 1 250,00 DH », espace
+ * insécable comme séparateur de milliers, virgule décimale, `DH` après le
+ * montant, et deux décimales toujours. L'espace insécable est vérifié pour
+ * lui-même : une espace ordinaire couperait un total en fin de ligne, et
+ * « 1 250,00 » lu sur deux lignes est un autre nombre.
+ */
+describe('moneyText', () => {
+  const NBSP = ' '
+
+  it.each([
+    ['0.00', `0,00${NBSP}DH`],
+    ['12.50', `12,50${NBSP}DH`],
+    ['300.00', `300,00${NBSP}DH`],
+    ['1250.00', `1${NBSP}250,00${NBSP}DH`],
+    ['999999.99', `999${NBSP}999,99${NBSP}DH`],
+    // Deux décimales toujours : une colonne de dirhams s'aligne ou ne sert à rien.
+    ['12', `12,00${NBSP}DH`],
+    ['12,5', `12,50${NBSP}DH`],
+  ])('rend %s « %s »', (stored, shown) => {
+    expect(moneyText(stored)).toBe(shown)
+  })
+
+  it('traite le signe, et n’en met pas sur un zéro', () => {
+    expect(moneyText('-12.50')).toBe(`-12,50${NBSP}DH`)
+    expect(moneyText('-0.00')).toBe(`0,00${NBSP}DH`)
+  })
+
+  it('rend le texte tel quel s’il n’est pas un montant', () => {
+    expect(moneyText('abc')).toBe('abc')
   })
 })

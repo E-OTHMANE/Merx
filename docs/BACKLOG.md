@@ -293,6 +293,8 @@ L'épique la plus déterminante pour l'adoption.
 - **`security definer` retiré du trigger** — 9 tombent sur 9 : « permission denied for function log_audit », le patron lui-même ne peut plus poser un prix ; le test « sans auteur » reçoit `42501` au lieu de `23502` ;
 - **comparaison avant/après remplacée par une condition toujours vraie** — 2 tombent, 2 vraies détections : « la modification du prix » (10.00 → 12.50 n'écrit rien) et « modifier sans jeton », dont le refus disparaît avec l'entrée.
 
+**Relevé en E4-04, et à faire ici : l'écran de grille devrait signaler un palier réglé sous le plancher.** Depuis E4-04, `merx.require_floor_price()` refuse toute ligne de vente dont le prix est sous `variant.floor_price`, **quelle que soit `price_source`** — sinon le contrôle se contournerait en posant `auto` (SPEC § 8, RÈGLE M3-8). Conséquence assumée : un palier que le patron a réglé sous son propre plancher rend l'article **invendable par l'employé**, et le refus tombera au comptoir, sur une vente, devant un client — loin de l'écran où la faute a été faite. Le refus est le bon côté de l'erreur, mais la contradiction se voit à la saisie : la grille connaît déjà le plancher (`loadGrid()` le lit), et un palier en dessous mérite d'être dit au patron au moment où il le tape. Pas un blocage — § 2.6 —, un avertissement sur la ligne concernée.
+
 ---
 
 ### E2-04 — Recherche produit
@@ -576,17 +578,27 @@ L'épique la plus critique. L'écran de vente décide de l'adoption.
 **En tant que** vendeur, **je veux** sortir un bon pendant que le client attend, **afin de** ne pas revenir au carnet.
 
 **Critères d'acceptation**
-- [ ] **Trois entrées, aboutissant toutes à la même ligne** : scan, saisie de la référence, sélection sur grille photo
-- [ ] **Pas d'écran scan-only** : la marchandise n'est pas toujours à portée de main
-- [ ] Ajout d'une ligne : produit, quantité, prix résolu automatiquement
-- [ ] Modification de quantité et suppression de ligne directes
-- [ ] Total mis à jour en temps réel
-- [ ] Sélection ou création d'un client sans quitter l'écran
-- [ ] **Bon de 10 lignes en moins de 90 secondes**, chronométré
-- [ ] Utilisable debout, au doigt, d'une seule main
-- [ ] Un stock à zéro n'empêche rien
+- [x] **Trois entrées, aboutissant toutes à la même ligne** : scan, saisie de la référence, sélection sur grille photo
+- [x] **Pas d'écran scan-only** : la marchandise n'est pas toujours à portée de main
+- [x] Ajout d'une ligne : produit, quantité, prix résolu automatiquement
+- [x] Modification de quantité et suppression de ligne directes
+- [x] Total mis à jour en temps réel
+- [ ] Sélection ou création d'un client sans quitter l'écran — **tenu par E6-01**, qui porte déjà ce critère mot pour mot et crée `client` avec `sale_document.client_id`
+- [x] **Bon de 10 lignes en moins de 90 secondes**, chronométré — *le budget de gestes est mesuré en suite (31 taps, quantités réelles) ; le chronomètre lui-même est en vérification en attente*
+- [x] Utilisable debout, au doigt, d'une seule main — *cibles de 48 px, actions en bas, quantité au clavier numérique ; à l'épreuve du comptoir avec le chronomètre*
+- [x] Un stock à zéro n'empêche rien
 
 **Notes** — `SPEC.md` RÈGLE M3-6, point de rupture n° 2. Chaque tap superflu est payé mille fois par jour.
+
+**Le partage avec E4-04, tranché ici.** Il n'existe aucun prix hors de `price_break` — `variant` n'en porte pas, et chaque variante reçoit sa ligne `min_qty = 1` (E2-03). « Prix résolu automatiquement » ne pouvait donc pas être servi autrement : cette story lit les paliers vivants **à l'ajout de la ligne**, puis rejoue `resolvePriceBreak()` — la fonction pure d'E2-03, pas une seconde copie — **à chaque changement de quantité**. Là où la grille ne répond pas (aucun palier applicable, ou palier sans prix), la ligne passe `manual` et le vendeur saisit : ce n'est pas un forçage, c'est une absence de prix, et rien ne bloque une vente (SPEC § 2.6). **E4-04 garde** le forçage d'un prix *qui existe*, l'incitation au palier suivant, le plancher opposé au `worker`, la trace au journal, et la règle d'arrondi écrite en SQL. Le forçage d'E4-04 devra **survivre** à un changement de quantité, ce qui est l'inverse exact de la règle ci-dessus : c'est pourquoi il n'est pas construit en avance.
+
+**L'arrondi est provisoire, et écrit comme tel.** Une quantité à trois décimales par un prix à deux donne cinq décimales ; `src/modules/sales/amounts.ts` revient à deux, demi loin de zéro, **au niveau de la ligne**. Ce n'est pas un choix de style : c'est ce que fait la conversion `numeric` de Postgres, donc la seule règle qui garantisse aujourd'hui que l'appareil et la base disent le même centime. Aucune contrainte de cohérence des totaux n'est ajoutée — c'est E4-04 qui tranche, en SQL, et qui remplacera ce seul endroit.
+
+**Le type de mouvement `sale` reste fermé.** SPEC § 8 et le critère d'E4-05 le disent : la confirmation qui décrémente le stock est E4-05 (RÈGLE M3-5). Aucune capacité neuve, aucune ligne à `merx.movement_type_capability`, les quatre copies de la matrice ne bougent pas. **Conséquence assumée, le temps d'une story : un bon confirmé ici n'écrit aucun mouvement.** L'écran confirme quand même — c'est « sortir un bon » — par `confirmDocument()` d'E4-02, qui pose le numéro et la date.
+
+**Rien n'est écrit pendant la saisie**, et trois appels partent à l'appui : le brouillon, ses lignes **en un seul appel**, puis la confirmation. Dix lignes ne coûtent donc aucun aller-retour, et un bon abandonné ne laisse aucun brouillon — c'est aussi ce qui tient la séquence sans trou (SPEC § 4). Les trois appels **ne sont pas atomiques** : ce qui a abouti est retenu, et un second appui après une coupure confirme le **même** brouillon, sans en créer un second ni redoubler ses lignes. Les totaux sont réécrits avant les lignes, pour qu'une retente parte de la saisie d'aujourd'hui. Mesuré dans `SaleScreen.test.tsx`.
+
+**Le dépôt descend dans la base.** `sale_document.warehouse_id` était NOT NULL sans défaut (E4-01) : l'écran aurait dû lire `warehouse` pour vendre, une table que SPEC § 2.4 dit « jamais exposée », et payer un aller-retour de plus au comptoir. `merx.default_warehouse_id()` le pose désormais, en `security invoker` — les deux policies de § 2.1 gouvernent la lecture — avec le filtre `tenant_id = merx.current_tenant_id()` en tête du corps. Aucune inscription à `merx.rls_exception_registry` : rien ne sort de la RLS. **Le balayage d'isolation a appris la règle générale au passage** : une colonne NOT NULL dont le défaut appelle une fonction de `merx` est remplie par le peuplement, qui tourne sans jeton — c'était déjà le cas de `tenant_id`, écrit table par table ; c'est maintenant lu au catalogue.
 
 ---
 
@@ -596,17 +608,47 @@ L'épique la plus critique. L'écran de vente décide de l'adoption.
 **En tant que** vendeur, **je veux** que le prix suive la quantité tout seul, **afin de** ne pas me tromper.
 
 **Critères d'acceptation**
-- [ ] Prix résolu automatiquement depuis `price_break`
-- [ ] **Recalculé à chaque changement de quantité**, jamais figé à la première saisie
-- [ ] Passer de 8 à 12 fait basculer **toute la ligne** au palier supérieur, sans la scinder
-- [ ] À moins de 20 % du palier suivant, afficher l'incitation : « +2 → 12,00 DH »
-- [ ] Forçage manuel possible, marqué `manual`
-- [ ] Un `worker` ne peut pas descendre sous `floor_price` : refus avec message
-- [ ] Tout forçage est tracé dans `audit_log`
+- [x] Prix résolu automatiquement depuis `price_break`
+- [x] **Recalculé à chaque changement de quantité**, jamais figé à la première saisie
+- [x] Passer de 8 à 12 fait basculer **toute la ligne** au palier supérieur, sans la scinder
+- [x] À moins de 20 % du palier suivant, afficher l'incitation : « +2 → 12,00 DH »
+- [x] Forçage manuel possible, marqué `manual`
+- [x] Un `worker` ne peut pas descendre sous `floor_price` : refus avec message
+- [x] Tout forçage est tracé dans `audit_log`
 
-**Notes** — `SPEC.md` RÈGLES M1-3, M1-4. L'incitation au palier est une fonction produit, pas une décoration.
+**Notes** — `SPEC.md` RÈGLES M1-3, M1-4, et M3-7, M3-8 écrites par cette story. L'incitation au palier est une fonction produit, pas une décoration.
 
-**À trancher ici, relevé en E4-01 : la règle d'arrondi de `line_total`.** Une quantité à 3 décimales (`numeric(12,3)`) multipliée par un prix à 2 (`numeric(12,2)`) donne 5 décimales, et le spec n'écrit nulle part comment on revient à 2 : arrondi au plus proche, demi vers le haut ou vers le pair, au niveau de la ligne ou du document. E4-01 ne pose donc **aucune contrainte de cohérence des totaux** (`total = subtotal - discount_total`, `line_total = quantity × unit_price - line_discount`, somme des lignes). Cette règle se tranche avant toute contrainte de ce genre, puis s'écrit à un seul endroit — en SQL, car les documents sont figés en base et le total qui s'imprime doit être celui qui est stocké.
+**L'arrondi de `line_total`, tranché — et il cesse d'être affirmé par l'appareil.** `round(quantity × unit_price, 2) − line_discount`, **demi loin de zéro**, **au niveau de la ligne** ; le document somme les totaux de ligne *arrondis*. Demi loin de zéro parce que c'est ce que fait `round(numeric, 2)` de Postgres : toute autre convention obligerait l'appareil à implémenter un arrondi que le SQL écrit naïvement ne fait pas. Le raisonnement et le prix de chaque choix sont à SPEC § 8, RÈGLE M3-7, parce que c'est là qu'on viendra les relire.
+
+Et la règle n'est pas gardée par un `check` : **`line_total` devient une colonne engendrée.** Un `check` aurait laissé l'appareil affirmer le total et se serait contenté de le contredire ; engendrée, la colonne ne lui laisse pas la parole — `saleWrite.ts` ne l'envoie plus, et l'accord sur le centime devient structurel au lieu d'être asserté. Le total de `amounts.ts` ne sert qu'à afficher, et `sale-price.test.ts` **mesure** à chaque passage que les deux tombent sur le même centime, sur la vraie base.
+
+**La cohérence des totaux, en trois pièces.** `line_total` engendrée ; `sale_document_total_consistent` (`total = subtotal − discount_total`, à tout instant) ; et `merx.require_consistent_totals()` pour la somme des lignes, **à la confirmation seulement** — un brouillon s'écrit avant ses lignes (E4-03), et un garde permanent refuserait le brouillon lui-même. Le moment où elle doit être vraie est celui où le contenu se figeait déjà. Les trois lèvent `23514`, rendu 400 et mesuré.
+
+**Les deux sortes de `manual`, distinguées par une colonne et non par une convention.** E4-03 marque `manual` une ligne dont la grille ne donne *aucun* prix ; E4-04 apporte le forçage, qui remplace un prix *qui existe*. Les deux portant `manual`, le journal des forçages aurait compté chaque ligne sans prix pour un forçage. `sale_line.overridden_price` — le prix remplacé, nul autrement — les sépare, et `sale_line_override_shape` tient les trois états. Le gain décisif n'est pas la distinction : c'est que **l'entrée d'audit a enfin son « avant »**, le prix remplacé n'étant nulle part ailleurs sur la ligne.
+
+Elle est **posée par l'appareil, jamais recalculée à l'arrivée** : recalculer `price_break` au moment où la ligne arrive ferait refuser, à la synchronisation, une vente faite hors ligne dont la grille a changé depuis — un refus définitif sur une écriture qui ne passera jamais. Limite assumée : par l'API, un employé peut taire son forçage en laissant la colonne nulle ; il n'échappe pas au plancher, qui ne dépend d'aucune déclaration de l'appareil.
+
+**La trace est posée sur la ligne, à l'écriture du prix forcé — et la note d'ouverture de cette story disait l'inverse.** Journalisée à la transition `draft → confirmed`, l'entrée aurait attribué le forçage à **celui qui confirme** : `merx.log_audit()` prend l'auteur dans le jeton de celui qui écrit (E1-04). Le journal ne pose qu'une question, « qui », et il y aurait répondu faux — le patron qui valide au lieu de l'employé qui a baissé le prix. Posée sur la ligne, le garde du plancher et la trace voient de surcroît le même instant. Et « pas à chaque frappe » était déjà tenu par E4-03 : rien n'est écrit pendant la saisie, les lignes partent en un seul appel à l'appui sur « Enregistrer le bon ». Écrit à SPEC § 8, RÈGLE M3-8, pour que personne ne le « corrige » vers la confirmation. Le mécanisme est celui d'E3-03 et d'E4-01, **sans rien ajouter au helper** : `merx.apply_audit()`, condition de ligne `new.overridden_price is not null`, événements `insert, update`.
+
+**Le plancher ne regarde pas `price_source`.** S'il ne valait que pour `manual`, un employé poserait `auto` par l'API et passerait dessous : le contrôle serait une politesse. Conséquence assumée : un palier réglé *sous* le plancher devient invendable par l'employé — l'écran de grille devrait le signaler au patron à la saisie (noté en E2-03). Aucune capacité ajoutée : `override_price` et `override_price_below_floor` sont à § 3.1 depuis E0-05, qui les y avait posées pour un appelant d'E4 ; les quatre copies de la matrice ne bougent pas.
+
+**Les 20 % de la RÈGLE M1-4 se mesurent sur le palier visé**, non sur la quantité demandée : l'écart doit valoir au plus 20 % de son `min_qty`. Un palier à 12 incite donc depuis 10 et pas depuis 8 — les deux côtés de l'exemple du spec. Un seuil assis sur la quantité dériverait à chaque frappe, alors que le palier est une propriété de la grille. L'incitation se tait si le palier visé n'a pas de prix, ou si ce prix ne vaut pas mieux que celui de la ligne : on n'invite pas quelqu'un à payer davantage.
+
+**Ce qui a bougé ailleurs, et pourquoi.** Les charges de `sale-document.test.ts` et `sale-document-api.test.ts` écrivaient `line_total` à la main et posaient des totaux à zéro sous des documents qu'elles confirment : les deux sont désormais impossibles. Un cas y a changé de sens au passage — `update sale_line set quantity = -1` était refusé par `sale_line_quantity_positive`, et le serait maintenant d'abord par `sale_line_amounts_not_negative`, puisque le total engendré devient négatif avec la quantité ; le prix passe à 0 dans la même instruction pour que la contrainte mesurée reste celle qu'on croit mesurer (même famille que E2-01).
+
+**Ce qui n'est pas ici.** Aucun mouvement de stock (E4-05, RÈGLE M3-5) ; aucune remise — `line_discount` et `discount_total` restent à zéro et aucun écran ne les saisit, mais la règle d'arrondi les porte déjà ; aucun garde sur un palier réglé sous le plancher (c'est l'écran de grille, E2-03).
+
+**Sabotages (7 gardes retirés, un par un ; fichiers concernés seulement) :** tous font rougir au moins un test.
+
+- **trigger `require_floor_price` retiré** — 4 tombent : les trois cas du plancher en SQL (employé refusé, ligne `auto` sous le plancher, modification d'un brouillon) et le 403 mesuré par l'API ;
+- **sa condition de capacité seule (`merx.can`)** — 2 tombent, et ce sont les **contrôles positifs** : le patron ne passe plus, ni en SQL ni par l'API. Le garde et son exception tombent donc séparément ;
+- **trigger `require_consistent_totals` retiré** — 2 tombent : la confirmation d'un sous-total faux, en SQL et en 400 par l'API. `sale-document.test.ts` reste vert : la somme n'est gardée que là ;
+- **expression de `line_total` retirée** (`drop expression`, la colonne redevient ordinaire) — 13 tombent : les six cas d'arrondi, l'accord avec `amounts.ts`, le total qui suit la quantité d'un brouillon, le refus d'une valeur fournie, et les deux confirmations dont la somme dépend des totaux de ligne ;
+- **`sale_line_override_shape` retiré** — 3 tombent : les deux formes refusées en SQL, et le 400 de l'API ;
+- **condition de ligne du trigger d'audit retirée** — 5 tombent, dont **les deux cas négatifs** qui portent l'arbitrage : une ligne au palier et une ligne sans prix écrivent désormais une entrée. La règle `tables auditées gardées` de `conventions.ts` tombe avec, parce que la clause `when` du catalogue ne correspond plus au registre ;
+- **trigger d'audit retiré entièrement** — 4 tombent : les trois entrées attendues, et la même règle de `conventions.ts`, par son autre volet. Les deux cas de ce couple ne tombent jamais sur les mêmes tests.
+
+**Suite complète, machine libre : 64 fichiers, 1 675 tests, tous verts.** `typecheck` et `lint` lus sur la sortie des commandes, après la dernière édition.
 
 ---
 
@@ -895,6 +937,8 @@ L'épique la plus coûteuse. Ne pas la démarrer avant que tout le reste tourne 
 
 **Notes** — `SPEC.md` § 2.5. Écrire son propre moteur coûterait des mois et les erreurs de cohérence ne se découvriraient que chez un client.
 
+**Relevé en E4-04, et à traiter ici : la synchronisation ne doit jamais renvoyer `sale_line.line_total`.** C'est une colonne **engendrée** depuis E4-04 (RÈGLE M3-7), et Postgres refuse toute valeur fournie pour une telle colonne — `428C9`, « cannot insert a non-DEFAULT value into column ». Un refus que rien ne rattrape : ce n'est pas un garde, c'est la colonne qui n'accepte pas d'être écrite, et la file de l'appareil resterait bloquée dessus pour toujours (§ 4, RÈGLE des refus en 4xx). Les règles de synchronisation doivent donc **exclure la colonne en écriture** et la recevoir en lecture seule, comme `product.code_key` et les colonnes `search_*` d'E2-04, qui sont dans le même cas. À vérifier au moment où les règles s'écrivent, et pas après : le symptôme serait une file muette.
+
 ---
 
 ### E9-02 — Sept jours hors-ligne
@@ -938,6 +982,15 @@ L'épique la plus coûteuse. Ne pas la démarrer avant que tout le reste tourne 
 - une collision réelle entre deux confirmations simultanées du même appareil (E4-02) — le seul chemin par lequel l'enjambement se déclenche en fonctionnement normal.
 
 Les deux sont aujourd'hui éprouvées par morceaux, chacune de son côté de la frontière. Quand cette story se construira, les reprendre d'un bloc — c'est l'outil qui manque, pas la règle.
+
+**Et une décision à prendre ici, relevée en E4-04 : le plancher d'une vente faite hors ligne.** `merx.require_floor_price()` compare `unit_price` au `floor_price` **en vigueur à l'arrivée de la ligne** (SPEC § 8, RÈGLE M3-8). Un employé vend à 10 DH hors ligne, le patron monte le plancher à 12 entre-temps, et à la reconnexion la ligne est refusée — en `42501`, donc en 4xx, donc **définitivement** : selon ce que la file fait d'un refus final, la vente est bloquée ou perdue. C'est exactement le défaut pour lequel `overridden_price` n'est *pas* recalculée à l'arrivée (§ 8) ; le plancher, lui, ne pouvait pas s'en passer, parce que c'est le garde qui tient l'argent et qu'il ne peut pas dépendre d'une déclaration de l'appareil.
+
+Deux pistes, et ce n'est pas tranché :
+
+- **comparer au plancher en vigueur à `issued_at`**, ce qui demande d'historiser `variant.floor_price` — une table de plus, et une question de cohérence temporelle qui ne se limiterait pas au plancher ;
+- **accepter la ligne et la journaliser** : le refus devient une alerte au patron plutôt qu'un rejet. Un bon déjà remis au client n'est de toute façon pas annulable par un refus de synchronisation — le papier existe.
+
+La seconde est probablement la bonne, et c'est précisément pourquoi elle se décide ici, avec le reste de la réconciliation, et non en E4-04 où tout est en ligne.
 
 ---
 
@@ -1062,7 +1115,7 @@ Trois constats d'un essai sur un vrai Android : aucun retour, aucun accueil, auc
 - [x] Barre d'onglets en bas des écrans de premier niveau ; chaque onglet porte une icône **et** un libellé ; cinq onglets au plus
 - [x] Le premier onglet est l'Accueil ; aucun autre bouton « accueil »
 - [x] Un onglet dont la capacité manque ne s'affiche pas — par `useCan()`, aucune comparaison de rôle, aucun cas particulier
-- [x] Onglets livrés : Accueil et Produits. Vente, Clients et Rapports arrivent avec E4-03, E6-01 et E10-01 — pas avant
+- [x] Onglets livrés : Accueil et Produits ; Vente s'y est ajoutée en E4-03, en position 2. Clients et Rapports arrivent avec E6-01 et E10-01 — pas avant
 - [x] L'onglet actif se distingue par la couleur **et** le fond (encre 600 sur encre 100), et porte `aria-current="page"` ; l'inactif est en papier 600
 - [x] Chaque écran de détail porte un retour dans son en-tête, chevron et nom du parent, vers le parent désigné — jamais l'historique
 - [x] **Un onglet ou un retour, jamais les deux, jamais aucun** — vérifié route par route, et toute route ajoutée sans être classée fait tomber le test

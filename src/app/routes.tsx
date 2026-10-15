@@ -33,6 +33,7 @@ import {
   ProductFormScreen,
   ProductListScreen,
 } from '@/modules/catalogue'
+import { SaleScreen } from '@/modules/sales'
 import { VariantStockScreen } from '@/modules/stock'
 
 /**
@@ -59,6 +60,14 @@ export function AppRoutes() {
             `src/app/navigation.test.tsx` classe chaque chemin de ce fichier. */}
         <Route element={<TabLayout />}>
           <Route path="/" element={<HomeScreen />} />
+          {/* L'écran de vente. E4-03, point de rupture n° 2. Onglet en
+              position 2 (BRAND-UI § 13), sous `create_sale` — les deux rôles
+              l'ont (§ 3.1). Le garde de route masque l'écran ; ce qui protège
+              l'écriture sont les policies de `sale_document` et de `sale_line`,
+              et les gardes de la table figée (E4-01). */}
+          <Route element={<RequireCapability capability="create_sale" />}>
+            <Route path="/sale" element={<SaleScreen />} />
+          </Route>
           <Route element={<RequireCapability capability="view_catalogue" />}>
             <Route path="/products" element={<ProductListScreen />} />
           </Route>

@@ -149,14 +149,17 @@ async function tenantWithVariant(
  */
 async function draft(): Promise<string> {
   const doc = await one<{ id: string }>(
-    'insert into public.sale_document (tenant_id, doc_type, warehouse_id, device_id, created_by)' +
-      " values ($1, 'delivery_note', $2, $3, $4) returning id",
+    // Les totaux disent la vérité sur la ligne : 3 × 10,00. Depuis E4-04,
+    // `merx.require_consistent_totals()` refuse l'inverse à la confirmation.
+    'insert into public.sale_document (tenant_id, doc_type, warehouse_id, device_id, created_by,' +
+      " subtotal, total) values ($1, 'delivery_note', $2, $3, $4, 30.00, 30.00) returning id",
     [fixture.tenant, fixture.warehouse, fixture.device, fixture.ownerAppUser],
   )
   await client.query(
+    // `line_total` est engendrée depuis E4-04 (RÈGLE M3-7) : elle ne s'écrit pas.
     'insert into public.sale_line (tenant_id, sale_document_id, variant_id, quantity,' +
-      ' unit_price, line_total, created_by)' +
-      " values ($1, $2, $3, '3', '10.00', '30.00', $4)",
+      ' unit_price, created_by)' +
+      " values ($1, $2, $3, '3', '10.00', $4)",
     [fixture.tenant, doc.id, fixture.variant, fixture.ownerAppUser],
   )
   return doc.id

@@ -7,6 +7,31 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
 
 ## Ouvertes
 
+### Depuis E4-04
+
+- [ ] **Le plancher d'une vente faite hors ligne.** `merx.require_floor_price()`
+      compare au `floor_price` **en vigueur à l'arrivée de la ligne**. Un employé
+      vend à 10 DH hors ligne, le patron monte le plancher à 12 entre-temps, et
+      à la reconnexion la ligne est refusée en `42501` — donc en 4xx, donc
+      définitivement : selon ce que la file fait d'un refus final, la vente est
+      bloquée ou perdue. Rien ne le montre aujourd'hui, où tout est en ligne, et
+      aucun test ne peut le montrer avant la file d'envoi d'E9. **La décision est
+      notée en BACKLOG E9-03** avec ses deux pistes — comparer au plancher en
+      vigueur à `issued_at`, ou accepter la ligne et la journaliser. À rappeler
+      le jour où E9 s'ouvre : c'est la seule ligne de ce fichier qui est une
+      décision en attente, et non une mesure en attente.
+
+### Depuis E4-03
+
+- [ ] **Le chronomètre de l'écran de vente** : un bon de 10 lignes en moins de
+      90 secondes, **debout, au comptoir, d'une seule main**, sur un vrai
+      Android d'entrée de gamme. C'est le critère du point de rupture n° 2
+      (SPEC § 10), et il ne se mesure pas en jsdom : ce que la suite tient est
+      le **budget de gestes** — 31 taps pour dix lignes à quantités réelles
+      (24, 48, 120…), asserté dans `src/modules/sales/SaleScreen.test.tsx`, et
+      qui échoue si un geste s'ajoute. Le temps réel dépend du clavier, du
+      réseau et de la main : il se chronomètre. L'utilisateur le fera lui-même.
+
 ### Depuis E4-02
 
 - [ ] **Une collision réelle entre deux confirmations simultanées** du même

@@ -10,12 +10,12 @@
  * `useCan()`, donc par la matrice SPEC § 3.1, sans cas particulier de rôle.
  * Masquer n'est pas interdire : la route garde son `RequireCapability`.
  *
- * Un onglet n'entre dans `TABS` qu'avec son écran. Vente (E4-03), Clients
- * (E6-01) et Rapports (E10-01) viendront avec leur story, dans l'ordre de
- * BRAND-UI § 13 — cinq au plus.
+ * Un onglet n'entre dans `TABS` qu'avec son écran. Vente est arrivée avec
+ * E4-03 ; Clients (E6-01) et Rapports (E10-01) viendront avec leur story, dans
+ * l'ordre de BRAND-UI § 13 — cinq au plus.
  */
 
-import { House, Package, type LucideIcon } from 'lucide-react'
+import { House, Package, Receipt, type LucideIcon } from 'lucide-react'
 import { NavLink, Outlet } from 'react-router-dom'
 
 import { useCan, type Capability } from '@/lib/auth'
@@ -30,6 +30,9 @@ interface Tab {
 
 const TABS: readonly Tab[] = [
   { to: '/', label: 'Accueil', icon: House },
+  /* Le bon, pas le panier : BRAND-UI § 4 écarte la caisse enregistreuse et le
+     caddie, et c'est un bon de livraison que le vendeur sort (RÈGLE M3-1). */
+  { to: '/sale', label: 'Vente', icon: Receipt, capability: 'create_sale' },
   { to: '/products', label: 'Produits', icon: Package, capability: 'view_catalogue' },
 ]
 

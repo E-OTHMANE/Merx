@@ -254,19 +254,30 @@ function nextNumber(docType = 'delivery_note'): string {
 /** Un brouillon de deux lignes, posé en `postgres`. Rend l'identifiant du document. */
 async function draft(docType = 'delivery_note'): Promise<string> {
   await client.query('reset role')
+  /*
+   * Les totaux disent la vérité sur les deux lignes : 2,5 × 10,00 et 1 × 4,50,
+   * soit 29,50. Depuis E4-04 (RÈGLE M3-7), `merx.require_consistent_totals()`
+   * refuse une confirmation dont le sous-total ne serait pas la somme des
+   * lignes, et beaucoup de cas de ce fichier confirment.
+   */
   const doc = await one<{ id: string }>(
-    'insert into public.sale_document (tenant_id, doc_type, warehouse_id, device_id)' +
-      ' values ($1, $2::public.sale_doc_type, $3, $4) returning id',
+    'insert into public.sale_document (tenant_id, doc_type, warehouse_id, device_id,' +
+      ' subtotal, total) values ($1, $2::public.sale_doc_type, $3, $4, 29.50, 29.50) returning id',
     [fixture.tenant, docType, fixture.warehouse, fixture.device],
   )
-  for (const [variant, quantity, price, total] of [
-    [fixture.variant, '2.500', '10.00', '25.00'],
-    [fixture.variant2, '1', '4.50', '4.50'],
+  /*
+    * `line_total` n'est pas écrite : la base l'engendre depuis E4-04
+    * (RÈGLE M3-7), et une valeur fournie serait refusée en `428C9`. Les totaux
+    * du document, eux, restent posés à la main par les cas qui en ont besoin.
+    */
+  for (const [variant, quantity, price] of [
+    [fixture.variant, '2.500', '10.00'],
+    [fixture.variant2, '1', '4.50'],
   ] as const) {
     await client.query(
-      'insert into public.sale_line (tenant_id, sale_document_id, variant_id, quantity, unit_price, line_total)' +
-        ' values ($1, $2, $3, $4, $5, $6)',
-      [fixture.tenant, doc.id, variant, quantity, price, total],
+      'insert into public.sale_line (tenant_id, sale_document_id, variant_id, quantity, unit_price)' +
+        ' values ($1, $2, $3, $4, $5)',
+      [fixture.tenant, doc.id, variant, quantity, price],
     )
   }
   return doc.id
@@ -504,13 +515,16 @@ describe('un brouillon', () => {
       expect(created.created_by, 'le document n\'est pas signé').toBe(fixture.appUsers.worker)
 
       await client.query(
-        `insert into public.sale_line (sale_document_id, variant_id, quantity, unit_price, line_total)
-         values ('${created.id}', '${fixture.variant}', 1.250, 12.50, 15.63)`,
+        `insert into public.sale_line (sale_document_id, variant_id, quantity, unit_price)
+         values ('${created.id}', '${fixture.variant}', 1.250, 12.50)`,
       )
 
       const edited = await attempt(
         client,
-        `update public.sale_document set notes = 'livraison jeudi', total = 15.63
+        // 1,250 × 12,50 = 15,625, arrondi à 15,63 par la colonne engendrée
+        // (RÈGLE M3-7). Le sous-total vient avec le total depuis E4-04 :
+        // `sale_document_total_consistent` les tient ensemble.
+        `update public.sale_document set notes = 'livraison jeudi', subtotal = 15.63, total = 15.63
          where id = '${created.id}'`,
       )
       expect(edited.ok, edited.ok ? '' : `${edited.code} ${edited.message}`).toBe(true)
@@ -570,7 +584,17 @@ describe('un brouillon', () => {
       const id = await draft()
       const refusals: Array<[string, string]> = [
         [`update public.sale_line set quantity = 0 where sale_document_id = '${id}'`, 'sale_line_quantity_positive'],
-        [`update public.sale_line set quantity = -1 where sale_document_id = '${id}'`, 'sale_line_quantity_positive'],
+        /*
+         * Le prix passe à 0 dans la même instruction, et ce n'est pas une
+         * commodité : `line_total` est engendrée depuis E4-04, donc une
+         * quantité négative rend aussi le total négatif, et
+         * `sale_line_amounts_not_negative` — première dans l'ordre des noms —
+         * refuserait à la place de celle qu'on mesure (CLAUDE.md, E2-01).
+         */
+        [
+          `update public.sale_line set quantity = -1, unit_price = 0 where sale_document_id = '${id}'`,
+          'sale_line_quantity_positive',
+        ],
         [`update public.sale_line set unit_price = -1 where sale_document_id = '${id}'`, 'sale_line_amounts_not_negative'],
         [`update public.sale_line set line_discount = -1 where sale_document_id = '${id}'`, 'sale_line_amounts_not_negative'],
         [`update public.sale_document set total = -1 where id = '${id}'`, 'sale_document_amounts_not_negative'],
@@ -675,8 +699,8 @@ describe('un document qui n\'est plus brouillon est figé', () => {
           const id = await documentIn(status)
 
           const refusals = [
-            `insert into public.sale_line (tenant_id, sale_document_id, variant_id, quantity, unit_price, line_total)
-             values ('${fixture.tenant}', '${id}', '${fixture.variant}', 1, 1, 1)`,
+            `insert into public.sale_line (tenant_id, sale_document_id, variant_id, quantity, unit_price)
+             values ('${fixture.tenant}', '${id}', '${fixture.variant}', 1, 1)`,
             `update public.sale_line set quantity = 9 where sale_document_id = '${id}'`,
             `delete from public.sale_line where sale_document_id = '${id}'`,
           ]
@@ -1310,14 +1334,14 @@ describe('le journal', () => {
         doc_type: 'delivery_note',
         doc_number: docNumber,
         status: 'confirmed',
-        total: '0.00',
+        total: '29.50',
         cancellation_reason: null,
       })
       expect(entry?.after).toEqual({
         doc_type: 'delivery_note',
         doc_number: docNumber,
         status: 'cancelled',
-        total: '0.00',
+        total: '29.50',
         cancellation_reason: 'marchandise refusée',
       })
     })
@@ -1351,11 +1375,12 @@ describe('le journal', () => {
          values ('delivery_note', '${fixture.warehouse}', '${fixture.device}') returning id`,
       )
       await client.query(
-        `insert into public.sale_line (sale_document_id, variant_id, quantity, unit_price, line_total)
-         values ('${created.id}', '${fixture.variant}', 1, 5, 5)`,
+        `insert into public.sale_line (sale_document_id, variant_id, quantity, unit_price)
+         values ('${created.id}', '${fixture.variant}', 1, 5)`,
       )
       await client.query(
-        `update public.sale_document set notes = 'ajout', total = 5 where id = '${created.id}'`,
+        `update public.sale_document set notes = 'ajout', subtotal = 5, total = 5
+         where id = '${created.id}'`,
       )
       await client.query(
         `update public.sale_document set status = 'confirmed', doc_number = '${nextNumber()}',
@@ -1499,8 +1524,8 @@ describe('clés composites', () => {
       )
       const foreign = await attempt(
         client,
-        `insert into public.sale_line (tenant_id, sale_document_id, variant_id, quantity, unit_price, line_total)
-         values ('${fixture.tenant}', '${neighbour.id}', '${fixture.variant}', 1, 1, 1)`,
+        `insert into public.sale_line (tenant_id, sale_document_id, variant_id, quantity, unit_price)
+         values ('${fixture.tenant}', '${neighbour.id}', '${fixture.variant}', 1, 1)`,
       )
       expect(foreign.ok, 'FUITE — une ligne sous le document du voisin').toBe(false)
       if (!foreign.ok) {
@@ -1515,8 +1540,8 @@ describe('clés composites', () => {
       const id = await draft()
       const foreign = await attempt(
         client,
-        `insert into public.sale_line (tenant_id, sale_document_id, variant_id, quantity, unit_price, line_total)
-         values ('${fixture.tenant}', '${id}', '${fixture.other.variant}', 1, 1, 1)`,
+        `insert into public.sale_line (tenant_id, sale_document_id, variant_id, quantity, unit_price)
+         values ('${fixture.tenant}', '${id}', '${fixture.other.variant}', 1, 1)`,
       )
       expect(foreign.ok, 'FUITE — une ligne sur la variante du voisin').toBe(false)
       if (!foreign.ok) {
@@ -1546,8 +1571,8 @@ describe('clés composites', () => {
 
       const foreign = await attempt(
         client,
-        `insert into public.sale_line (tenant_id, sale_document_id, variant_id, quantity, unit_price, line_total)
-         values ('${fixture.tenant}', '${id}', '${fixture.variant}', 1, 1, 1)`,
+        `insert into public.sale_line (tenant_id, sale_document_id, variant_id, quantity, unit_price)
+         values ('${fixture.tenant}', '${id}', '${fixture.variant}', 1, 1)`,
       )
       expect(foreign.ok).toBe(false)
       if (!foreign.ok) {

@@ -287,6 +287,13 @@ interface Column {
   fk_table: string | null
   /** Membre d'une clé étrangère composite d'une forme que le générateur ne sait pas remplir. */
   fk_unsupported: boolean
+  /**
+   * Son défaut est tiré de la session — une fonction de `merx` : le commerce du
+   * jeton (`merx.current_tenant_id()`), son dépôt
+   * (`merx.default_warehouse_id()`, E4-03), sa fiche utilisateur. Hors session,
+   * ce défaut vaut NULL : le peuplement doit remplir la colonne lui-même.
+   */
+  session_default: boolean
 }
 
 /*
@@ -328,10 +335,13 @@ const COLUMNS = `
               and k.contype = 'f'
               and a.attnum = any (k.conkey)
               and a.attname <> 'tenant_id'
-          ))                                     as fk_unsupported
+          ))                                     as fk_unsupported,
+         (coalesce(pg_get_expr(d.adbin, d.adrelid), '') ~ 'merx\\.')
+                                                 as session_default
   from pg_attribute a
   join pg_type t on t.oid = a.atttypid
   left join pg_type bt on bt.oid = nullif(t.typbasetype, 0)
+  left join pg_attrdef d on d.adrelid = a.attrelid and d.adnum = a.attnum
   left join pg_attribute ta
     on ta.attrelid = a.attrelid and ta.attname = 'tenant_id' and not ta.attisdropped
   left join lateral (
@@ -595,15 +605,23 @@ export async function seedTwoTenants(client: Client): Promise<Seeded> {
    * Colonnes à renseigner : obligatoires et sans valeur par défaut — plus
    * `tenant_id`, toujours.
    *
-   * Depuis E2-02, `tenant_id` a pour défaut `merx.current_tenant_id()`, le
-   * commerce du jeton. Le peuplement tourne en `postgres`, sans jeton : laissé
-   * au défaut, `tenant_id` vaudrait NULL et toute la base refuserait (`23502`,
-   * constaté en retirant cette exception). Le générateur dit donc lui-même de
-   * quel commerce il s'agit, comme tout chemin hors session doit le faire.
+   * **Plus les colonnes dont le défaut est tiré de la session.** Le peuplement
+   * tourne en `postgres`, sans jeton : un défaut qui appelle une fonction de
+   * `merx` rend alors NULL, et une colonne NOT NULL refuse la ligne en `23502`
+   * — un échec qui se lit comme une policy fautive. C'était le cas de
+   * `tenant_id` depuis E2-02 (`merx.current_tenant_id()`), et de
+   * `sale_document.warehouse_id` depuis E4-03 (`merx.default_warehouse_id()`).
+   * La règle est donc lue au catalogue plutôt qu'écrite table par table : le
+   * générateur dit lui-même de quel commerce et de quel dépôt il s'agit, comme
+   * tout chemin hors session doit le faire. Une colonne *nullable* à défaut de
+   * session — `created_by` — reste laissée vide : NULL y est une valeur
+   * admise, et la remplir attacherait le balayage à une table de plus.
    */
   const required = (table: string): Column[] =>
     (columns.get(table) ?? []).filter(
-      (c) => c.name === 'tenant_id' || (c.notnull && !c.hasdefault && !c.generated),
+      (c) =>
+        c.name === 'tenant_id' ||
+        (c.notnull && (c.session_default || (!c.hasdefault && !c.generated))),
     )
 
   const dependencies = new Map<string, Set<string>>(

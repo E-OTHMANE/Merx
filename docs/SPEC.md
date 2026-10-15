@@ -309,6 +309,8 @@ Les codes de Postgres déjà rendus en 4xx restent tels quels, mesurés eux auss
 
 **RÈGLE M1-4** — Si la quantité est à moins de 20 % du palier suivant, afficher « +2 → 12,00 DH ». Fonction produit, pas décoration.
 
+*Lecture du seuil, arbitrée en E4-04 :* les 20 % se mesurent **sur le palier visé** — l'écart doit valoir au plus 20 % de son `min_qty`. Un palier à 12 incite donc depuis 10 (écart 2, seuil 2,4) et pas depuis 8, les deux côtés de l'exemple ci-dessus. Un seuil assis sur la quantité demandée dériverait à chaque frappe du vendeur, alors que le palier est une propriété de la grille : un carton, une remise. Deux conditions de plus, pour que l'incitation reste une fonction produit : le palier visé a un prix — « prix non renseigné » n'incite à rien —, et ce prix est **meilleur** que celui de la ligne, sinon l'écran inviterait à payer davantage.
+
 **RÈGLE M1-5** — Deux sources de code-barres, les deux prises en charge :
 - **EAN fabricant** scanné et stocké dans `variant.barcode`. Voie principale en cosmétique : les produits de marque en portent un fiable.
 - **Code 128 émis par le système**, encodant `variant.sku`, pour tout ce qui arrive sans code.
@@ -417,9 +419,21 @@ La table est vide à la création du module : tant qu'aucun écran n'écrit un t
 - `status` : `draft | confirmed | delivered | cancelled`
 
 `sale_line`
-`id, tenant_id, sale_document_id, variant_id, quantity, unit_price, price_source, line_discount, line_total`
+`id, tenant_id, sale_document_id, variant_id, quantity, unit_price, price_source, overridden_price, line_discount, line_total`
 
 - `price_source` : `auto | manual`
+- `line_total` est une **colonne engendrée** : `round(quantity × unit_price, 2) − line_discount` — RÈGLE M3-7 ci-dessous. L'appareil ne l'envoie pas, et une valeur fournie est refusée (`428C9`). Arbitré en E4-04.
+- `overridden_price` : le prix que la grille donnait et que le vendeur a **remplacé**, nul quand la ligne n'est pas un forçage. C'est ce qui distingue les **deux sortes de `manual`**, que `price_source` seul confond :
+
+| État | `price_source` | `overridden_price` |
+|---|---|---|
+| le prix du palier (RÈGLE M1-2) | `auto` | NULL |
+| aucun prix n'existait, le vendeur a saisi | `manual` | NULL |
+| **forçage** d'un prix qui existait | `manual` | le prix remplacé |
+
+  `sale_line_override_shape` tient les trois états. Sans cette colonne, l'entrée `price_override` du journal (§ 9, RÈGLE M8-1) compterait chaque ligne sans prix pour un forçage, et n'aurait **aucun « avant »** à retenir — le prix remplacé n'est nulle part ailleurs sur la ligne. Arbitré en E4-04.
+
+  Elle est **posée par l'appareil, jamais recalculée à l'arrivée.** Le serveur pourrait résoudre `price_break` lui-même et contredire l'appareil ; il ne le fait pas. Une vente faite hors ligne dont la grille a changé depuis serait refusée à la synchronisation — un refus en 4xx, donc définitif, sur une écriture qui ne passera jamais : la file de l'appareil resterait bloquée dessus (§ 4, RÈGLE des refus en 4xx ; E9). Un document raconte la vente telle qu'elle a eu lieu ; la grille, elle, bouge. Limite assumée : par l'API, un employé peut taire son forçage en laissant la colonne nulle — il n'échappe pas au plancher, qui ne dépend d'aucune déclaration de l'appareil.
 
 `document_sequence`
 `id, tenant_id, device_id, doc_type, year, last_number`
@@ -465,6 +479,35 @@ La branche « appareil » n'est pas une politesse : la lettre est tout ce qui s�
 **RÈGLE M3-5** — Le stock est décrémenté à la confirmation du `delivery_note`, pas du devis ni de la commande.
 
 **RÈGLE M3-6** — L'écran de vente accepte trois entrées, aboutissant toutes à la même ligne : scan de code-barres, saisie de la référence, sélection sur grille photo. **Ne pas construire un écran scan-only** : la marchandise n'est pas toujours à portée de main.
+
+**RÈGLE M3-7** — **L'arrondi d'un total de ligne, et la cohérence des totaux.** Une quantité est un `numeric(12,3)`, un prix un `numeric(12,2)` : leur produit porte cinq décimales.
+
+```
+line_total = round(quantity × unit_price, 2) − line_discount
+subtotal   = Σ line_total
+total      = subtotal − discount_total
+```
+
+Arrondi **demi loin de zéro**, **au niveau de la ligne**. Tranché en E4-04 ; E4-01 s'en était abstenue, et n'avait donc posé aucune contrainte de cohérence.
+
+- **Demi loin de zéro** parce que c'est ce que fait `round(numeric, 2)` de Postgres. Toute autre convention — demi vers le pair, troncature — obligerait l'appareil à implémenter un arrondi que le SQL écrit naïvement ne fait pas, et le jour où les deux divergent, c'est d'un centime sur un papier déjà remis.
+- **Au niveau de la ligne**, et le document somme les totaux de ligne *arrondis* : c'est la ligne qui s'imprime et que le client relit. Trois lignes à 2,5 × 3,33 font 24,99, non 24,975.
+- **La règle n'a qu'un seul endroit où elle est écrite, et ce n'est pas l'appareil** : `line_total` est une colonne **engendrée**. Un `check` aurait laissé l'appareil affirmer le total et se serait contenté de le contredire ; une colonne engendrée ne lui laisse pas la parole, et l'accord sur le centime devient structurel au lieu d'être asserté. Le total que `src/modules/sales/amounts.ts` calcule ne sert qu'à **afficher**, et `supabase/tests/sale-price.test.ts` mesure à chaque passage que les deux tombent sur le même centime.
+- **La cohérence des totaux tient en trois pièces**, et la troisième n'est pas un `check` parce qu'aucun `check` ne traverse les lignes :
+
+| Garde | Ce qu'il tient | Code | Statut |
+|---|---|---|---|
+| `line_total` engendrée | le total d'une ligne, par construction — rien à refuser | — | — |
+| `sale_document_total_consistent` | `total = subtotal − discount_total`, à tout instant | `23514` | 400 |
+| `merx.require_consistent_totals()` | `subtotal = Σ line_total`, **à la confirmation seulement** | `23514` | 400 |
+
+  La somme n'est pas tenue en permanence : un brouillon s'écrit *avant* ses lignes (E4-03), et un garde permanent refuserait le brouillon lui-même. Le moment où elle doit être vraie est celui où le contenu se figeait déjà — la confirmation (RÈGLE M3-3). Après, plus une ligne ne s'écrit et plus un montant ne change : la propriété tient pour toujours, gardée une fois.
+
+**RÈGLE M3-8** — **Le plancher et la trace du forçage.** Un prix sous `variant.floor_price` exige `override_price_below_floor` (§ 3.1, l'astérisque) : `merx.require_floor_price()`, un trigger sur `sale_line`, refuse en `42501` rendu **403**, avec sa phrase — qui n'est pas celle de l'écran, pour qu'un test sache lequel des deux niveaux a refusé (E1-02).
+
+- Le garde **ne regarde pas `price_source`** : s'il ne valait que pour `manual`, un employé poserait `auto` par l'API et passerait dessous. Conséquence assumée : un palier réglé *sous* le plancher est invendable par l'employé — c'est une contradiction de la grille, et le refus est le bon côté de l'erreur.
+- **Tout forçage est tracé** sous l'étiquette `price_override` (§ 9, RÈGLE M8-1), par un trigger conditionné à `overridden_price is not null`.
+- **La trace est posée sur la ligne, à l'écriture du prix forcé — jamais à la confirmation du document, et cela ne se « corrige » pas.** `merx.log_audit()` prend l'auteur dans le jeton de **celui qui écrit** (E1-04). Journalisée à la transition `draft → confirmed`, l'entrée attribuerait le forçage à celui qui confirme — le patron qui valide, pas l'employé qui a baissé le prix. Le journal ne pose qu'une question, « qui », et il y répondrait faux. Posée sur la ligne, le garde du plancher et la trace voient de surcroît le même instant : un forçage refusé n'entre pas au journal, un forçage accepté y est, dans la même transaction. Et « pas à chaque frappe » est déjà tenu par E4-03 : rien n'est écrit pendant la saisie, les lignes partent en un seul appel à l'appui sur « Enregistrer le bon ».
 
 **Écrans.** Écran de vente (le plus critique de l'application), liste des documents, détail, retour, aperçu avant impression.
 

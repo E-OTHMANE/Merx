@@ -56,7 +56,7 @@ const tabBar = () => screen.queryByRole('navigation', { name: 'Navigation princi
 const backLinks = () => screen.queryAllByRole('link', { name: /^Retour : / })
 
 /** Les écrans de premier niveau : un onglet chacun, aucun retour. */
-const TOP_LEVEL: readonly string[] = ['/', '/products']
+const TOP_LEVEL: readonly string[] = ['/', '/sale', '/products']
 
 /** Les écrans de détail : leur retour, vers le parent désigné (BRAND-UI § 13). */
 const DETAIL: Readonly<Record<string, { visit: string; parent: string; label: string }>> = {
@@ -162,12 +162,21 @@ describe('la barre suit le rôle', () => {
       .getAllByRole('link')
       .map((link) => link.textContent)
 
-  it.each([['owner'], ['worker']])('offre Accueil et Produits à un %s', async (role) => {
-    renderAt('/', role)
+  /*
+   * E4-03 : Vente entre en position 2, avant Produits (BRAND-UI § 13). Les deux
+   * rôles ont `create_sale` comme ils ont `view_catalogue` (§ 3.1) ; c'est
+   * Rapports (`view_reports`, E10-01) qui sera le premier onglet refusé à un
+   * employé.
+   */
+  it.each([['owner'], ['worker']])(
+    'offre Accueil, Vente et Produits à un %s',
+    async (role) => {
+      renderAt('/', role)
 
-    await waitFor(() => expect(tabBar()).toBeInTheDocument())
-    expect(tabs()).toEqual(['Accueil', 'Produits'])
-  })
+      await waitFor(() => expect(tabBar()).toBeInTheDocument())
+      expect(tabs()).toEqual(['Accueil', 'Vente', 'Produits'])
+    },
+  )
 
   /*
    * Le garde de l'onglet, seul : on reste à l'Accueil, la route de `/products`

@@ -117,3 +117,35 @@ export function quantityText(stored: string): string {
   if (parseDecimal(text.replace(',', '.'), QUANTITY_SCALE) === 0n) return '0'
   return negative ? `-${text}` : text
 }
+
+/*
+ * L'espace insécable des milliers, et celui qui précède `DH` (BRAND-UI § 6).
+ * Insécable aux deux places : un montant ne se coupe pas en fin de ligne, et
+ * « 1 250,00 » lu sur deux lignes est un autre nombre.
+ */
+const NBSP = ' '
+
+/**
+ * Un montant tel qu'il s'affiche : `"1250.00"` → `"1 250,00 DH"`.
+ *
+ * BRAND-UI § 6 : séparateur de milliers en espace insécable, virgule décimale,
+ * `DH` après le montant, **deux décimales toujours** — un total qui perd ses
+ * centimes dans une colonne ne s'aligne plus. Le signe est traité (un total de
+ * ligne ne l'est jamais, un écart le sera) ; un zéro n'en porte pas.
+ *
+ * `Intl.NumberFormat` n'est pas employé : il prendrait un `number`, donc un
+ * flottant, sur une valeur qui est exacte en base (`@/lib/decimal`, premier
+ * paragraphe). Le groupement se fait sur les chiffres, en texte.
+ */
+export function moneyText(stored: string): string {
+  const trimmed = stored.trim()
+  const negative = trimmed.startsWith('-')
+  const value = parseDecimal(negative ? trimmed.slice(1) : trimmed, MONEY_SCALE)
+  if (value === null) return stored
+
+  const [whole = '0', fraction = ''] = toSqlDecimal(value, MONEY_SCALE).split('.')
+  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, NBSP)
+  const sign = negative && value !== 0n ? '-' : ''
+
+  return `${sign}${grouped},${fraction}${NBSP}DH`
+}
