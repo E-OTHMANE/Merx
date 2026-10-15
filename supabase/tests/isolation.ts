@@ -440,7 +440,7 @@ export async function auditedTables(client: Client): Promise<Set<string>> {
  *   ajout seul — UPDATE et DELETE sont refusés **par le privilège** (`42501`),
  *                donc sur la ligne du voisin comme sur la sienne ;
  *   dérivée    — le privilège est intact (le trigger d'agrégat en a besoin), et
- *                c'est un garde de ligne qui refuse (`55000`). Une ligne du
+ *                c'est un garde de ligne qui refuse (`PT422`). Une ligne du
  *                voisin n'étant pas visible, aucune ligne n'est touchée et
  *                aucun garde ne s'exécute : le balayage garde donc ses
  *                assertions de fuite, et n'inverse que le contrôle positif.
@@ -621,7 +621,7 @@ export async function seedTwoTenants(client: Client): Promise<Seeded> {
   /*
    * Une dépendance que `pg_constraint` ne porte pas. Depuis E3-02, insérer une
    * `variant` déclenche `open_stock_level`, qui ouvre sa ligne de `stock_level`
-   * sur le dépôt par défaut du commerce — et refuse en `55000` s'il n'y en a
+   * sur le dépôt par défaut du commerce — et refuse en `PT422` s'il n'y en a
    * pas. Aucune colonne de `variant` ne pointe sur `warehouse`, donc l'ordre
    * dérivé des clés étrangères peut poser la variante avant le dépôt, et c'est
    * ce qui s'est produit.
@@ -941,18 +941,31 @@ export async function attempt(
 export const INSUFFICIENT_PRIVILEGE = '42501'
 
 /**
- * Le code SQLSTATE du garde des tables dérivées — *object_not_in_prerequisite_
- * state*. Celui d'aucun autre refus du projet, pour qu'un test qui l'assert
- * mesure ce garde-là. RÈGLE M2-1, E3-01.
+ * Le code SQLSTATE du garde des tables dérivées. Celui d'aucun autre refus du
+ * projet, pour qu'un test qui l'assert mesure ce garde-là. RÈGLE M2-1, E3-01.
+ *
+ * `PT422` et non plus `55000` : la famille `PTxxx` de PostgREST porte son
+ * statut HTTP dans son nom, et `55000` sortait en `500` — un refus que
+ * PowerSync rejouerait sans fin (SPEC § 4, RÈGLE des refus en 4xx).
  */
-export const DERIVED_WRITE = '55000'
+export const DERIVED_WRITE = 'PT422'
 
 /**
- * Le code SQLSTATE des gardes des tables figées — *object_in_use*. Celui
- * d'aucun autre refus du projet, pour qu'un test qui l'assert mesure ces
- * gardes-là. RÈGLE M3-3, E4-01.
+ * Le code SQLSTATE des gardes des tables figées. Celui d'aucun autre refus du
+ * projet, pour qu'un test qui l'assert mesure ces gardes-là. RÈGLE M3-3, E4-01.
+ *
+ * `PT409` et non plus `55006`, pour la même raison : l'état de la ligne
+ * interdit l'écriture, et un conflit se dit en `409`.
  */
-export const FROZEN_WRITE = '55006'
+export const FROZEN_WRITE = 'PT409'
+
+/*
+ * Les codes qu'un garde peut lever vivent dans `refusalCodes.ts`, en une seule
+ * copie : `conventions.ts` en fait une règle, `refusal-status.test.ts` les
+ * mesure à travers PostgREST. Réexportés ici pour les fichiers qui prennent
+ * déjà tout leur outillage de refus à cette porte. SPEC § 4.
+ */
+export { REFUSAL_CODES_4XX } from './refusalCodes'
 
 /**
  * Exécute `body` triggers suspendus (`session_replication_role = replica`),

@@ -36,8 +36,9 @@ La story avait été écrite sur un Postgres 16 nu, avec des stubs `auth` et
 - [x] **Les tests PostgREST des documents** — `sale-document-api.test.ts`, 8
       tests : `PATCH` sur un document confirmé, annulation par l'API (patron,
       employé, voisin), `POST` direct d'un `sale_cancellation` (patron, employé).
-      Statuts réellement rendus : `42501 → 403`, `55006 → 500` — voir la note
-      d'E4-01 au BACKLOG, le statut est à trancher en E4-03.
+      Statuts réellement rendus, mesurés : `42501 → 403` et, après la
+      correction du 2026-10-15, `PT409 → 409` pour les gardes des tables
+      figées (voir SPEC § 4, RÈGLE des refus en 4xx).
 - [x] **Les 25 sabotages** rejoués un par un, fichiers concernés seulement :
       aucun n'est resté vert.
 - [x] **Rôle `postgres` non superutilisateur** — confirmé : sur ce stack

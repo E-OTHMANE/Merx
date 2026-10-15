@@ -9,7 +9,7 @@
  * place. Il ne peut pas éprouver l'API — PostgREST est un autre processus, qui
  * ne verrait rien d'une transaction ouverte ici, et c'est lui qui traduit un
  * SQLSTATE en code HTTP. Un garde juste en SQL peut sortir de l'API en `500`
- * muet, et l'écran n'aurait rien à dire à l'utilisateur.
+ * muet — et c'est arrivé : voir les statuts mesurés plus bas.
  *
  * Trois chemins, ceux que l'écran de vente empruntera (E4-03) :
  *
@@ -43,16 +43,14 @@ const PASSWORD = 'document-api-e4-01-password'
 /*
  * Les statuts HTTP réellement rendus, mesurés ici et non supposés.
  *
- * `42501` est dans la table de correspondance de PostgREST : il sort en `403`,
- * et l'écran sait quoi en dire. `55006` n'y est pas — aucun code de la classe
- * 55 ne l'est — et PostgREST le rend en **`500`**, avec la phrase du garde dans
- * le corps. Le refus est donc juste et lisible, mais son statut dit « le
- * serveur est en panne » à qui ne lit que lui. C'est une observation, pas une
- * décision : la changer, ce serait changer le SQLSTATE d'E4-01 ou traduire le
- * refus dans l'application (E4-03), et ni l'un ni l'autre n'est de cette story.
- * Fixé ici pour qu'un futur changement de l'un ou l'autre se voie.
+ * C'est ce fichier qui a montré le défaut : les gardes des tables figées
+ * levaient `55006`, qu'aucune table de correspondance de PostgREST ne connaît,
+ * et le refus sortait en **`500`**. Un 5xx dit « panne passagère » à PowerSync,
+ * qui rejoue alors sans fin une écriture qui ne passera jamais (SPEC § 4,
+ * RÈGLE des refus en 4xx). Les gardes lèvent désormais `PT409`, dont les trois
+ * chiffres *sont* le statut.
  */
-const FROZEN_HTTP = 500
+const FROZEN_HTTP = 409
 const DENIED_HTTP = 403
 
 /* Les phrases des gardes — chacune n'est dite que par le sien. */

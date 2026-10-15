@@ -220,6 +220,25 @@ Toute table de `public` doit être déclarée par `merx.apply_business_conventio
 
 Une clé étrangère ne passe pas par la RLS : Postgres vérifie l'existence de la cible sans policy. Sans `tenant_id` dans la clé, un commerce rattache ses lignes à celles d'un autre ; une cascade chez le voisin détruit alors ses données, et une clé sans cascade empêche le voisin de supprimer les siennes. Avec lui, la ligne visée appartient forcément au même commerce — c'est la contrainte, pas une vérification à ne pas oublier. `created_by` y est soumis comme les autres. Posée en E2-01 ; E3, E4, E6 et E8 en dépendent. `supabase/tests/conventions.test.ts` refuse toute clé qui y déroge, et le générateur de lignes de `supabase/tests/isolation.ts` sait remplir cette forme sans connaître la table.
 
+**RÈGLE — les refus sortent en 4xx.** Un garde lève un SQLSTATE dont PostgREST rend un statut **4xx**. Un 5xx est réservé à une vraie panne : base injoignable, bogue, service absent.
+
+La raison n'est pas l'élégance de l'API, c'est la file d'attente de l'appareil. En E9, PowerSync rejoue les écritures accumulées hors ligne et interprète la réponse : un 4xx est un refus définitif, qu'il abandonne et remonte à l'utilisateur ; un 5xx est une panne passagère, qu'il **réessaie sans fin**. Un refus légitime rendu en 5xx bloque donc la file entière du commerce sur une écriture qui ne passera jamais — et rien ne le signale, puisque chaque tentative ressemble à un réseau instable.
+
+Le statut n'est pas devinable depuis le code : il se **mesure** par un appel à travers PostgREST. Quatre gardes ont vécu plusieurs stories en `500` sans que personne le voie — `55006` (tables figées), `55000` (tables dérivées), `54000` (26 appareils), `P0002` (ligne introuvable) : aucun n'est dans la table de correspondance de PostgREST, qui rend `500` par défaut.
+
+La voie retenue est la famille `PTxxx` de PostgREST, faite pour cela : les trois chiffres du code *sont* le statut HTTP. Chaque garde garde donc son code propre — un garde, un code, une phrase, un test — sans détourner un code de Postgres de son sens :
+
+| Garde | Code | Statut |
+|---|---|---|
+| Table figée, l'état interdit l'écriture (M3-3) | `PT409` | 409 |
+| Table dérivée, c'est un agrégat (M2-1) | `PT422` | 422 |
+| Demande impossible à satisfaire (26 appareils) | `PT400` | 400 |
+| Ligne désignée introuvable | `PT404` | 404 |
+
+Les codes de Postgres déjà rendus en 4xx restent tels quels, mesurés eux aussi : `42501 → 403`, `23503 → 409`, `23505 → 409`, `23514`, `23502`, `22023`, `2F004`, `P0001 → 400`. `supabase/tests/conventions.ts` refuse tout garde qui lèverait un code hors de cette liste, qu'il lit dans `supabase/tests/refusalCodes.ts` — une seule copie.
+
+**La liste ne se recopie pas, elle se mesure.** La correspondance appartient à la version de PostgREST qu'épingle le CLI, et une liste constatée une fois puis recopiée est la recopie à la main que la RÈGLE des domaines nommés refuse. `supabase/tests/refusal-status.test.ts` lève donc, **à chaque passage de la suite**, chaque code admis à travers PostgREST et lit son statut ; puis il relève au catalogue les codes que les gardes lèvent *vraiment* et mesure ceux-là aussi — un garde neuf est couvert du seul fait d'exister, sans liste à tenir. Le jour où l'épingle du CLI monte et qu'un code change de statut, la suite rougit d'elle-même. Posée en E4-01.
+
 ---
 
 ## 5. Modules

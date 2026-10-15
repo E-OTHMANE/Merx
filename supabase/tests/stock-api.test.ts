@@ -26,6 +26,7 @@
 import { Client, type QueryResultRow } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
+import { DERIVED_WRITE } from './isolation'
 import { createAuthUser, deleteAuthUser, rest, sessionFor } from './rest'
 
 const CONNECTION_STRING =
@@ -399,5 +400,40 @@ describe('list_stock_movements, à travers l’API', () => {
     const theirs = await history(shops.b.counted, tokens.neighbour)
     expect(theirs.ok, theirs.body).toBe(true)
     expect(theirs.rows).toHaveLength(2)
+  })
+})
+
+/* ========================================================================== */
+/* 4. Le garde de l'agrégat, vu de l'API                                       */
+/* ========================================================================== */
+
+/*
+ * SPEC § 4, RÈGLE des refus en 4xx. `stock_level` est un agrégat (RÈGLE M2-1)
+ * et son garde refuse toute écriture directe ; ce refus-là est éprouvé en SQL
+ * par `stock-movements.test.ts`. Ce qui se mesure ici est son **statut HTTP** :
+ * le garde levait `55000`, que PostgREST rend en `500`, et PowerSync rejoue un
+ * 5xx sans fin (E9) — la file de l'appareil resterait bloquée sur un refus
+ * définitif. Le code est désormais `PT422`, dont les trois chiffres sont le
+ * statut.
+ */
+describe('une écriture directe dans l’agrégat, à travers l’API', () => {
+  it('est refusée en 4xx, par le garde de la table dérivée', async () => {
+    /*
+     * Un `PATCH`, et non un `POST` : chaque variante a déjà sa ligne d'agrégat
+     * depuis E3-02, et une insertion serait refusée par l'unicité — `23505`,
+     * rendu en `409` — avant que le garde ait à se prononcer. Le test aurait
+     * alors mesuré l'index au lieu du garde (CLAUDE.md, famille E2-01).
+     */
+    const result = await rest(`stock_level?variant_id=eq.${shops.a.counted}`, {
+      token: tokens.worker,
+      method: 'PATCH',
+      body: { quantity: '999' },
+    })
+
+    expect(result.ok, result.body).toBe(false)
+    expect(result.status, result.body).toBeLessThan(500)
+    expect(result.status, result.body).toBe(422)
+    expect(result.code, result.body).toBe(DERIVED_WRITE)
+    expect(result.body).toContain('agr')
   })
 })

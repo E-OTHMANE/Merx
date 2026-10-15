@@ -8,6 +8,8 @@
 
 import type { Client } from 'pg'
 
+import { postgresCodesSqlArray } from './refusalCodes'
+
 /** Une infraction : la table fautive, et de quoi la corriger. */
 export interface Violation {
   table_name: string
@@ -1186,6 +1188,43 @@ const CANCELLATION_DIRECT_WRITE = `
   order by 1
 `
 
+/*
+ * SPEC § 4, RÈGLE des refus en 4xx — un refus est une réponse 4xx.
+ *
+ * PostgREST traduit le SQLSTATE d'un `raise` en statut HTTP, et ce qu'il ne
+ * connaît pas devient un `500`. Or un 5xx n'est pas qu'un affichage : en E9,
+ * PowerSync rejoue les écritures en attente et lit un 5xx comme une panne
+ * passagère — il réessaie sans fin, et la file de l'appareil reste bloquée sur
+ * un refus qui ne changera jamais d'avis. C'est arrivé à quatre gardes, dont
+ * ceux des tables figées (`55006`, rendu en `500`).
+ *
+ * La liste admise est **mesurée**, pas dérivée d'une doc : chaque code a été
+ * appelé à travers PostgREST et son statut lu. La famille `PTxxx` est admise
+ * en bloc dès que les trois chiffres sont un 4xx, puisque PostgREST les lit
+ * comme le statut lui-même.
+ *
+ * Le balayage lit le corps des fonctions de `public` et de `merx` et en
+ * extrait chaque `using errcode = '…'`. Grossier, comme les autres règles de
+ * cette famille, et au bon endroit : la faute est attrapée dans la story qui
+ * l'écrit.
+ */
+const REFUSAL_STATUS = `
+  with raised as (
+    select format('%s.%s', n.nspname, p.proname) as qualified,
+           (regexp_matches(p.prosrc, 'errcode = ''([A-Za-z0-9]+)''', 'g'))[1] as code
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname in ('public', 'merx')
+  )
+  select distinct r.qualified as table_name,
+         format('lève le SQLSTATE %s, que PostgREST rend en 5xx — un refus est une '
+                'réponse 4xx (SPEC § 4) : PowerSync rejouerait sans fin', r.code) as detail
+  from raised r
+  where r.code <> all (${postgresCodesSqlArray()})
+    and r.code !~ '^PT4[0-9][0-9]$'
+  order by 1
+`
+
 export const RULES = {
   'table non enregistrée': UNREGISTERED,
   'registre périmé': STALE_REGISTRY,
@@ -1207,6 +1246,7 @@ export const RULES = {
   'aucun autre écrivain d\'une table dérivée': DERIVED_DIRECT_WRITE,
   'aucune écriture directe dans audit_log': AUDIT_DIRECT_WRITE,
   "aucun autre écrivain d'un mouvement d'annulation": CANCELLATION_DIRECT_WRITE,
+  'aucun refus rendu en 5xx': REFUSAL_STATUS,
   'clés étrangères composites sur tenant_id': TENANT_SCOPED_FOREIGN_KEYS,
   'aucune référence à product hors de variant': PRODUCT_REFERENCES,
   'tenant_id par défaut du jeton': TENANT_DEFAULT,

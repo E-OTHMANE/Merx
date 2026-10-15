@@ -26,7 +26,7 @@
  *
  * Les gardes de la table figée sont éprouvés en `postgres` : ils ne dépendent
  * ni d'un privilège ni d'une policy, et un refus qui viendrait d'un de ces deux
- * étages se lirait au code (`42501`, et non `55006`). Un seul cas passe par
+ * étages se lirait au code (`42501`, et non `PT409`). Un seul cas passe par
  * `authenticated`, pour montrer que l'API les rencontre.
  *
  * Tout est posé dans une transaction annulée en fin de fichier. Les deux

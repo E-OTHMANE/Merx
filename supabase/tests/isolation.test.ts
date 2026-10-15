@@ -337,7 +337,7 @@ describe('les quatre opérations, à travers la frontière', () => {
      * d'agrégat en a besoin — donc une ligne du voisin, qui n'est pas visible,
      * ne fait tomber aucun garde. Les assertions de fuite sont donc les mêmes
      * que sur une table ordinaire, et seule l'écriture chez soi diffère : elle
-     * est refusée, en `55000`, par le garde de ligne.
+     * est refusée, en `PT422`, par le garde de ligne.
      */
     const derived = DERIVED.has(table)
 

@@ -423,7 +423,7 @@ describe("l'unicité du préfixe", () => {
 
   /* Vingt-six appareils n'arrivera pas. Si cela arrive, un refus lisible vaut
    * mieux qu'une lettre recyclée — et le code est distinct de tous les autres. */
-  it('refuse le 27ᵉ appareil en 54000, sans rien créer', async () => {
+  it('refuse le 27ᵉ appareil en PT400, sans rien créer', async () => {
     const { tenant, owner } = await seedTenant()
 
     await db.query(
@@ -435,7 +435,13 @@ describe("l'unicité du préfixe", () => {
 
     const outcome = await register(owner.token, crypto.randomUUID())
 
-    expect(outcome.code).toBe('54000')
+    expect(outcome.code).toBe('PT400')
+    /*
+     * Le statut, et pas seulement le code : un refus rendu en 5xx serait
+     * rejoué sans fin par PowerSync (SPEC § 4, RÈGLE des refus en 4xx). C'est
+     * ici qu'on le mesure, à travers PostgREST.
+     */
+    expect(outcome.status).toBe(400)
     expect(outcome.message).toContain('26 appareils')
     expect(await devicesOf(tenant)).toHaveLength(26)
   })
@@ -479,7 +485,7 @@ describe('register_device() refuse', () => {
    * à vous » — confirmer l'existence d'une ligne qu'on n'a pas le droit de voir
    * est déjà une fuite (même formulation qu'en E1-02).
    */
-  it('l’appareil d’un autre commerce, en P0002 et sans l’adopter', async () => {
+  it('l’appareil d’un autre commerce, en PT404 et sans l’adopter', async () => {
     const one = await seedTenant()
     const two = await seedTenant()
 
@@ -488,7 +494,8 @@ describe('register_device() refuse', () => {
 
     const outcome = await register(two.owner.token, key)
 
-    expect(outcome.code).toBe('P0002')
+    expect(outcome.code).toBe('PT404')
+    expect(outcome.status).toBe(404)
     expect(outcome.message).toContain('introuvable')
 
     // L'appareil n'a pas changé de commerce, et le second n'en a aucun.

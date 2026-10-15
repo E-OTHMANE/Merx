@@ -381,7 +381,7 @@ describe('merx.seed_tenant_settings()', () => {
         "select merx.seed_tenant_settings('00000000-0000-0000-0000-000000000000'::uuid)",
       )
       expect(attempted.ok).toBe(false)
-      if (!attempted.ok) expect(attempted.code).toBe('P0002')
+      if (!attempted.ok) expect(attempted.code).toBe('PT404')
     } finally {
       await client.query('rollback')
     }

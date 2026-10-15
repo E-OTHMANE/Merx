@@ -474,6 +474,34 @@ describe('les règles attrapent une table fautive', () => {
   })
 
   /*
+   * SPEC § 4, RÈGLE des refus en 4xx. Un garde qui lève un code inconnu de
+   * PostgREST sort en `500`, et PowerSync rejouerait l'écriture sans fin (E9).
+   * La fonction témoin lève `55000` — le code que les tables dérivées
+   * levaient avant la correction, et dont le `500` a été mesuré.
+   *
+   * Le contrôle positif est l'état réel du schéma : plus aucun garde du projet
+   * n'est signalé.
+   */
+  it("signale un garde qui lève un SQLSTATE rendu en 5xx", async () => {
+    const rule: RuleName = 'aucun refus rendu en 5xx'
+    expect(describeViolations(await violations(client, rule))).toBe('')
+
+    await client.query('begin')
+    await client.query(`
+      create function merx.rogue_5xx_guard()
+      returns void language plpgsql as $probe$
+      begin
+        raise exception 'refus qui se fera rejouer sans fin' using errcode = '55000';
+      end;
+      $probe$;
+    `)
+
+    const found = await violations(client, rule)
+    expect(describeViolations(found)).toContain('merx.rogue_5xx_guard')
+    expect(describeViolations(found)).toContain('55000')
+  })
+
+  /*
    * E2-02, SPEC § 2.6. Une table de formulaire conforme, puis chacune des trois
    * façons de rendre obligatoire autre chose que le nom — chacune doit être
    * nommée, et une colonne NOT NULL pourvue d'un vrai défaut ne doit pas

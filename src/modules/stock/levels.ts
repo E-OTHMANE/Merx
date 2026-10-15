@@ -7,7 +7,7 @@
  * SPEC § 2.1 refuse.
  *
  * Rien n'écrit dans `stock_level` — rien ne peut : la table est un agrégat
- * maintenu par trigger, et toute écriture directe est refusée en `55000`
+ * maintenu par trigger, et toute écriture directe est refusée en `PT422`
  * (RÈGLE M2-1). Ce fichier n'a donc que des lectures, et ce n'est pas une
  * omission.
  *
