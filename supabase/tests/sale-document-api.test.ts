@@ -1,0 +1,474 @@
+// @vitest-environment node
+
+/*
+ * E4-01 — le modèle document vu de PostgREST.
+ *
+ * `sale-document.test.ts` éprouve les gardes en SQL, dans une transaction
+ * annulée, et presque toujours en `postgres` : c'est là que se mesure ce que la
+ * base refuse, sans qu'un privilège ou une policy ne vienne répondre à sa
+ * place. Il ne peut pas éprouver l'API — PostgREST est un autre processus, qui
+ * ne verrait rien d'une transaction ouverte ici, et c'est lui qui traduit un
+ * SQLSTATE en code HTTP. Un garde juste en SQL peut sortir de l'API en `500`
+ * muet, et l'écran n'aurait rien à dire à l'utilisateur.
+ *
+ * Trois chemins, ceux que l'écran de vente empruntera (E4-03) :
+ *
+ *   1. un `PATCH` sur un document confirmé — le contenu est figé (RÈGLE M3-3) ;
+ *   2. l'annulation par l'API — admise au patron, refusée à l'employé, et les
+ *      mouvements inverses écrits sous la policy de leur type ;
+ *   3. un `POST` direct d'un mouvement `sale_cancellation` — jamais à la main.
+ *
+ * Chaque refus est lu sur ce qui sort réellement : le code rendu par PostgREST
+ * et la phrase du garde. Et chacun a son contrôle positif : un refus qui
+ * viendrait de l'isolation, d'un privilège manquant ou d'une requête mal formée
+ * passerait tous les tests de refus sans qu'aucun garde existe.
+ *
+ * Les lignes sont **validées**, pas posées dans une transaction : voir plus
+ * haut. Le démontage est donc explicite, dans l'ordre inverse des dépendances.
+ *
+ * Exige le stack local : npx supabase start && npx supabase db reset
+ */
+
+import { Client, type QueryResultRow } from 'pg'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+
+import { FROZEN_WRITE, INSUFFICIENT_PRIVILEGE, withoutTriggers } from './isolation'
+import { createAuthUser, deleteAuthUser, rest, sessionFor } from './rest'
+
+const CONNECTION_STRING =
+  process.env.SUPABASE_DB_URL ?? 'postgresql://postgres:postgres@127.0.0.1:54522/postgres'
+
+const PASSWORD = 'document-api-e4-01-password'
+
+/*
+ * Les statuts HTTP réellement rendus, mesurés ici et non supposés.
+ *
+ * `42501` est dans la table de correspondance de PostgREST : il sort en `403`,
+ * et l'écran sait quoi en dire. `55006` n'y est pas — aucun code de la classe
+ * 55 ne l'est — et PostgREST le rend en **`500`**, avec la phrase du garde dans
+ * le corps. Le refus est donc juste et lisible, mais son statut dit « le
+ * serveur est en panne » à qui ne lit que lui. C'est une observation, pas une
+ * décision : la changer, ce serait changer le SQLSTATE d'E4-01 ou traduire le
+ * refus dans l'application (E4-03), et ni l'un ni l'autre n'est de cette story.
+ * Fixé ici pour qu'un futur changement de l'un ou l'autre se voie.
+ */
+const FROZEN_HTTP = 500
+const DENIED_HTTP = 403
+
+/* Les phrases des gardes — chacune n'est dite que par le sien. */
+const CONTENT_FROZEN = 'ne se modifie plus'
+const NOT_DELETABLE = 'ne se supprime pas'
+const NO_CANCEL_RIGHT = 'Annuler un document exige la capacité cancel_document'
+const NOT_BY_HAND = "ne s'écrit pas à la main"
+/*
+ * Dans le corps JSON de PostgREST, les guillemets de la phrase de Postgres sont
+ * échappés : la chaîne attendue les porte échappés aussi. Et elle nomme la
+ * table — un refus de policy sur une *autre* table répondrait le même `42501`
+ * avec la même tournure (CLAUDE.md, E2-03).
+ */
+const RLS_REFUSAL =
+  'row-level security policy \\"column_capability_insert\\" for table \\"stock_movement\\"'
+
+const emails = {
+  owner: `patron.docapi.${Date.now()}@merx.test`,
+  worker: `employe.docapi.${Date.now()}@merx.test`,
+  neighbour: `voisin.docapi.${Date.now()}@merx.test`,
+}
+
+type Role = 'owner' | 'worker' | 'neighbour'
+const ROLES = ['owner', 'worker', 'neighbour'] as const
+
+let client: Client
+
+const authUsers: Record<Role, string> = { owner: '', worker: '', neighbour: '' }
+const tokens: Record<Role, string> = { owner: '', worker: '', neighbour: '' }
+
+const fixture = {
+  tenant: '',
+  warehouse: '',
+  device: '',
+  variant: '',
+  ownerAppUser: '',
+  /** Le commerce voisin, pour le contrôle d'isolation. */
+  other: { tenant: '', warehouse: '', device: '', variant: '' },
+}
+
+async function one<T extends QueryResultRow>(sql: string, values: unknown[] = []): Promise<T> {
+  const { rows } = await client.query<T>(sql, values)
+  if (rows[0] === undefined) throw new Error(`aucune ligne rendue : ${sql}`)
+  return rows[0]
+}
+
+async function tenantWithVariant(
+  name: string,
+): Promise<{ tenant: string; warehouse: string; device: string; variant: string }> {
+  const tenant = (
+    await one<{ id: string }>(
+      'insert into public.tenant (tenant_id, business_name) values (gen_random_uuid(), $1) returning id',
+      [name],
+    )
+  ).id
+  // Le dépôt naît avec le commerce (trigger `open_default_warehouse`, E3-02).
+  const warehouse = (
+    await one<{ id: string }>('select id from public.warehouse where tenant_id = $1 and is_default', [
+      tenant,
+    ])
+  ).id
+  const device = (
+    await one<{ id: string }>(
+      "insert into public.device (tenant_id, label, prefix) values ($1, 'Comptoir', 'A') returning id",
+      [tenant],
+    )
+  ).id
+  const product = await one<{ id: string }>(
+    "insert into public.product (tenant_id, name_fr) values ($1, 'Crème') returning id",
+    [tenant],
+  )
+  // La variante par défaut porte l'identifiant de son produit depuis E2-01.
+  const variant = (
+    await one<{ id: string }>(
+      'select id from public.variant where tenant_id = $1 and product_id = $2 and is_default',
+      [tenant, product.id],
+    )
+  ).id
+  return { tenant, warehouse, device, variant }
+}
+
+/* -------------------------------------------------------------------------- */
+/* Outillage                                                                   */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Un brouillon d'une ligne, posé en `postgres`. L'écran le créera lui-même
+ * (E4-03) ; ici c'est un préparatif, et un préparatif ne mesure rien.
+ */
+async function draft(): Promise<string> {
+  const doc = await one<{ id: string }>(
+    'insert into public.sale_document (tenant_id, doc_type, warehouse_id, device_id, created_by)' +
+      " values ($1, 'delivery_note', $2, $3, $4) returning id",
+    [fixture.tenant, fixture.warehouse, fixture.device, fixture.ownerAppUser],
+  )
+  await client.query(
+    'insert into public.sale_line (tenant_id, sale_document_id, variant_id, quantity,' +
+      ' unit_price, line_total, created_by)' +
+      " values ($1, $2, $3, '3', '10.00', '30.00', $4)",
+    [fixture.tenant, doc.id, fixture.variant, fixture.ownerAppUser],
+  )
+  return doc.id
+}
+
+/**
+ * Un document confirmé, et le mouvement `sale` qu'il a écrit. Le type `sale`
+ * est fermé jusqu'à E4-05 (RÈGLE M2-5) : le garde du fermé par défaut est
+ * suspendu nommément le temps de l'insertion — hors transaction, un
+ * `session_replication_role` emporterait aussi les clés étrangères (CLAUDE.md).
+ */
+async function confirmedWithSale(quantity = '-3'): Promise<string> {
+  const id = await draft()
+  await client.query("update public.sale_document set status = 'confirmed' where id = $1", [id])
+
+  await client.query('alter table public.stock_movement disable trigger require_open_movement_type')
+  try {
+    await client.query(
+      'insert into public.stock_movement (tenant_id, variant_id, warehouse_id, movement_type,' +
+        ' quantity, source_type, source_id, created_by)' +
+        " values ($1, $2, $3, 'sale', $4, 'sale_document', $5, $6)",
+      [fixture.tenant, fixture.variant, fixture.warehouse, quantity, id, fixture.ownerAppUser],
+    )
+  } finally {
+    await client.query('alter table public.stock_movement enable trigger require_open_movement_type')
+  }
+  return id
+}
+
+async function statusOf(document: string): Promise<string> {
+  return (
+    await one<{ status: string }>('select status from public.sale_document where id = $1', [document])
+  ).status
+}
+
+async function movementsOf(
+  document: string,
+): Promise<Array<{ movement_type: string; quantity: string; note: string | null }>> {
+  const { rows } = await client.query<{
+    movement_type: string
+    quantity: string
+    note: string | null
+  }>(
+    'select movement_type::text as movement_type, quantity::text as quantity, note' +
+      ' from public.stock_movement where source_id = $1 order by movement_type',
+    [document],
+  )
+  return rows
+}
+
+async function cancellationCount(): Promise<string> {
+  return (
+    await one<{ count: string }>(
+      'select count(*)::text as count from public.stock_movement where tenant_id = $1' +
+        " and movement_type = 'sale_cancellation'",
+      [fixture.tenant],
+    )
+  ).count
+}
+
+/* -------------------------------------------------------------------------- */
+/* Préparatifs                                                                 */
+/* -------------------------------------------------------------------------- */
+
+beforeAll(async () => {
+  client = new Client({ connectionString: CONNECTION_STRING })
+  try {
+    await client.connect()
+  } catch (cause) {
+    throw new Error(
+      `Base locale injoignable sur ${CONNECTION_STRING}.\n` +
+        'Démarrer le stack : npx supabase start && npx supabase db reset',
+      { cause },
+    )
+  }
+
+  for (const role of ROLES) {
+    authUsers[role] = await createAuthUser(emails[role], PASSWORD)
+  }
+
+  const main = await tenantWithVariant('Documents API E4-01')
+  fixture.tenant = main.tenant
+  fixture.warehouse = main.warehouse
+  fixture.device = main.device
+  fixture.variant = main.variant
+  fixture.other = await tenantWithVariant('Voisin API E4-01')
+
+  fixture.ownerAppUser = (
+    await one<{ id: string }>(
+      'insert into public.app_user (tenant_id, auth_user_id, full_name, role)' +
+        " values ($1, $2, 'Patron', 'owner') returning id",
+      [fixture.tenant, authUsers.owner],
+    )
+  ).id
+  await client.query(
+    'insert into public.app_user (tenant_id, auth_user_id, full_name, role)' +
+      " values ($1, $2, 'Employé', 'worker')",
+    [fixture.tenant, authUsers.worker],
+  )
+  // Le voisin est **patron** chez lui : il a `cancel_document`, et c'est donc
+  // bien l'isolation que son cas mesure, pas un droit manquant.
+  await client.query(
+    'insert into public.app_user (tenant_id, auth_user_id, full_name, role)' +
+      " values ($1, $2, 'Patron du voisin', 'owner')",
+    [fixture.other.tenant, authUsers.neighbour],
+  )
+
+  for (const role of ROLES) {
+    tokens[role] = (await sessionFor(emails[role], PASSWORD)).accessToken
+  }
+}, 60_000)
+
+afterAll(async () => {
+  if (client !== undefined) {
+    await client.query('reset role')
+    for (const tenant of [fixture.tenant, fixture.other.tenant]) {
+      if (tenant === '') continue
+      /*
+       * Les lignes avant les documents : les gardes sont levés pour ranger, et
+       * `session_replication_role = replica` suspend aussi les clés étrangères
+       * — donc la cascade de `sale_line` ne partirait pas (CLAUDE.md).
+       */
+      await withoutTriggers(client, async () => {
+        await client.query('delete from public.audit_log where tenant_id = $1', [tenant])
+        await client.query('delete from public.stock_movement where tenant_id = $1', [tenant])
+        await client.query('delete from public.stock_level where tenant_id = $1', [tenant])
+        await client.query('delete from public.sale_line where tenant_id = $1', [tenant])
+        await client.query('delete from public.sale_document where tenant_id = $1', [tenant])
+      })
+      await client.query('delete from public.product where tenant_id = $1', [tenant])
+      await client.query('delete from public.app_user where tenant_id = $1', [tenant])
+      await client.query('delete from public.device where tenant_id = $1', [tenant])
+      // Le dépôt avant le commerce : `warehouse_tenant_id_fkey` ne cascade pas.
+      await client.query('delete from public.warehouse where tenant_id = $1', [tenant])
+      await client.query('delete from public.tenant where id = $1', [tenant])
+    }
+  }
+  for (const role of ROLES) {
+    if (authUsers[role] !== '') await deleteAuthUser(authUsers[role])
+  }
+  await client?.end()
+}, 60_000)
+
+/* ========================================================================== */
+/* 1. Le contenu d'un document confirmé, par l'API                             */
+/* ========================================================================== */
+
+describe('un PATCH sur un document confirmé', () => {
+  it('est refusé, et la phrase du garde sort de l’API', async () => {
+    const id = await confirmedWithSale()
+
+    const result = await rest(`sale_document?id=eq.${id}`, {
+      token: tokens.owner,
+      method: 'PATCH',
+      body: { notes: 'remise accordée après coup' },
+    })
+
+    expect(result.ok, result.body).toBe(false)
+    expect(result.status, result.body).toBe(FROZEN_HTTP)
+    expect(result.code, result.body).toBe(FROZEN_WRITE)
+    expect(result.body).toContain(CONTENT_FROZEN)
+    // Et rien n'a bougé : un refus qui laisse la ligne changée n'est pas un refus.
+    const row = await one<{ notes: string | null }>(
+      'select notes from public.sale_document where id = $1',
+      [id],
+    )
+    expect(row.notes).toBeNull()
+  })
+
+  it('tandis qu’un brouillon se modifie bien, lui, par le même chemin', async () => {
+    const id = await draft()
+
+    const result = await rest(`sale_document?id=eq.${id}`, {
+      token: tokens.owner,
+      method: 'PATCH',
+      body: { notes: 'à livrer lundi' },
+    })
+
+    /*
+     * Sans ce contrôle, le cas précédent serait satisfait par un `PATCH` que
+     * PostgREST refuse pour une raison étrangère au garde — un privilège
+     * manquant, une policy, un corps mal formé.
+     */
+    expect(result.ok, result.body).toBe(true)
+    expect((result.rows[0] as unknown as { notes: string }).notes).toBe('à livrer lundi')
+  })
+
+  it('et un DELETE sur un document confirmé est refusé aussi', async () => {
+    const id = await confirmedWithSale()
+
+    const result = await rest(`sale_document?id=eq.${id}`, {
+      token: tokens.owner,
+      method: 'DELETE',
+    })
+
+    expect(result.ok, result.body).toBe(false)
+    expect(result.status, result.body).toBe(FROZEN_HTTP)
+    expect(result.code, result.body).toBe(FROZEN_WRITE)
+    expect(result.body).toContain(NOT_DELETABLE)
+    expect(await statusOf(id)).toBe('confirmed')
+  })
+})
+
+/* ========================================================================== */
+/* 2. L'annulation par l'API                                                   */
+/* ========================================================================== */
+
+describe('l’annulation par l’API', () => {
+  it('passe pour le patron, et écrit le mouvement inverse', async () => {
+    const id = await confirmedWithSale('-3')
+
+    const result = await rest(`sale_document?id=eq.${id}`, {
+      token: tokens.owner,
+      method: 'PATCH',
+      body: { status: 'cancelled', cancellation_reason: 'erreur de saisie' },
+    })
+
+    expect(result.ok, result.body).toBe(true)
+    expect((result.rows[0] as unknown as { status: string }).status).toBe('cancelled')
+
+    // L'inverse de ce qui a bougé, pas un recalcul depuis les lignes.
+    const movements = await movementsOf(id)
+    expect(movements.map((m) => m.movement_type)).toEqual(['sale', 'sale_cancellation'])
+    const reversal = movements.find((m) => m.movement_type === 'sale_cancellation')!
+    expect(reversal.quantity).toBe('3.000')
+    expect(reversal.note).toContain('erreur de saisie')
+
+    // Et la trace, qui est le seul souvenir du motif une fois l'écran fermé.
+    const { rows: entries } = await client.query<{ action: string }>(
+      'select action::text as action from public.audit_log where tenant_id = $1 and entity_id = $2',
+      [fixture.tenant, id],
+    )
+    expect(entries.map((e) => e.action)).toEqual(['document_cancellation'])
+  })
+
+  it('est refusée à l’employé, avec la phrase du droit d’annuler', async () => {
+    const id = await confirmedWithSale()
+
+    const result = await rest(`sale_document?id=eq.${id}`, {
+      token: tokens.worker,
+      method: 'PATCH',
+      body: { status: 'cancelled', cancellation_reason: 'je range' },
+    })
+
+    expect(result.ok, result.body).toBe(false)
+    expect(result.status, result.body).toBe(DENIED_HTTP)
+    expect(result.code, result.body).toBe(INSUFFICIENT_PRIVILEGE)
+    expect(result.body).toContain(NO_CANCEL_RIGHT)
+    // Ni le statut, ni un mouvement derrière lui.
+    expect(await statusOf(id)).toBe('confirmed')
+    expect((await movementsOf(id)).map((m) => m.movement_type)).toEqual(['sale'])
+  })
+
+  it('ne traverse pas la frontière du commerce', async () => {
+    const id = await confirmedWithSale()
+
+    const result = await rest(`sale_document?id=eq.${id}`, {
+      token: tokens.neighbour,
+      method: 'PATCH',
+      body: { status: 'cancelled', cancellation_reason: 'chez le voisin' },
+    })
+
+    /*
+     * Le voisin est patron : il a `cancel_document`. C'est l'isolation qui
+     * l'arrête, et PostgREST ne refuse pas — il ne voit simplement aucune ligne
+     * à modifier. D'où l'assertion sur l'effet, et non sur un code.
+     */
+    expect(result.ok, result.body).toBe(true)
+    expect(result.rows, 'FUITE — le document du voisin est modifiable').toHaveLength(0)
+    expect(await statusOf(id)).toBe('confirmed')
+  })
+})
+
+/* ========================================================================== */
+/* 3. Un mouvement d'annulation posté à la main                                */
+/* ========================================================================== */
+
+describe('un POST direct de sale_cancellation', () => {
+  const post = (token: string) =>
+    rest('stock_movement', {
+      token,
+      method: 'POST',
+      body: {
+        variant_id: fixture.variant,
+        warehouse_id: fixture.warehouse,
+        movement_type: 'sale_cancellation',
+        quantity: '1000',
+      },
+    })
+
+  it('est refusé au patron par le garde d’origine, et rien n’est écrit', async () => {
+    const before = await cancellationCount()
+
+    const result = await post(tokens.owner)
+
+    expect(result.ok, result.body).toBe(false)
+    expect(result.status, result.body).toBe(DENIED_HTTP)
+    expect(result.code, result.body).toBe(INSUFFICIENT_PRIVILEGE)
+    expect(result.body).toContain(NOT_BY_HAND)
+    expect(await cancellationCount()).toBe(before)
+  })
+
+  it('est refusé à l’employé par la policy, qui se nomme', async () => {
+    const before = await cancellationCount()
+
+    const result = await post(tokens.worker)
+
+    expect(result.ok, result.body).toBe(false)
+    expect(result.status, result.body).toBe(DENIED_HTTP)
+    expect(result.code, result.body).toBe(INSUFFICIENT_PRIVILEGE)
+    /*
+     * Deux refus, deux phrases : l'employé n'arrive jamais jusqu'au garde
+     * d'origine, la policy du type le précède. Sans cette distinction, retirer
+     * l'un laisserait le test de l'autre vert (CLAUDE.md, E1-02).
+     */
+    expect(result.body).toContain(RLS_REFUSAL)
+    expect(result.body).not.toContain(NOT_BY_HAND)
+    expect(await cancellationCount()).toBe(before)
+  })
+})

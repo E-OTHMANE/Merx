@@ -9,38 +9,37 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
 
 ### Depuis E4-01
 
-- [ ] **Les 26 tests rouges de `tenant-creation` et `user-management`**, tous en
-      `503`. Rejoués le 2026-10-15 sur le stack local : Docker Desktop a perdu son
-      montage du disque `D:`, le conteneur est `Up` mais le runtime lit
-      `Error reading config file 'file:///Merx/supabase/functions/create-tenant/deno.json'.: No such device (os error 19)`,
-      et `docker exec … ls /Merx/supabase/functions/` répond `No such device`.
-      Famille déjà décrite dans `CLAUDE.md` : seul un redémarrage de Docker Desktop
-      le répare, et c'est la main de l'utilisateur. Rien dans ces 26 échecs ne
-      touche E4-01.
-- [ ] **Aucun test PostgREST pour les documents.** `sale-document.test.ts` parle
-      SQL, sous `authenticated` et un jeton. Un `PATCH` sur un document confirmé,
-      une annulation par l'API, un `POST` direct de `sale_cancellation` : le code
-      et le message qui sortent réellement de PostgREST n'ont pas été lus. Même
-      forme que `stock-api.test.ts`.
 - [ ] **Concurrence du garde des lignes** (`for share` dans
       `merx.reject_frozen_child_write()`) : une confirmation qui croise l'écriture
-      d'une ligne. Aucun test ; un appareil par commerce en V1, donc faible risque
-      aujourd'hui, mais non éprouvé.
+      d'une ligne. Aucun test — il faudrait deux connexions qui s'entrelacent, ce
+      que le harnais actuel ne sait pas faire. Un appareil par commerce en V1
+      (§ 2.5), donc faible risque aujourd'hui, mais non éprouvé.
 
 ## Faites
 
-### E4-01, vérifié le 2026-10-15 sur le stack local (Postgres 17)
+### E4-01, vérifiée le 2026-10-15 sur le stack local (Postgres 17)
+
+La story avait été écrite sur un Postgres 16 nu, avec des stubs `auth` et
+`storage` — ni PostgREST, ni fonctions Edge, ni `xlsx`. Tout a été rejoué ici.
 
 - [x] **`npx supabase db reset`** — les 20 migrations appliquées, dont
       `20261014090000_sale_cancellation_type.sql` et
       `20261014100000_sale_documents.sql`, terminé sur « Finished supabase db reset ».
-- [x] **`npm run typecheck`** — propre, `xlsx` installé ; les trois erreurs de la
-      session cloud ont disparu.
-- [x] **La suite complète** — 1 465 tests, 1 439 verts, 26 rouges, tous dans les
-      deux suites Edge ci-dessus. Les 14 fichiers `src/` qui importent `xlsx` et
-      les 5 plans de requête de `stock-consultation` passent.
-- [x] **`sale-document.test.ts`** — 93 tests verts avec `stock-consultation`,
-      sur Postgres 17.
+- [x] **La suite complète** — **55 fichiers, 1 475 tests, tous verts**, 489 s,
+      base remise à zéro après la passe de sabotage. Les 26 rouges de
+      `tenant-creation` et `user-management` étaient le montage du disque `D:`
+      perdu par Docker Desktop (`No such device`) : **46 verts** après son
+      redémarrage. Les 14 fichiers `src/` qui importent `xlsx` et les 5 plans de
+      requête de `stock-consultation` passent.
+- [x] **`npm run typecheck` et `npm run lint`** — propres, lus sur la sortie des
+      commandes, après la dernière édition.
+- [x] **Les tests PostgREST des documents** — `sale-document-api.test.ts`, 8
+      tests : `PATCH` sur un document confirmé, annulation par l'API (patron,
+      employé, voisin), `POST` direct d'un `sale_cancellation` (patron, employé).
+      Statuts réellement rendus : `42501 → 403`, `55006 → 500` — voir la note
+      d'E4-01 au BACKLOG, le statut est à trancher en E4-03.
+- [x] **Les 25 sabotages** rejoués un par un, fichiers concernés seulement :
+      aucun n'est resté vert.
 - [x] **Rôle `postgres` non superutilisateur** — confirmé : sur ce stack
       `pg_roles` donne `rolsuper = f`, `rolbypassrls = t`, comme sur Supabase
       hébergé, et les `alter table … disable trigger` de `sale-document` passent :

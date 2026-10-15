@@ -1151,6 +1151,41 @@ const UNREGISTERED_FROZEN = `
   order by 1
 `
 
+/*
+ * SPEC RÈGLE M3-3, E4-01 — le mouvement d'annulation ne s'écrit pas à la main.
+ *
+ * `merx.require_cancellation_origin()` repose sur `pg_trigger_depth()`, qui dit
+ * « écrit par un trigger » et non « écrit par l'inversion de son document » :
+ * une seconde fonction qui insérerait un `sale_cancellation` depuis un trigger
+ * passerait le garde, et une correction de stock existerait sans entrée de
+ * journal — ce que la trace d'E3-03 existe pour empêcher. C'est la limite
+ * écrite en toutes lettres dans la migration ; ce balayage la ferme.
+ *
+ * Même forme que l'écrivain unique d'une table dérivée (RÈGLE M2-1, E3-01) :
+ * on lit le corps des fonctions de `public` et de `merx`, on retient celles
+ * qui insèrent dans `stock_movement` **et** nomment le type, et l'on écarte la
+ * seule qui en a le droit. Grossier, et c'est le bon niveau de grossièreté —
+ * la faute est attrapée dans la story où elle s'écrit, pas ici.
+ *
+ * `require_cancellation_origin()` nomme le type sans rien insérer : le premier
+ * motif ne l'attrape pas. Le jour où une autre fonction doit légitimement en
+ * écrire, c'est ce nom-là qui change, et le changement se discute.
+ */
+const CANCELLATION_WRITER = 'reverse_sale_movements'
+
+const CANCELLATION_DIRECT_WRITE = `
+  select format('%s.%s', n.nspname, p.proname) as table_name,
+         'insère un mouvement sale_cancellation, dont le seul écrivain déclaré est '
+           || 'merx.${CANCELLATION_WRITER}() — RÈGLE M3-3, E4-01' as detail
+  from pg_proc p
+  join pg_namespace n on n.oid = p.pronamespace
+  where n.nspname in ('public', 'merx')
+    and p.proname <> '${CANCELLATION_WRITER}'
+    and p.prosrc ~* 'insert[[:space:]]+into[[:space:]]+(public[.])?"?stock_movement"?'
+    and p.prosrc ~* 'sale_cancellation'
+  order by 1
+`
+
 export const RULES = {
   'table non enregistrée': UNREGISTERED,
   'registre périmé': STALE_REGISTRY,
@@ -1171,6 +1206,7 @@ export const RULES = {
   'aucune table figée hors registre': UNREGISTERED_FROZEN,
   'aucun autre écrivain d\'une table dérivée': DERIVED_DIRECT_WRITE,
   'aucune écriture directe dans audit_log': AUDIT_DIRECT_WRITE,
+  "aucun autre écrivain d'un mouvement d'annulation": CANCELLATION_DIRECT_WRITE,
   'clés étrangères composites sur tenant_id': TENANT_SCOPED_FOREIGN_KEYS,
   'aucune référence à product hors de variant': PRODUCT_REFERENCES,
   'tenant_id par défaut du jeton': TENANT_DEFAULT,

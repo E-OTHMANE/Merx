@@ -526,6 +526,12 @@ L'épique la plus critique. L'écran de vente décide de l'adoption.
 
 **Sabotages (25 gardes retirés, un par un) :** tous font rougir au moins un test. Les gardes de la table figée (naissance, mise à jour dans ses trois branches, suppression, TRUNCATE par trigger et par privilège, lignes), la transition ajoutée à la liste, le droit d'annuler, l'inversion et son filtre de type, le motif, l'ouverture du type et sa capacité, le garde d'origine, la policy des mouvements, le trigger d'audit et sa condition, les trois clés composites, l'unicité et le `NOT NULL` de `document_sequence`, `quantity > 0`. Un cas est resté vert à la première passe — `TRUNCATE ... cascade` sur `sale_document` était refusé par le garde de `sale_line`, avec la même phrase ; le test exige maintenant que le message nomme la table.
 
+**Vérifiée sur le stack local le 2026-10-15** — la story avait été écrite sur un Postgres 16 nu, sans PostgREST ni fonctions Edge. `db reset` passe sur Postgres 17 ; les 25 sabotages ont été rejoués un par un et rougissent tous ; `sale-document.test.ts` et les plans d'E3-02 sont verts. Trois ajouts sont nés de cette passe :
+
+- **`sale-document-api.test.ts`**, les trois chemins vus de PostgREST — `PATCH` sur un document confirmé, annulation par l'API, `POST` direct d'un `sale_cancellation` — sur le modèle de `stock-api.test.ts`, avec les contrôles positifs qui empêchent un refus étranger de tenir lieu de garde.
+- **Le statut HTTP, mesuré et non supposé.** `42501` sort en `403` ; **`55006` sort en `500`**, parce qu'aucun code de la classe 55 n'est dans la table de correspondance de PostgREST. Le refus est juste et sa phrase est dans le corps, mais son statut dit « panne serveur » à qui ne lit que lui. Fixé par une assertion, pas corrigé : changer cela, c'est changer le SQLSTATE de la story ou traduire le refus dans l'application — **à trancher en E4-03**, qui écrira l'écran qui doit l'afficher.
+- **`aucun autre écrivain d'un mouvement d'annulation`**, règle de `conventions.ts` : `pg_trigger_depth()` sait qu'un trigger écrit, pas lequel. Toute fonction de `public` ou `merx` autre que `merx.reverse_sale_movements()` qui insère un `sale_cancellation` est nommée. Même forme que l'écrivain unique des tables dérivées, et éprouvée par une fonction témoin.
+
 ---
 
 ### E4-02 — Numérotation

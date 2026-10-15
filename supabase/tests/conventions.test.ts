@@ -447,6 +447,33 @@ describe('les règles attrapent une table fautive', () => {
   })
 
   /*
+   * E4-01, SPEC RÈGLE M3-3. Même limite, un étage plus bas :
+   * `merx.require_cancellation_origin()` sait qu'un trigger écrit, pas lequel.
+   * Une seconde fonction qui insérerait un `sale_cancellation` depuis un
+   * trigger passerait son garde, et le stock se corrigerait sans entrée de
+   * journal. Le contrôle positif est l'état réel du schéma : l'inversion
+   * déclarée insère ce type et n'est pas signalée.
+   */
+  it("signale une autre fonction que l'inversion qui insère un sale_cancellation", async () => {
+    const rule: RuleName = "aucun autre écrivain d'un mouvement d'annulation"
+    expect(describeViolations(await violations(client, rule))).toBe('')
+
+    await client.query('begin')
+    await client.query(`
+      create function merx.rogue_cancellation_writer(variant uuid, depot uuid)
+      returns void language sql as $probe$
+        insert into public.stock_movement
+          (tenant_id, variant_id, warehouse_id, movement_type, quantity)
+        values (merx.current_tenant_id(), variant, depot, 'sale_cancellation', 1)
+      $probe$;
+    `)
+
+    const found = await violations(client, rule)
+    expect(describeViolations(found)).toContain('merx.rogue_cancellation_writer')
+    expect(describeViolations(found)).toContain('merx.reverse_sale_movements()')
+  })
+
+  /*
    * E2-02, SPEC § 2.6. Une table de formulaire conforme, puis chacune des trois
    * façons de rendre obligatoire autre chose que le nom — chacune doit être
    * nommée, et une colonne NOT NULL pourvue d'un vrai défaut ne doit pas
