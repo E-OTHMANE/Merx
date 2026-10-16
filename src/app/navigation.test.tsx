@@ -83,6 +83,12 @@ const DETAIL: Readonly<Record<string, { visit: string; parent: string; label: st
     parent: '/products',
     label: 'Produits',
   },
+  /*
+   * E4-05. Même écran que `/sale`, mais nourri d'un document d'origine : un
+   * retour vers Vente, et aucune barre. Son parent est l'écran de vente, d'où
+   * la transformation se poursuit.
+   */
+  '/sale/from/:documentId': { visit: '/sale/from/d-1', parent: '/sale', label: 'Vente' },
   '/users': { visit: '/users', parent: '/', label: 'Accueil' },
   '/users/new': { visit: '/users/new', parent: '/users', label: 'Employés' },
   '/devices': { visit: '/devices', parent: '/', label: 'Accueil' },

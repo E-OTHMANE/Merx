@@ -5,8 +5,8 @@
  * Ce qui n'est pas ici n'existe pas pour le reste de l'application.
  *
  * E4-02 a apporté la numérotation, E4-03 l'écran de vente, E4-04 la résolution
- * du prix — forçage, incitation au palier, plancher. Le cycle des documents est
- * E4-05.
+ * du prix — forçage, incitation au palier, plancher —, E4-05 le cycle des
+ * documents : la filiation, et le stock qui bouge à la confirmation d'un bon.
  */
 
 export {
@@ -58,3 +58,14 @@ export {
   type RecordSaleRequest,
   type SaleProgress,
 } from '@/modules/sales/saleWrite'
+export {
+  TRANSFORM_MESSAGES,
+  TRANSFORM_TARGET,
+  loadForTransformation,
+  type TransformationSource,
+} from '@/modules/sales/transform'
+export {
+  documentLineage,
+  type DocumentLineage,
+  type LinkedDocument,
+} from '@/modules/sales/lineage'

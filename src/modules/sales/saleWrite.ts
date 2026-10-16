@@ -27,18 +27,27 @@
  * librement modifiable (RÈGLE M3-3), donc une retente part des lignes
  * d'aujourd'hui, pas de celles de la tentative perdue.
  *
- * Le mouvement de stock n'est **pas** écrit ici : la confirmation d'un bon qui
- * décrémente le stock est E4-05 (RÈGLE M3-5), et le type `sale` reste fermé
- * jusque-là (SPEC § 8 ; BACKLOG E4-01, E4-05).
+ * Le mouvement de stock n'est **pas** écrit ici, et ne le sera jamais : depuis
+ * E4-05, la confirmation d'un bon de livraison le fait écrire par la base
+ * (`merx.write_sale_movements()`, RÈGLE M3-5), et l'insertion directe d'un
+ * mouvement `sale` est refusée — il naît de la confirmation, pas d'un geste de
+ * l'appareil. L'appareil n'a donc rien à envoyer de plus qu'en E4-03 : le
+ * troisième appel suffit, et le stock suit tout seul.
+ *
+ * **Le type du document et sa filiation** arrivent aussi en E4-05 : un devis,
+ * une commande ou un bon s'écrivent par le même chemin, et une transformation
+ * n'est qu'un document neuf qui porte `source_document_id` (RÈGLE M3-4 —
+ * l'original n'est jamais muté, et la base le tient de toute façon).
  */
 
 import { MONEY_SCALE, QUANTITY_SCALE, parseDecimal, toSqlDecimal } from '@/lib/decimal'
 import { supabase } from '@/lib/supabase'
 import { documentTotals, lineTotalOf } from '@/modules/sales/amounts'
+import type { SaleDocType } from '@/modules/sales/documentNumber'
 import { confirmDocument, type ConfirmedDocument } from '@/modules/sales/numbering'
 import type { SaleLine } from '@/modules/sales/sale'
 
-/** Le type de document que l'écran de vente produit — RÈGLE M3-1. */
+/** Le type de document que l'écran de vente produit par défaut — RÈGLE M3-1. */
 export const SALE_DOC_TYPE = 'delivery_note' as const
 
 /* L'identifiant que la mise en forme à blanc emploie : elle n'écrit rien. */
@@ -60,6 +69,13 @@ export interface SaleProgress {
 
 export interface RecordSaleRequest {
   lines: readonly SaleLine[]
+  /** Devis, commande ou bon. Le bon par défaut — RÈGLE M3-1. */
+  docType?: SaleDocType
+  /**
+   * Le document d'origine, quand ce bon-ci naît d'une transformation (E4-05).
+   * Posé à la naissance du brouillon : il gèle avec lui à la confirmation.
+   */
+  sourceDocumentId?: string
   /** `installationId()` — la clé de cet appareil en base. */
   deviceId: string
   /** `cachedDevicePrefix()` — sa lettre. */
@@ -110,6 +126,7 @@ function rowOf(documentId: string, line: SaleLine): Record<string, unknown> {
  */
 export async function recordSale(request: RecordSaleRequest): Promise<ConfirmedDocument> {
   const { lines, progress, onProgress } = request
+  const docType = request.docType ?? SALE_DOC_TYPE
   if (lines.length === 0) throw new Error(SALE_MESSAGES.incomplete)
 
   const totals = documentTotals(lines)
@@ -124,11 +141,14 @@ export async function recordSale(request: RecordSaleRequest): Promise<ConfirmedD
     const { data, error } = await supabase
       .from('sale_document')
       .insert({
-        doc_type: SALE_DOC_TYPE,
+        doc_type: docType,
         device_id: request.deviceId,
         subtotal: totals.subtotal,
         discount_total: totals.discountTotal,
         total: totals.total,
+        ...(request.sourceDocumentId === undefined
+          ? {}
+          : { source_document_id: request.sourceDocumentId }),
       })
       .select('id')
       .single()
@@ -162,7 +182,7 @@ export async function recordSale(request: RecordSaleRequest): Promise<ConfirmedD
 
   return await confirmDocument({
     documentId,
-    docType: SALE_DOC_TYPE,
+    docType,
     deviceId: request.deviceId,
     prefix: request.prefix,
     ...(request.issuedAt === undefined ? {} : { issuedAt: request.issuedAt }),

@@ -474,6 +474,54 @@ describe('les règles attrapent une table fautive', () => {
   })
 
   /*
+   * E4-05, SPEC RÈGLE M2-5. La règle d'E4-01 ci-dessus tient parce que
+   * `sale_cancellation` est un mot distinctif : `sale` ne l'est pas, et un
+   * balayage qui chercherait le littéral *transtypé* se contournerait **en
+   * écrivant moins** — `movement_type = 'sale'` sans transtypage, que Postgres
+   * accepte. Le témoin insère donc un `'sale'` **nu**, et c'est le registre
+   * `merx.movement_writer`, non le littéral, qui doit le nommer.
+   *
+   * Le second témoin est le registre périmé, dans l'autre sens : un écrivain
+   * déclaré introuvable fait nommer la vraie fonction par le premier volet sans
+   * que rien ne dise pourquoi.
+   *
+   * Le contrôle positif est l'état réel du schéma : les deux écrivains déclarés
+   * insèrent dans `stock_movement` et ne sont pas signalés.
+   */
+  it('signale une fonction non déclarée qui insère un mouvement, littéral nu compris', async () => {
+    const rule: RuleName = 'aucun écrivain de mouvement non déclaré'
+    expect(describeViolations(await violations(client, rule))).toBe('')
+
+    await client.query('begin')
+    await client.query(`
+      create function merx.rogue_sale_writer(variant uuid, depot uuid)
+      returns void language sql as $probe$
+        insert into public.stock_movement
+          (tenant_id, variant_id, warehouse_id, movement_type, quantity)
+        values (merx.current_tenant_id(), variant, depot, 'sale', -1)
+      $probe$;
+    `)
+
+    const found = await violations(client, rule)
+    expect(describeViolations(found)).toContain('merx.rogue_sale_writer')
+    expect(describeViolations(found)).toContain('merx.movement_writer')
+  })
+
+  it('signale un écrivain déclaré introuvable', async () => {
+    const rule: RuleName = 'aucun écrivain de mouvement non déclaré'
+
+    await client.query('begin')
+    await client.query(
+      "insert into merx.movement_writer (function_name, movement_type)" +
+        " values ('write_phantom_movements', 'sale')",
+    )
+
+    const found = await violations(client, rule)
+    expect(describeViolations(found)).toContain('write_phantom_movements')
+    expect(describeViolations(found)).toContain('le registre est périmé')
+  })
+
+  /*
    * SPEC § 4, RÈGLE des refus en 4xx. Un garde qui lève un code inconnu de
    * PostgREST sort en `500`, et PowerSync rejouerait l'écriture sans fin (E9).
    * La fonction témoin lève `55000` — le code que les tables dérivées

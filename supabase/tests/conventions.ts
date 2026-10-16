@@ -1189,6 +1189,61 @@ const CANCELLATION_DIRECT_WRITE = `
 `
 
 /*
+ * SPEC RÈGLE M2-5, E4-05 — toute fonction qui insère un mouvement est déclarée.
+ *
+ * La règle d'E4-01 ci-dessus marche parce que `sale_cancellation` est un mot
+ * distinctif. **`sale` ne l'est pas** : il apparaît dans `sale_document`,
+ * `sale_line`, `sale_cancellation`, et un balayage qui le chercherait au corps
+ * des fonctions nommerait tout le monde. Chercher le littéral *transtypé*
+ * (`'sale'::public.stock_movement_type`) ne vaut pas mieux — Postgres accepte
+ * `movement_type = 'sale'` sans transtypage, et la règle s'éviterait **en
+ * écrivant moins**. Une règle statique qui se contourne par une écriture plus
+ * courte ne tient rien.
+ *
+ * Celle-ci ne lit donc aucun littéral de type : elle demande seulement qui
+ * insère dans `stock_movement`, et confronte la réponse au registre
+ * `merx.movement_writer`. Le type sort de la question posée au catalogue, donc
+ * plus rien ne dépend de la façon de l'écrire — c'est ce qui la rend
+ * incontournable là où la précédente se contournait.
+ *
+ * Deux volets, parce qu'un registre se périme dans les deux sens (même geste
+ * que `registre périmé` et que les gardes des tables dérivées) : une fonction
+ * non déclarée qui insère, et un écrivain déclaré qui n'existe pas — auquel cas
+ * le premier volet nommerait la vraie fonction sans que rien ne dise pourquoi.
+ */
+const UNDECLARED_MOVEMENT_WRITER = `
+  with writers as (
+    select format('%s.%s', n.nspname, p.proname) as qualified, p.proname, p.prosrc
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname in ('public', 'merx')
+  )
+  select w.qualified as table_name,
+         'insère dans stock_movement sans être déclarée à merx.movement_writer — '
+           || 'RÈGLE M2-5, E4-05' as detail
+  from writers w
+  where w.prosrc ~* 'insert\\s+into\\s+(public[.])?"?stock_movement"?\\M'
+    and not exists (
+      select 1 from merx.movement_writer m where m.function_name = w.proname
+    )
+
+  union all
+
+  select format('merx.%s', m.function_name) as table_name,
+         'déclarée écrivain de mouvements à merx.movement_writer, mais aucune '
+           || 'fonction de ce nom — le registre est périmé' as detail
+  from merx.movement_writer m
+  where not exists (
+    select 1
+    from pg_proc p
+    join pg_namespace n on n.oid = p.pronamespace
+    where n.nspname in ('public', 'merx') and p.proname = m.function_name
+  )
+
+  order by 1, 2
+`
+
+/*
  * SPEC § 4, RÈGLE des refus en 4xx — un refus est une réponse 4xx.
  *
  * PostgREST traduit le SQLSTATE d'un `raise` en statut HTTP, et ce qu'il ne
@@ -1246,6 +1301,7 @@ export const RULES = {
   'aucun autre écrivain d\'une table dérivée': DERIVED_DIRECT_WRITE,
   'aucune écriture directe dans audit_log': AUDIT_DIRECT_WRITE,
   "aucun autre écrivain d'un mouvement d'annulation": CANCELLATION_DIRECT_WRITE,
+  'aucun écrivain de mouvement non déclaré': UNDECLARED_MOVEMENT_WRITER,
   'aucun refus rendu en 5xx': REFUSAL_STATUS,
   'clés étrangères composites sur tenant_id': TENANT_SCOPED_FOREIGN_KEYS,
   'aucune référence à product hors de variant': PRODUCT_REFERENCES,

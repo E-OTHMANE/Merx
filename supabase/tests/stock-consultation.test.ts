@@ -41,7 +41,7 @@
 import { Client } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { actAs, attempt, tokenFor } from './isolation'
+import { actAs, attempt, tokenFor, withoutTrigger } from './isolation'
 import { indexesUsed, planOfStatement, seqScansOf } from './stock-plan'
 
 const CONNECTION_STRING =
@@ -155,6 +155,13 @@ async function openType(movementType: string, capability: string): Promise<void>
   )
 }
 
+/*
+ * `require_sale_origin` (E4-05) refuse l'insertion directe d'un mouvement
+ * `sale` : il naît de la confirmation d'un bon. Ce peuplement produit un stock
+ * à consulter, pas une vente ; le garde est suspendu pour lui seul, et non par
+ * `withoutTriggers()`, qui emporterait l'agrégat que ce fichier lit (CLAUDE.md,
+ * `session_replication_role`).
+ */
 async function postMovement(
   shop: Shop,
   variant: string,
@@ -163,13 +170,15 @@ async function postMovement(
   createdAt?: string,
 ): Promise<void> {
   await client.query('reset role')
-  await client.query(
-    'insert into public.stock_movement' +
-      ' (tenant_id, variant_id, warehouse_id, movement_type, quantity, created_by, created_at)' +
-      ' values ($1, $2, $3, $4::public.stock_movement_type, $5, $6,' +
-      ' coalesce($7::timestamptz, now()))',
-    [shop.tenant, variant, shop.warehouse, movementType, quantity, shop.owner, createdAt ?? null],
-  )
+  await withoutTrigger(client, 'public.stock_movement', 'require_sale_origin', async () => {
+    await client.query(
+      'insert into public.stock_movement' +
+        ' (tenant_id, variant_id, warehouse_id, movement_type, quantity, created_by, created_at)' +
+        ' values ($1, $2, $3, $4::public.stock_movement_type, $5, $6,' +
+        ' coalesce($7::timestamptz, now()))',
+      [shop.tenant, variant, shop.warehouse, movementType, quantity, shop.owner, createdAt ?? null],
+    )
+  })
 }
 
 /* ========================================================================== */

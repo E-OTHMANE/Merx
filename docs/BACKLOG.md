@@ -658,13 +658,44 @@ Elle est **posée par l'appareil, jamais recalculée à l'arrivée** : recalcule
 **En tant que** patron, **je veux** transformer un devis en bon, **afin de** ne pas ressaisir.
 
 **Critères d'acceptation**
-- [ ] Devis → commande → bon de livraison
-- [ ] **Chaque transformation crée un nouveau document lié**, l'original n'est jamais muté
-- [ ] Le lien de filiation est consultable dans les deux sens
-- [ ] **Le stock n'est décrémenté qu'à la confirmation du `delivery_note`**, ni au devis ni à la commande
-- [ ] Modification des lignes possible pendant la transformation
+- [x] Devis → commande → bon de livraison
+- [x] **Chaque transformation crée un nouveau document lié**, l'original n'est jamais muté
+- [x] Le lien de filiation est consultable dans les deux sens — *la lecture, `documentLineage()` ; son **affichage** est E4-07, qui porte l'écran de détail*
+- [x] **Le stock n'est décrémenté qu'à la confirmation du `delivery_note`**, ni au devis ni à la commande
+- [x] Modification des lignes possible pendant la transformation
 
 **Notes** — `SPEC.md` RÈGLES M3-4, M3-5.
+
+**Le mouvement `sale` naît de la confirmation, et d'elle seule.** Le type s'ouvre sur `create_sale`, la capacité qu'annonçait l'addendum E4-01 de la RÈGLE M2-5 — aucune capacité nouvelle, les quatre copies de la matrice ne bougent pas. Mais ouvrir la porte à `create_sale` et s'en tenir là aurait fait de l'API un `POST` de mouvements sans écran : un employé y poserait un `sale` de n'importe quel signe, sans document et **sans entrée de journal** (RÈGLE M8-1 n'audite que l'ajustement, l'annulation et le forçage). C'est l'objection d'E4-01 pour `sale_cancellation`, et la réponse est la même, pièce pour pièce : un écrivain déclaré (`merx.write_sale_movements()`, trigger AFTER sur `draft → confirmed` au seul type `delivery_note`, `security invoker`), l'écriture à la main refusée (`merx.require_sale_origin()`, `pg_trigger_depth()`, `42501` rendu 403, sa propre phrase), et une règle de `conventions.ts` qui nomme tout autre écrivain.
+
+**Cette règle-là a dû changer de forme, et c'est l'enseignement de la story.** Celle d'E4-01 cherche le mot `sale_cancellation` au corps des fonctions ; le mot est distinctif. **`sale` ne l'est pas** — il est dans `sale_document`, `sale_line`, `sale_cancellation` —, et la première forme écrite ici cherchait le littéral *transtypé*, `'sale'::public.stock_movement_type`. Elle **se contournait en écrivant moins** : `movement_type = 'sale'` sans transtypage, que Postgres accepte, passait le balayage. Une règle statique qui s'évite par une écriture plus courte ne tient rien. D'où `merx.movement_writer`, un registre, et une règle — `aucun écrivain de mouvement non déclaré` — qui ne lit **aucun littéral de type** : elle demande qui insère dans `stock_movement` et confronte la réponse au registre. Le témoin de `conventions.test.ts` insère un `'sale'` **nu**, et c'est lui qui prouve la différence. Limite résiduelle, écrite : un écrivain *déclaré* pourrait insérer un autre type que celui qu'on lui prête.
+
+**La filiation est une colonne, pas une table de liens.** `sale_document.source_document_id`, auto-référence à clé composite sur `tenant_id`, sans cascade (un document ne se supprime pas, et la suppression d'un brouillon ne doit pas emporter ses enfants) et **sans unicité** : un enfant n'a qu'un parent, un parent a plusieurs enfants. **Oui, un devis peut donner deux commandes et une commande deux bons** — la livraison en deux camions est le cas normal du grossiste. Les deux sens se lisent : le parent par la colonne, les enfants par l'index partiel `sale_document_source`.
+
+**La chaîne vit en données** (`merx.document_transformation`, même geste que `merx.frozen_transition`), et **le saut `devis → bon` est admis** : un client accepte un devis et on le livre. L'interdire forcerait une commande fictive pour le cas le plus courant du comptoir. Rien ne part d'un bon, aucun lien ne remonte. `merx.require_transformation_shape()` tient quatre branches à quatre phrases en `22023` rendu 400 — auto-référence, original brouillon, original annulé, chaîne impossible — et laisse la clé composite répondre pour l'original du voisin (`23503`, rendu 409), sans quoi il tiendrait lieu d'isolation dans le balayage (E3-01).
+
+**L'original n'a rien demandé de neuf pour n'être pas muté** : il est figé depuis sa confirmation (RÈGLE M3-3). La transformation ne crée que la ligne de l'enfant — et l'assertion le dit à l'envers, en vérifiant qu'**aucune écriture ne nomme l'original**.
+
+**Le prix repris n'est pas un forçage de celui qui transforme, et la première version de ce plan se trompait.** Elle recalculait `overridden_price` contre la grille du jour, pour que la ligne « dise » qu'elle s'écarte des paliers. Le trigger d'audit écrit une entrée `price_override` dès que la colonne n'est pas nulle, et `merx.log_audit()` prend l'auteur dans le jeton de **celui qui écrit** (E1-04) : l'employé qui transforme un devis fait par le patron un mois plus tôt se verrait attribuer un forçage qu'il n'a pas décidé. C'est exactement l'erreur de « qui » qu'E4-04 a refusée en déplaçant la trace de la confirmation vers la ligne. Donc `overriddenPrice` est **nul** sur toute ligne reprise ; le journal n'enregistre de cet employé que ce qu'il change lui-même, après coup et à son nom. `price_source` est **mesuré** contre la grille du jour au lieu d'être copié — `auto` si le prix repris est celui du palier, `manual` sinon, ce qui est la vérité : le prix vient d'un papier. Le forçage d'origine reste écrit sur le document d'origine, que la filiation retrouve.
+
+**Le plancher et l'arrondi d'E4-04 s'appliquent aux lignes copiées, et c'est voulu.** Une ligne copiée est une ligne neuve : un devis vieux d'un mois, passé sous un plancher relevé depuis, est refusé. Le refus tombe **au comptoir**, devant un vendeur qui a deux issues immédiates — faire forcer le prix par le patron, ou faire baisser le plancher. C'est l'inverse du cas hors ligne, où le même refus arrive des jours après une vente déjà faite, sans personne pour agir : celui-là est une décision en attente (`PENDING-CHECKS`, E9-03). Et la grille reprend la parole dès que la quantité change : une nouvelle quantité est une nouvelle vente, pas la reprise d'un prix promis.
+
+**Ce qui n'est pas gardé, et qui est une question pour l'arrêt terrain d'E6 :** rien ne compare les quantités des enfants à celles du parent. **Une commande de 100 peut donner deux bons de 100 chacun**, donc une livraison au-delà de la commande reste possible. Le garder exigerait de décider ce qu'on fait d'un reliquat, d'une commande révisée et d'un bon annulé — des règles de gestion qu'on ne devine pas depuis un écran. **À poser aux commerçants** : livre-t-on jamais plus que commandé, et si oui qu'est-ce que le papier doit dire ?
+
+**Côté écran, le minimum qui rende la chaîne atteignable.** Un choix de type (Devis / Commande / Bon) sur l'écran de vente — sans lui, aucun devis ne peut exister, donc la chaîne n'a pas de premier maillon —, sur le patron du `ViewSwitch` existant : BRAND-UI § 8 ne connaît que trois variantes de bouton et aucun « choix segmenté », rien de visuel n'est inventé. Et une route `/sale/from/:documentId` qui reprend les lignes dans ce même écran, où elles se modifient comme celles qu'on vient de taper : écran de **détail**, donc un retour vers Vente et aucune barre d'onglets (BRAND-UI § 13), classé dans `navigation.test.tsx`. **Aucune liste de documents n'est construite** : la recherche d'un bon et son détail sont E4-07, et c'est là que la filiation s'affichera.
+
+**Ce qui a bougé dans les harnais voisins, et pourquoi.** Le type `sale` était fermé : quatre fichiers le posaient à la main pour produire du stock, et `require_sale_origin` les refuse désormais. Ils suspendent nommément ce garde-là, par un `withoutTrigger()` neuf dans `isolation.ts` — et non par `withoutTriggers()`, qui emporterait l'agrégat et les clés étrangères (CLAUDE.md), c'est-à-dire exactement ce que ces fichiers mesurent. `sale-document.test.ts` suspend en plus `write_sale_movements` pendant sa confirmation de harnais : il pose et compte ses propres mouvements, et une addition des deux stories lui ferait mesurer autre chose que l'inversion. Les deux énumérations du registre type → capacité (`sale-document.test.ts`, `stock-movements.test.ts`) gagnent la ligne `sale`, `stock-api.test.ts` cesse de refermer un type que la migration ouvre, et le rangement de `sale-price-api.test.ts` efface les mouvements qu'une confirmation écrit maintenant.
+
+**Sabotages (6 gardes retirés, un par un ; fichiers concernés seulement) :** tous font rougir au moins un test.
+
+- **trigger `write_sale_movements` retiré** — 7 tombent : la décrémentation, la confirmation par l'employé, celle mesurée par l'API, l'inversion exacte de l'annulation et la seconde annulation, et les deux cas de filiation qui vérifient le stock au passage ;
+- **sa condition de type seule** (le devis et la commande décrémenteraient) — 6 tombent, et ce sont **les cas négatifs** : devis et commande en SQL, devis par l'API, l'annulation d'un devis qui n'a rien écrit. Le garde et sa condition tombent donc séparément ;
+- **garde `require_sale_origin` retiré** — 4 tombent : l'insertion directe par le patron et par l'employé, en SQL et en 403 mesuré. Le type est ouvert aux deux rôles, donc la policy ne refuse personne : il n'y a que lui ;
+- **écrivain retiré de `merx.movement_writer`** — 3 tombent : la règle `aucun écrivain de mouvement non déclaré` par ses deux volets (le vrai écrivain nommé, le registre périmé), et l'énumération du registre ;
+- **garde `require_transformation_shape` retiré** — 8 tombent : les quatre branches en SQL et trois des quatre en statut mesuré ;
+- **clé de filiation reconstruite sans `tenant_id`** — 2 tombent : l'original du voisin, en SQL et en 409 mesuré. Les deux écritures sont dans **une seule** transaction et le comptage se fait hors RLS, sans quoi le cas resterait vert quoi qu'il arrive (CLAUDE.md, E2-06).
+
+**Suite complète, machine libre, base remise à zéro : 68 fichiers, 1 737 tests, tous verts.** `typecheck` et `lint` lus sur la sortie des commandes, après la dernière édition.
 
 ---
 
@@ -693,6 +724,8 @@ Elle est **posée par l'appareil, jamais recalculée à l'arrivée** : recalcule
 - [ ] Détail affichant les lignes, les totaux, l'auteur, l'appareil et l'horodatage
 - [ ] Annulation réservée au `owner`, avec motif, tracée
 - [ ] Un document annulé reste visible, clairement marqué
+
+**Notes** — **La filiation s'affiche ici.** E4-05 a livré sa lecture dans les deux sens (`documentLineage()`, module Ventes) et s'est arrêtée là : l'écran où l'accrocher est ce détail-ci, et le construire là-bas aurait été bâtir en avance. Le détail porte donc le document d'origine et ce qui en est issu, avec un lien vers chacun — et un parent peut avoir **plusieurs** enfants (RÈGLE M3-4).
 
 ---
 

@@ -181,6 +181,12 @@ let grids: Map<string, Array<{ min_qty: string; unit_price: string | null }>>
 /* Les quantités en stock, par variante. */
 let stock: Map<string, string>
 
+/*
+ * Le document d'origine d'une transformation — E4-05. `null` tant qu'aucun cas
+ * n'en pose : l'écran de vente ordinaire ne lit aucun document.
+ */
+let sourceDocument: unknown = null
+
 function answerSearch(q: string): Response {
   const needle = q.trim().toLowerCase()
   if (needle === '') return { data: CATALOGUE, error: null }
@@ -231,6 +237,11 @@ function defaultResponse(call: Call): Response {
 
   if (call.table === 'document_sequence') return { data: { last_number: 0 }, error: null }
 
+  // La lecture du document d'origine — E4-05, `loadForTransformation()`.
+  if (call.table === 'sale_document' && call.op === 'select') {
+    return { data: sourceDocument, error: null }
+  }
+
   if (call.table === 'sale_document' && call.op === 'insert') {
     return { data: { id: 'doc-1' }, error: null }
   }
@@ -248,14 +259,14 @@ function defaultResponse(call: Call): Response {
   throw new Error(`appel inattendu : ${call.op} ${call.table}`)
 }
 
-function renderSale(role = 'worker') {
+function renderSale(role = 'worker', path = '/sale') {
   render(
     <AuthProvider
       client={createFakeAuthClient({
         initialSession: fakeSession({ role, email: 'vendeur@merx.ma', userId: 'auth-vendeur' }),
       })}
     >
-      <MemoryRouter initialEntries={['/sale']}>
+      <MemoryRouter initialEntries={[path]}>
         <AppRoutes />
       </MemoryRouter>
     </AuthProvider>,
@@ -285,6 +296,7 @@ beforeEach(() => {
   grids = new Map()
   floors = new Map()
   stock = new Map()
+  sourceDocument = null
   window.localStorage.clear()
   window.localStorage.setItem(DEVICE_STORAGE_KEY, '11111111-1111-4111-8111-111111111111')
   window.localStorage.setItem(DEVICE_PREFIX_KEY, 'A')
@@ -881,5 +893,213 @@ describe('le plancher', () => {
     await userEvent.keyboard('11,50')
 
     await waitFor(() => expect(saveButton()).toBeEnabled())
+  })
+})
+/* ========================================================================== */
+/* E4-05 — le type de document, et la transformation                           */
+/* ========================================================================== */
+
+/*
+ * Le choix du type est ce qui fait qu'un devis existe : sans lui la chaîne de
+ * la RÈGLE M3-4 n'a pas de premier maillon, et l'écran ne saurait produire que
+ * des bons. Ce qui se mesure ici est que le choix **descende en base** — c'est
+ * le type qui décide si le stock bouge (RÈGLE M3-5), et c'est la base qui
+ * s'en charge.
+ */
+describe('le type de document', () => {
+  const chooseType = async (label: string): Promise<void> => {
+    await userEvent.click(
+      within(screen.getByRole('group', { name: 'Type de document' })).getByRole('button', {
+        name: label,
+      }),
+    )
+  }
+
+  it('est le bon de livraison par défaut — RÈGLE M3-1', async () => {
+    renderSale()
+    await screen.findByText('Crème hydratante 200 ml')
+
+    const group = screen.getByRole('group', { name: 'Type de document' })
+    expect(within(group).getByRole('button', { name: 'Bon' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    expect(saveButton()).toBeInTheDocument()
+  })
+
+  it('un devis part avec son type, son numéro et sa phrase', async () => {
+    renderSale()
+    await screen.findByText('Crème hydratante 200 ml')
+    await chooseType('Devis')
+    await userEvent.click(screen.getByRole('button', { name: 'Ajouter au bon — Savon noir 500 g' }))
+    await waitFor(() => expect(lineFor('Savon noir')).toBeInTheDocument())
+
+    await userEvent.click(screen.getByRole('button', { name: 'Enregistrer le devis' }))
+    await screen.findByText(/DV-A-\d\d-00001/)
+
+    const written = writes()
+    expect((written[0]!.payload as Record<string, unknown>)['doc_type']).toBe('quote')
+    const confirmation = written[3]!.payload as Record<string, unknown>
+    expect(confirmation['doc_number']).toMatch(/^DV-A-\d\d-00001$/)
+    /*
+     * Le genre suit le type : « devis enregistré », « commande enregistrée ».
+     * La phrase est écrite en entier dans l'écran plutôt que recomposée — une
+     * phrase fausse se lit, et personne ne relit un gabarit.
+     */
+    expect(screen.getByText(/Devis DV-A-\d\d-00001 enregistré\./)).toBeInTheDocument()
+  })
+})
+
+describe('la transformation d’un document', () => {
+  /*
+   * Un devis de deux lignes : l'une au prix du palier d'aujourd'hui, l'autre à
+   * un prix qui n'est plus celui de la grille. C'est la seconde qui porte
+   * l'arbitrage — elle ne doit pas arriver ici en forçage.
+   */
+  const QUOTE = {
+    id: 'q-1',
+    doc_type: 'quote',
+    doc_number: 'DV-A-26-00007',
+    status: 'confirmed',
+    sale_line: [
+      {
+        variant_id: 'v1',
+        quantity: '24.000',
+        unit_price: '11.00',
+        variant: {
+          sku: 'CRM-1',
+          product: {
+            id: 'v1',
+            name_fr: 'Crème hydratante 200 ml',
+            code: 'CRM-1',
+            photo_url: null,
+          },
+        },
+      },
+      {
+        variant_id: 'v2',
+        quantity: '2.000',
+        unit_price: '10.00',
+        variant: {
+          sku: 'SAV-1',
+          product: { id: 'v2', name_fr: 'Savon noir 500 g', code: 'SAV-1', photo_url: null },
+        },
+      },
+    ],
+  }
+
+  const openTransformation = async (): Promise<void> => {
+    sourceDocument = QUOTE
+    renderSale('worker', '/sale/from/q-1')
+    await screen.findByRole('heading', { level: 1, name: 'Transformer DV-A-26-00007' })
+    await waitFor(() => expect(lineFor('Crème hydratante')).toBeInTheDocument())
+  }
+
+  it('reprend les lignes du document et propose le pas suivant', async () => {
+    await openTransformation()
+
+    expect(within(bon()).getAllByRole('listitem')).toHaveLength(2)
+    expect(within(lineFor('Crème hydratante')).getByLabelText('Quantité')).toHaveValue('24')
+    // 24 × 11,00 + 2 × 10,00 — les prix du papier, pas ceux de la grille.
+    expect(total()).toHaveTextContent('284,00')
+
+    const group = screen.getByRole('group', { name: 'Type de document' })
+    expect(within(group).getByRole('button', { name: 'Commande' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  })
+
+  it('porte un retour vers Vente, et aucune barre d’onglets', async () => {
+    await openTransformation()
+
+    expect(screen.getByRole('link', { name: 'Retour : Vente' })).toHaveAttribute('href', '/sale')
+    expect(screen.queryByRole('navigation', { name: 'Navigation principale' })).toBeNull()
+  })
+
+  /*
+   * « Modification des lignes possible pendant la transformation » : une ligne
+   * reprise se modifie comme une ligne tapée, et la grille d'aujourd'hui
+   * reprend la parole dès que la quantité change — une nouvelle quantité est
+   * une nouvelle vente, pas la reprise d'un prix promis.
+   */
+  it('laisse modifier une ligne reprise', async () => {
+    await openTransformation()
+
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Retirer du bon — Savon noir 500 g' }),
+    )
+    expect(within(bon()).getAllByRole('listitem')).toHaveLength(1)
+
+    const quantity = within(lineFor('Crème hydratante')).getByLabelText('Quantité')
+    await userEvent.clear(quantity)
+    await userEvent.type(quantity, '48')
+    // La grille reprend la parole : 9,50 dès 48 pièces.
+    expect(total()).toHaveTextContent('456,00')
+  })
+
+  it('écrit un document neuf qui désigne l’original, sans le toucher', async () => {
+    await openTransformation()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Enregistrer la commande' }))
+    await screen.findByText(/CM-A-\d\d-00001/)
+
+    const written = writes()
+    const draft = written[0]!.payload as Record<string, unknown>
+    expect(draft['doc_type']).toBe('order')
+    expect(draft['source_document_id']).toBe('q-1')
+
+    // Rien n'a été écrit sur l'original : aucune écriture ne le nomme.
+    expect(written.filter((call) => call.filters.some(([, , value]) => value === 'q-1'))).toEqual(
+      [],
+    )
+  })
+
+  /*
+   * L'arbitrage de `transform.ts`, mesuré : la seconde ligne s'écarte de la
+   * grille d'aujourd'hui (10,00 contre 12,00 au palier) et part pourtant
+   * **sans** `overridden_price`. Sinon l'entrée `price_override` du journal
+   * porterait le nom de l'employé qui transforme, pour un prix décidé par
+   * quelqu'un d'autre il y a un mois (E4-04, E1-04).
+   */
+  it('n’attribue aucun forçage à celui qui transforme', async () => {
+    await openTransformation()
+
+    await userEvent.click(screen.getByRole('button', { name: 'Enregistrer la commande' }))
+    await screen.findByText(/CM-A-\d\d-00001/)
+
+    const lines = writes().find((call) => call.table === 'sale_line')!.payload as Array<
+      Record<string, unknown>
+    >
+    expect(lines).toHaveLength(2)
+    // La ligne au palier : `auto`, comme une ligne tapée aujourd'hui.
+    expect(lines[0]).toMatchObject({
+      variant_id: 'v1',
+      unit_price: '11.00',
+      price_source: 'auto',
+      overridden_price: null,
+    })
+    // Celle qui s'en écarte : `manual` — le prix vient d'un papier, pas de la
+    // grille — et **aucun** prix remplacé.
+    expect(lines[1]).toMatchObject({
+      variant_id: 'v2',
+      unit_price: '10.00',
+      price_source: 'manual',
+      overridden_price: null,
+    })
+  })
+
+  /*
+   * Une lecture en échec ne laisse pas une impasse : l'écran dit ce qui s'est
+   * passé et reste utilisable — le vendeur saisit à la main (SPEC § 2.6).
+   */
+  it('dit l’échec de la lecture et laisse l’écran utilisable', async () => {
+    sourceDocument = null
+    renderSale('worker', '/sale/from/q-9')
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /n’existe plus, ou ce compte n’a pas le droit de le lire/,
+    )
+    expect(searchField()).toBeInTheDocument()
   })
 })

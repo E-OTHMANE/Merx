@@ -1009,3 +1009,33 @@ export async function withoutTriggers<T>(client: Client, body: () => Promise<T>)
     await client.query('set session_replication_role = origin')
   }
 }
+
+/**
+ * Exécute `body` avec **un seul** trigger suspendu, puis le rétablit. À appeler
+ * en `postgres` — être propriétaire de la table suffit.
+ *
+ * Préférable à `withoutTriggers()` partout où le reste de la table doit
+ * continuer de fonctionner : `session_replication_role = replica` suspend aussi
+ * les clés étrangères **et les triggers d'agrégat** (CLAUDE.md), donc un
+ * mouvement posé ainsi ne bougerait aucun niveau de stock — ce qui est
+ * exactement ce que le peuplement cherche à obtenir.
+ *
+ * Son emploi depuis E4-05 : `merx.require_sale_origin()` refuse l'insertion
+ * directe d'un mouvement `sale`, qui naît de la confirmation d'un bon. Un
+ * peuplement de harnais n'est pas une vente ; le garde, lui, est mesuré dans
+ * `sale-lifecycle.test.ts`. L'`alter table` est transactionnel, donc la
+ * suspension disparaît avec la transaction même si le corps lève.
+ */
+export async function withoutTrigger<T>(
+  client: Client,
+  table: string,
+  trigger: string,
+  body: () => Promise<T>,
+): Promise<T> {
+  await client.query(`alter table ${table} disable trigger ${trigger}`)
+  try {
+    return await body()
+  } finally {
+    await client.query(`alter table ${table} enable trigger ${trigger}`)
+  }
+}

@@ -39,7 +39,7 @@
 import { Client, type QueryResultRow } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { FROZEN_WRITE, INSUFFICIENT_PRIVILEGE, attempt } from './isolation'
+import { FROZEN_WRITE, INSUFFICIENT_PRIVILEGE, attempt, withoutTrigger } from './isolation'
 import { createAuthUser, deleteAuthUser } from './rest'
 
 const CONNECTION_STRING =
@@ -287,16 +287,25 @@ async function draft(docType = 'delivery_note'): Promise<string> {
  * Un document dans le statut demandé. La confirmation et la livraison sont
  * posées en `postgres` ; l'annulation passe par le patron, jeton à l'appui — la
  * transition vers `cancelled` exige la capacité et le journal exige un auteur.
+ *
+ * `write_sale_movements` est suspendu le temps de la confirmation (E4-05) : ce
+ * fichier pose ses mouvements lui-même, par `postSale()`, et les compte. Si la
+ * confirmation en écrivait d'autres au passage, les cas de l'inversion
+ * mesureraient une addition des deux stories au lieu de l'inversion. La
+ * décrémentation à la confirmation, elle, est mesurée dans
+ * `sale-lifecycle.test.ts`, où elle est le sujet.
  */
 async function documentIn(status: Status, docType = 'delivery_note'): Promise<string> {
   const id = await draft(docType)
   if (status === 'draft') return id
 
-  await client.query(
-    "update public.sale_document set status = 'confirmed', doc_number = $2, issued_at = now()" +
-      ' where id = $1',
-    [id, nextNumber(docType)],
-  )
+  await withoutTrigger(client, 'public.sale_document', 'write_sale_movements', async () => {
+    await client.query(
+      "update public.sale_document set status = 'confirmed', doc_number = $2, issued_at = now()" +
+        ' where id = $1',
+      [id, nextNumber(docType)],
+    )
+  })
   if (status === 'delivered') {
     await client.query("update public.sale_document set status = 'delivered' where id = $1", [id])
   }
@@ -313,9 +322,17 @@ async function documentIn(status: Status, docType = 'delivery_note'): Promise<st
 }
 
 /**
- * Pose un mouvement `sale` pour un document. Le type est fermé jusqu'à E4-05 :
- * le garde du fermé par défaut est suspendu le temps de l'insertion — son
- * `alter table` est transactionnel, le point de sauvegarde du cas le défait.
+ * Pose un mouvement pour un document, en harnais. Deux gardes sont suspendus le
+ * temps de l'insertion — leur `alter table` est transactionnel, le point de
+ * sauvegarde du cas le défait :
+ *
+ *   — `require_open_movement_type`, parce que `return`, `receipt` et
+ *     `inventory` restent fermés (RÈGLE M2-5) ;
+ *   — `require_sale_origin`, ajouté en E4-05 : le type `sale` est ouvert
+ *     depuis, mais son mouvement naît de la confirmation d'un bon et
+ *     l'insertion directe est refusée. Ce fichier-ci mesure l'**inversion**
+ *     d'un mouvement de vente, pas sa naissance ; la naissance et son garde
+ *     sont mesurés dans `sale-lifecycle.test.ts`.
  */
 async function postSale(
   document: string,
@@ -326,12 +343,14 @@ async function postSale(
 ): Promise<void> {
   await client.query('reset role')
   await client.query('alter table public.stock_movement disable trigger require_open_movement_type')
-  await client.query(
-    'insert into public.stock_movement (tenant_id, variant_id, warehouse_id, movement_type, quantity,' +
-      ' source_type, source_id, note)' +
-      " values ($1, $2, $3, $4::public.stock_movement_type, $5, 'sale_document', $6, $7)",
-    [fixture.tenant, variant, fixture.warehouse, movementType, quantity, document, note],
-  )
+  await withoutTrigger(client, 'public.stock_movement', 'require_sale_origin', async () => {
+    await client.query(
+      'insert into public.stock_movement (tenant_id, variant_id, warehouse_id, movement_type, quantity,' +
+        ' source_type, source_id, note)' +
+        " values ($1, $2, $3, $4::public.stock_movement_type, $5, 'sale_document', $6, $7)",
+      [fixture.tenant, variant, fixture.warehouse, movementType, quantity, document, note],
+    )
+  })
   await client.query('alter table public.stock_movement enable trigger require_open_movement_type')
 }
 
@@ -1225,13 +1244,20 @@ describe('l\'annulation', () => {
 /* ========================================================================== */
 
 describe('sale_cancellation', () => {
-  it('est ouvert sur cancel_document, et les quatre autres types restent fermés', async () => {
+  /*
+   * E4-05 a ouvert `sale` sur `create_sale`, comme l'annonçait l'addendum E4-01
+   * de la RÈGLE M2-5. L'énumération le dit, plutôt que de laisser le registre
+   * grossir sans que rien ne le compte : `return`, `receipt` et `inventory`
+   * restent fermés (E4-06, E8-02, E3-04).
+   */
+  it('est ouvert sur cancel_document, et trois types restent fermés', async () => {
     await client.query('reset role')
     const { rows } = await client.query<{ movement_type: string; capability: string }>(
       'select movement_type::text, capability from merx.movement_type_capability order by 1',
     )
     expect(rows).toEqual([
       { movement_type: 'adjustment', capability: 'adjust_stock' },
+      { movement_type: 'sale', capability: 'create_sale' },
       { movement_type: 'sale_cancellation', capability: 'cancel_document' },
     ])
   })
@@ -1244,7 +1270,7 @@ describe('sale_cancellation', () => {
     expect(rows.map((r) => r.role)).toEqual(['owner'])
   })
 
-  for (const type of ['sale', 'return', 'receipt', 'inventory']) {
+  for (const type of ['return', 'receipt', 'inventory']) {
     it(`laisse ${type} fermé au patron : rien ne s'écrit sans écran`, async () => {
       await inCase(async () => {
         await asApplication('owner')

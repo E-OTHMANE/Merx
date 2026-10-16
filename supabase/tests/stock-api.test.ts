@@ -26,7 +26,7 @@
 import { Client, type QueryResultRow } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { DERIVED_WRITE } from './isolation'
+import { DERIVED_WRITE, withoutTrigger } from './isolation'
 import { createAuthUser, deleteAuthUser, rest, sessionFor } from './rest'
 
 const CONNECTION_STRING =
@@ -64,15 +64,18 @@ async function one<T extends QueryResultRow>(sql: string, values: unknown[] = []
 }
 
 /*
- * Les types de mouvement ouverts le temps du fichier. La migration n'ouvre que
- * l'`adjustment` (E3-03) — fermé par défaut, RÈGLE M2-5 — et le peuplement a
- * besoin d'un `receipt` et d'un `sale` pour produire un stock. Refermés à la
- * fin, et eux seuls : voir le démontage.
+ * Les types de mouvement ouverts le temps du fichier. Les migrations ouvrent
+ * `adjustment` (E3-03), `sale_cancellation` (E4-01) et `sale` (E4-05) — fermé
+ * par défaut, RÈGLE M2-5 —, et le peuplement a encore besoin d'un `receipt`
+ * pour faire entrer de la marchandise. Refermé à la fin, et lui seul : voir le
+ * démontage.
+ *
+ * `sale` n'y est plus depuis E4-05 : la migration l'ouvre, et un démontage qui
+ * l'effacerait fermerait pour les fichiers suivants une porte que la base est
+ * censée tenir ouverte — exactement le piège que le commentaire du démontage
+ * décrit pour `adjustment`.
  */
-const SEEDED_TYPES = [
-  ['receipt', 'receive_goods'],
-  ['sale', 'create_sale'],
-] as const
+const SEEDED_TYPES = [['receipt', 'receive_goods']] as const
 
 async function openTypes(): Promise<void> {
   await client.query(
@@ -124,13 +127,22 @@ async function seedShop(side: 'a' | 'b'): Promise<void> {
   shop.counted = await product('Crème hydratante', `${side.toUpperCase()}-CRE`)
   shop.never = await product('Shampoing 1 L', `${side.toUpperCase()}-SHA`)
 
+  /*
+   * `require_sale_origin` (E4-05) refuse l'insertion directe d'un mouvement
+   * `sale` : il naît de la confirmation d'un bon. Ce peuplement n'est pas une
+   * vente, il produit un stock ; le garde est suspendu pour lui seul, et non
+   * par `withoutTriggers()`, qui emporterait aussi l'agrégat dont ce fichier a
+   * besoin (CLAUDE.md, `session_replication_role`).
+   */
   const move = async (variant: string, type: string, quantity: string): Promise<void> => {
-    await client.query(
-      'insert into public.stock_movement' +
-        ' (tenant_id, variant_id, warehouse_id, movement_type, quantity, created_by)' +
-        ' values ($1, $2, $3, $4::public.stock_movement_type, $5, $6)',
-      [shop.tenant, variant, shop.warehouse, type, quantity, shop.owner],
-    )
+    await withoutTrigger(client, 'public.stock_movement', 'require_sale_origin', async () => {
+      await client.query(
+        'insert into public.stock_movement' +
+          ' (tenant_id, variant_id, warehouse_id, movement_type, quantity, created_by)' +
+          ' values ($1, $2, $3, $4::public.stock_movement_type, $5, $6)',
+        [shop.tenant, variant, shop.warehouse, type, quantity, shop.owner],
+      )
+    })
   }
 
   // Négatif : RÈGLE M2-3, un grossiste vend ce qui est encore sur le camion.

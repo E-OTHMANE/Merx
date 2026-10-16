@@ -73,6 +73,14 @@ export function AppRoutes() {
           </Route>
         </Route>
 
+        {/* La transformation d'un document — E4-05. Même écran que la vente,
+            nourri du document d'origine : c'est un écran de **détail**, donc
+            hors de la barre d'onglets et avec un retour (BRAND-UI § 13). La
+            capacité est celle de la vente : transformer, c'est vendre. */}
+        <Route element={<RequireCapability capability="create_sale" />}>
+          <Route path="/sale/from/:documentId" element={<SaleScreen />} />
+        </Route>
+
         {/* Les écrans de l'éditeur. E1-01. Deux gardes emboîtés : le premier
             exige une session, le second le rôle. */}
         <Route element={<RequireSuperAdmin />}>

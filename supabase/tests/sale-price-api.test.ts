@@ -203,6 +203,13 @@ afterAll(async () => {
      */
     await withoutTriggers(client, async () => {
       await client.query('delete from public.audit_log where tenant_id = $1', [fixture.tenant])
+      /*
+       * Depuis E4-05, confirmer un bon écrit des mouvements de vente : ils
+       * retiennent la variante (`stock_movement_variant_id_fkey` ne cascade
+       * pas, un historique ne se purge pas) et le rangement butait dessus.
+       */
+      await client.query('delete from public.stock_movement where tenant_id = $1', [fixture.tenant])
+      await client.query('delete from public.stock_level where tenant_id = $1', [fixture.tenant])
       await client.query('delete from public.sale_line where tenant_id = $1', [fixture.tenant])
       await client.query('delete from public.sale_document where tenant_id = $1', [fixture.tenant])
       await client.query('delete from public.document_sequence where tenant_id = $1', [

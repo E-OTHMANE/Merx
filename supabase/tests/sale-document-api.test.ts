@@ -32,7 +32,7 @@
 import { Client, type QueryResultRow } from 'pg'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { FROZEN_WRITE, INSUFFICIENT_PRIVILEGE, withoutTriggers } from './isolation'
+import { FROZEN_WRITE, INSUFFICIENT_PRIVILEGE, withoutTrigger, withoutTriggers } from './isolation'
 import { createAuthUser, deleteAuthUser, rest, sessionFor } from './rest'
 
 const CONNECTION_STRING =
@@ -181,20 +181,37 @@ let numbered = 0
 async function confirmedWithSale(quantity = '-3'): Promise<string> {
   const id = await draft()
   numbered += 1
-  await client.query(
-    "update public.sale_document set status = 'confirmed', doc_number = $2," +
-      ' issued_at = now() where id = $1',
-    [id, `BL-A-${fixture.shortYear}-${String(numbered).padStart(5, '0')}`],
-  )
+  /*
+   * Deux gardes d'E4-05 sont suspendus le temps du montage, et pour la même
+   * raison : ce fichier mesure le **statut HTTP** des gardes du document, et
+   * son mouvement de vente est une donnée de départ posée à la quantité voulue,
+   * pas une vente.
+   *
+   *   — `write_sale_movements` pendant la confirmation : sinon le document
+   *     porterait deux fois ses mouvements, les siens et ceux posés ici ;
+   *   — `require_sale_origin` pendant l'insertion directe, qu'il refuse.
+   *
+   * Les deux sont mesurés dans `sale-lifecycle.test.ts`, le second aussi à
+   * travers PostgREST dans `sale-lifecycle-api.test.ts`.
+   */
+  await withoutTrigger(client, 'public.sale_document', 'write_sale_movements', async () => {
+    await client.query(
+      "update public.sale_document set status = 'confirmed', doc_number = $2," +
+        ' issued_at = now() where id = $1',
+      [id, `BL-A-${fixture.shortYear}-${String(numbered).padStart(5, '0')}`],
+    )
+  })
 
   await client.query('alter table public.stock_movement disable trigger require_open_movement_type')
   try {
-    await client.query(
-      'insert into public.stock_movement (tenant_id, variant_id, warehouse_id, movement_type,' +
-        ' quantity, source_type, source_id, created_by)' +
-        " values ($1, $2, $3, 'sale', $4, 'sale_document', $5, $6)",
-      [fixture.tenant, fixture.variant, fixture.warehouse, quantity, id, fixture.ownerAppUser],
-    )
+    await withoutTrigger(client, 'public.stock_movement', 'require_sale_origin', async () => {
+      await client.query(
+        'insert into public.stock_movement (tenant_id, variant_id, warehouse_id, movement_type,' +
+          ' quantity, source_type, source_id, created_by)' +
+          " values ($1, $2, $3, 'sale', $4, 'sale_document', $5, $6)",
+        [fixture.tenant, fixture.variant, fixture.warehouse, quantity, id, fixture.ownerAppUser],
+      )
+    })
   } finally {
     await client.query('alter table public.stock_movement enable trigger require_open_movement_type')
   }

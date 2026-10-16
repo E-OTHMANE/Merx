@@ -44,14 +44,29 @@
  * l'écran de vente, sans le quitter ». Un bouton qui ne mènerait à rien
  * apprendrait un geste faux.
  *
+ * **Trois types de document** (E4-05) : devis, commande, bon de livraison. Le
+ * bon par défaut (RÈGLE M3-1), et le choix se fait avant d'enregistrer — c'est
+ * la seule façon qu'un devis existe, et donc que la chaîne de la RÈGLE M3-4
+ * commence quelque part. Seule la confirmation d'un **bon** décrémente le stock
+ * (RÈGLE M3-5), et c'est la base qui le fait.
+ *
+ * **La transformation** (`/sale/from/:documentId`) reprend les lignes d'un
+ * document confirmé dans ce même écran : elles s'y modifient comme celles qu'on
+ * vient de taper, et l'original n'est pas touché — ce qui part est un document
+ * neuf qui le désigne (`transform.ts`). Le prix repris n'est pas un forçage de
+ * celui qui transforme : voir l'en-tête de `transform.ts`.
+ *
  * Écran de premier niveau : il porte la barre d'onglets et aucun retour
- * (BRAND-UI § 13). Les actions sont dans le tiers bas, au pouce (§ 7) ; le
- * total est en *Chiffre principal*, en chiffres tabulaires (§ 6).
+ * (BRAND-UI § 13). En transformation, c'est un écran de détail : un retour vers
+ * Vente, et aucune barre. Les actions sont dans le tiers bas, au pouce (§ 7) ;
+ * le total est en *Chiffre principal*, en chiffres tabulaires (§ 6).
  */
 
 import { Minus, Plus, Trash2 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useParams } from 'react-router-dom'
 
+import { BackLink } from '@/components/BackLink'
 import { useCan } from '@/lib/auth/useCan'
 import { ScanButton } from '@/lib/barcode'
 import { moneyText, quantityText } from '@/lib/decimal'
@@ -67,6 +82,7 @@ import {
   type SearchHit,
 } from '@/modules/catalogue'
 import { documentTotals, lineTotalText } from '@/modules/sales/amounts'
+import type { SaleDocType } from '@/modules/sales/documentNumber'
 import {
   PRICE_MESSAGES,
   addArticle,
@@ -80,7 +96,8 @@ import {
   stepQuantity,
   type SaleLine,
 } from '@/modules/sales/sale'
-import { SALE_MESSAGES, recordSale, type SaleProgress } from '@/modules/sales/saleWrite'
+import { SALE_MESSAGES, SALE_DOC_TYPE, recordSale, type SaleProgress } from '@/modules/sales/saleWrite'
+import { loadForTransformation } from '@/modules/sales/transform'
 import { Quantity, stockLevelsFor, type StockLevel } from '@/modules/stock'
 
 type View = 'list' | 'grid'
@@ -139,6 +156,67 @@ function Thumbnail({
       }`}
     >
       {name.trim().charAt(0).toUpperCase()}
+    </div>
+  )
+}
+
+/*
+ * Ce que chaque type de document s'appelle à l'écran. Le genre change la phrase
+ * de confirmation — « commande enregistrée », « bon enregistré » —, donc elle
+ * est écrite en entier plutôt que recomposée : une phrase fausse se lit, et
+ * personne ne relit un gabarit.
+ */
+const DOC_TYPE_LABELS: Readonly<
+  Record<SaleDocType, { short: string; save: string; saved: (docNumber: string) => string }>
+> = {
+  quote: {
+    short: 'Devis',
+    save: 'Enregistrer le devis',
+    saved: (docNumber) => `Devis ${docNumber} enregistré.`,
+  },
+  order: {
+    short: 'Commande',
+    save: 'Enregistrer la commande',
+    saved: (docNumber) => `Commande ${docNumber} enregistrée.`,
+  },
+  delivery_note: {
+    short: 'Bon',
+    save: 'Enregistrer le bon',
+    saved: (docNumber) => `Bon ${docNumber} enregistré.`,
+  },
+}
+
+/*
+ * Le choix du type, sur le patron de `ViewSwitch` : BRAND-UI § 8 ne connaît que
+ * trois variantes de bouton, et aucune ne dit « choix segmenté ». Un groupe de
+ * boutons primaire/secondaire, dont l'état se lit par `aria-pressed`, est ce que
+ * l'écran emploie déjà pour la présentation des produits.
+ */
+function DocTypeSwitch({
+  docType,
+  onChange,
+}: {
+  docType: SaleDocType
+  onChange: (docType: SaleDocType) => void
+}) {
+  const options: readonly SaleDocType[] = ['quote', 'order', 'delivery_note']
+  return (
+    <div role="group" aria-label="Type de document" className="flex gap-2">
+      {options.map((value) => (
+        <button
+          key={value}
+          type="button"
+          aria-pressed={docType === value}
+          onClick={() => onChange(value)}
+          className={
+            docType === value
+              ? 'h-touch flex-1 rounded-button bg-ink-600 px-4 text-body text-white'
+              : 'h-touch flex-1 rounded-button border border-paper-300 bg-white px-4 text-body text-ink-700'
+          }
+        >
+          {DOC_TYPE_LABELS[value].short}
+        </button>
+      ))}
     </div>
   )
 }
@@ -400,9 +478,43 @@ export function SaleScreen() {
 
   const [lines, setLines] = useState<SaleLine[]>([])
   const [progress, setProgress] = useState<SaleProgress>({})
+  const [docType, setDocType] = useState<SaleDocType>(SALE_DOC_TYPE)
   const [saving, setSaving] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
   const [issued, setIssued] = useState<string | null>(null)
+
+  /*
+   * La transformation. `documentId` vient de la route `/sale/from/:documentId` :
+   * absent, cet écran est l'écran de vente ordinaire et rien ici ne part.
+   *
+   * Les lignes reprises entrent **une fois**, à l'arrivée : ensuite elles
+   * appartiennent à la saisie, et une relecture les écraserait sous les doigts
+   * du vendeur. Une lecture en échec laisse l'écran utilisable — il dit ce qui
+   * n'a pas marché, et le vendeur peut saisir le bon à la main plutôt que de
+   * rester devant une impasse (SPEC § 2.6).
+   */
+  const { documentId } = useParams<{ documentId: string }>()
+  const [source, setSource] = useState<{ documentId: string; docNumber: string | null } | null>(
+    null,
+  )
+
+  useEffect(() => {
+    if (documentId === undefined) return
+    let current = true
+    loadForTransformation(documentId)
+      .then((loaded) => {
+        if (!current) return
+        setSource({ documentId: loaded.documentId, docNumber: loaded.docNumber })
+        setDocType(loaded.target ?? SALE_DOC_TYPE)
+        setLines(loaded.lines)
+      })
+      .catch((error: unknown) =>
+        setFailure(error instanceof Error ? error.message : SALE_MESSAGES.notSaved),
+      )
+    return () => {
+      current = false
+    }
+  }, [documentId])
 
   const search = useMemo(() => latestOnly(searchProducts), [])
 
@@ -527,6 +639,8 @@ export function SaleScreen() {
       const carried: SaleProgress = { ...progress }
       const confirmed = await recordSale({
         lines,
+        docType,
+        ...(source === null ? {} : { sourceDocumentId: source.documentId }),
         deviceId: installationId(),
         prefix: cachedDevicePrefix(),
         progress: carried,
@@ -554,12 +668,23 @@ export function SaleScreen() {
   return (
     <main className="px-4 py-6">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
-        <h1 className="text-title text-paper-900">Vente</h1>
+        {/* En transformation, c'est un écran de détail : un retour, pas
+            d'onglet (BRAND-UI § 13). Le titre nomme le document d'origine dès
+            qu'il est lu — avant, il dit ce que l'écran est en train de faire,
+            plutôt que de laisser un titre vide le temps du réseau. */}
+        {documentId !== undefined && <BackLink to="/sale" label="Vente" />}
+        <h1 className="text-title text-paper-900">
+          {documentId === undefined
+            ? 'Vente'
+            : source?.docNumber === null || source === null
+              ? 'Transformer un document'
+              : `Transformer ${source.docNumber}`}
+        </h1>
 
         {issued !== null && (
           <div className="flex flex-col items-start gap-2 rounded-card border border-paper-200 bg-white p-4">
             <p role="status" className="text-body text-paper-900">
-              Bon <span className="tabular">{issued}</span> enregistré.
+              {DOC_TYPE_LABELS[docType].saved(issued)}
             </p>
             <button
               type="button"
@@ -576,6 +701,11 @@ export function SaleScreen() {
             {failure}
           </p>
         )}
+
+        {/* Le type de document, avant tout le reste : c'est lui qui décide ce
+            que « Enregistrer » veut dire, et seul le bon fera bouger le stock
+            (RÈGLE M3-5). */}
+        <DocTypeSwitch docType={docType} onChange={setDocType} />
 
         {/* Les trois entrées. Le champ et le scan nourrissent la même liste. */}
         <div className="flex flex-col gap-2">
@@ -756,7 +886,7 @@ export function SaleScreen() {
             onClick={() => void save()}
             className="flex h-button items-center justify-center rounded-button bg-ink-600 text-body text-white disabled:bg-paper-300 disabled:text-paper-700"
           >
-            {saving ? 'Enregistrement…' : 'Enregistrer le bon'}
+            {saving ? 'Enregistrement…' : DOC_TYPE_LABELS[docType].save}
           </button>
         </div>
       </div>
