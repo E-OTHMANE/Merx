@@ -7,6 +7,22 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
 
 ## Ouvertes
 
+### Depuis E4-06
+
+- [ ] **Deux retours du même bon qui se croisent, et un retour qui croise
+      l'annulation de son bon.** `merx.require_returnable_quantity()` prend un
+      verrou `for update` sur le **bon d'origine** avant de compter : c'est la
+      seule ligne que les deux chemins traversent, l'annulation du bon étant
+      elle-même un UPDATE sur cette ligne. En READ COMMITTED la seconde
+      transaction attend le commit de la première, puis voit son retour et
+      refuse l'excès. **Rien ne le mesure** : il faudrait deux connexions
+      entrelacées, ce que le harnais ne sait pas faire — même limite que les
+      deux lignes d'E4-01 et d'E4-02 ci-dessous, et **se ferme avec le même
+      harnais, noté en E9-03**. Ce qui est mesuré, et qui est la propriété de
+      tous les jours : deux retours **successifs** dont le second dépasse, le
+      retour annulé qui libère son registre, le brouillon qui ne le consomme
+      pas (`supabase/tests/returns.test.ts`).
+
 ### Depuis E4-04
 
 - [ ] **Le plancher d'une vente faite hors ligne.** `merx.require_floor_price()`

@@ -240,7 +240,13 @@ describe('le format', () => {
         ' order by e.enumsortorder',
     )
 
-    expect(rows.map((r) => r.label)).toStrictEqual(['quote', 'order', 'delivery_note'])
+    expect(rows.map((r) => r.label)).toStrictEqual([
+      'quote',
+      'order',
+      'delivery_note',
+      // Le quatrième, ajouté en E4-06 : `RT`, le bon de retour.
+      'return',
+    ])
 
     for (const { label, code } of rows) {
       expect(code, `le code de ${label} en base`).not.toBeNull()

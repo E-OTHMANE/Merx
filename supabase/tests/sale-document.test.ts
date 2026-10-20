@@ -326,13 +326,14 @@ async function documentIn(status: Status, docType = 'delivery_note'): Promise<st
  * temps de l'insertion — leur `alter table` est transactionnel, le point de
  * sauvegarde du cas le défait :
  *
- *   — `require_open_movement_type`, parce que `return`, `receipt` et
- *     `inventory` restent fermés (RÈGLE M2-5) ;
- *   — `require_sale_origin`, ajouté en E4-05 : le type `sale` est ouvert
- *     depuis, mais son mouvement naît de la confirmation d'un bon et
- *     l'insertion directe est refusée. Ce fichier-ci mesure l'**inversion**
- *     d'un mouvement de vente, pas sa naissance ; la naissance et son garde
- *     sont mesurés dans `sale-lifecycle.test.ts`.
+ *   — `require_open_movement_type`, parce que `receipt` et `inventory` restent
+ *     fermés (RÈGLE M2-5) ;
+ *   — `require_sale_origin` (E4-05) et `require_return_origin` (E4-06) : les
+ *     types `sale` et `return` sont ouverts depuis, mais leurs mouvements
+ *     naissent de la confirmation d'un document et l'insertion directe est
+ *     refusée. Ce fichier-ci mesure l'**inversion**, pas la naissance ; la
+ *     naissance et ses gardes sont mesurés dans `sale-lifecycle.test.ts` et
+ *     `returns.test.ts`.
  */
 async function postSale(
   document: string,
@@ -344,12 +345,14 @@ async function postSale(
   await client.query('reset role')
   await client.query('alter table public.stock_movement disable trigger require_open_movement_type')
   await withoutTrigger(client, 'public.stock_movement', 'require_sale_origin', async () => {
-    await client.query(
-      'insert into public.stock_movement (tenant_id, variant_id, warehouse_id, movement_type, quantity,' +
-        ' source_type, source_id, note)' +
-        " values ($1, $2, $3, $4::public.stock_movement_type, $5, 'sale_document', $6, $7)",
-      [fixture.tenant, variant, fixture.warehouse, movementType, quantity, document, note],
-    )
+    await withoutTrigger(client, 'public.stock_movement', 'require_return_origin', async () => {
+      await client.query(
+        'insert into public.stock_movement (tenant_id, variant_id, warehouse_id, movement_type,' +
+          ' quantity, source_type, source_id, note)' +
+          " values ($1, $2, $3, $4::public.stock_movement_type, $5, 'sale_document', $6, $7)",
+        [fixture.tenant, variant, fixture.warehouse, movementType, quantity, document, note],
+      )
+    })
   })
   await client.query('alter table public.stock_movement enable trigger require_open_movement_type')
 }
@@ -442,14 +445,18 @@ async function auditEntries(): Promise<
 /* ========================================================================== */
 
 describe('le modèle', () => {
-  it('connaît trois types de document, et aucune facture fiscale', async () => {
+  it('connaît quatre types de document, et aucune facture fiscale', async () => {
     await client.query('reset role')
     const { rows } = await client.query<{ label: string }>(
       `select e.enumlabel::text as label from pg_enum e
        join pg_type t on t.oid = e.enumtypid and t.typname = 'sale_doc_type'
        order by e.enumsortorder`,
     )
-    expect(rows.map((r) => r.label)).toEqual(['quote', 'order', 'delivery_note'])
+    // `return` est le quatrième, ajouté en E4-06 — et en **dernier** :
+    // isolation.ts peuple une colonne enum avec la première étiquette, et une
+    // ligne de peuplement doit rester un devis ordinaire (un retour exige un
+    // bon d'origine, sale_document_return_has_source).
+    expect(rows.map((r) => r.label)).toEqual(['quote', 'order', 'delivery_note', 'return'])
   })
 
   it('connaît quatre statuts, le brouillon en premier', async () => {
@@ -1057,14 +1064,21 @@ describe('l\'annulation', () => {
     })
   })
 
-  it('n\'inverse que les mouvements de vente de ce document-là', async () => {
+  /*
+   * Le filtre de type, **élargi en E4-06** : l'inversion couvre ce qu'une
+   * confirmation a écrit — `sale` pour un bon, `return` pour un retour — et
+   * rien d'autre. Un mouvement d'un **autre** type qui nomme le document — ici
+   * un `receipt`, la réception d'E8-02 — n'est pas né de sa confirmation :
+   * l'annulation du document ne le défait pas.
+   */
+  it('n\'inverse que ce que la confirmation de ce document-là a écrit', async () => {
     await inCase(async () => {
       const target = await documentIn('confirmed')
       const neighbour = await documentIn('confirmed')
       await postSale(target, fixture.variant, '-3')
       await postSale(neighbour, fixture.variant, '-5')
-      // Un mouvement qui nomme le document sans être une vente : pas le sien à inverser.
-      await postSale(target, fixture.variant, '7', 'return', 'retour de marchandise')
+      // Un mouvement qui nomme le document sans naître de sa confirmation.
+      await postSale(target, fixture.variant, '7', 'receipt', 'réception du fournisseur')
       expect(await level(fixture.variant)).toBe('-1.000')
 
       await asApplication('owner')
@@ -1073,11 +1087,11 @@ describe('l\'annulation', () => {
          where id = '${target}'`,
       )
 
-      // +3 seulement : la vente du voisin et le retour n'ont pas bougé.
+      // +3 seulement : la vente du voisin et la réception n'ont pas bougé.
       expect(await level(fixture.variant)).toBe('2.000')
       expect(await movementsOf(neighbour)).toHaveLength(1)
       expect((await movementsOf(target)).map((m) => m.movement_type).sort()).toEqual([
-        'return',
+        'receipt',
         'sale',
         'sale_cancellation',
       ])
@@ -1245,18 +1259,19 @@ describe('l\'annulation', () => {
 
 describe('sale_cancellation', () => {
   /*
-   * E4-05 a ouvert `sale` sur `create_sale`, comme l'annonçait l'addendum E4-01
-   * de la RÈGLE M2-5. L'énumération le dit, plutôt que de laisser le registre
-   * grossir sans que rien ne le compte : `return`, `receipt` et `inventory`
-   * restent fermés (E4-06, E8-02, E3-04).
+   * E4-05 a ouvert `sale` sur `create_sale` et E4-06 `return`, comme
+   * l'annonçait l'addendum E4-01 de la RÈGLE M2-5. L'énumération le dit, plutôt
+   * que de laisser le registre grossir sans que rien ne le compte : `receipt` et
+   * `inventory` restent fermés (E8-02, E3-04).
    */
-  it('est ouvert sur cancel_document, et trois types restent fermés', async () => {
+  it('est ouvert sur cancel_document, et deux types restent fermés', async () => {
     await client.query('reset role')
     const { rows } = await client.query<{ movement_type: string; capability: string }>(
       'select movement_type::text, capability from merx.movement_type_capability order by 1',
     )
     expect(rows).toEqual([
       { movement_type: 'adjustment', capability: 'adjust_stock' },
+      { movement_type: 'return', capability: 'create_sale' },
       { movement_type: 'sale', capability: 'create_sale' },
       { movement_type: 'sale_cancellation', capability: 'cancel_document' },
     ])
@@ -1270,7 +1285,7 @@ describe('sale_cancellation', () => {
     expect(rows.map((r) => r.role)).toEqual(['owner'])
   })
 
-  for (const type of ['return', 'receipt', 'inventory']) {
+  for (const type of ['receipt', 'inventory']) {
     it(`laisse ${type} fermé au patron : rien ne s'écrit sans écran`, async () => {
       await inCase(async () => {
         await asApplication('owner')

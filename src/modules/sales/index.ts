@@ -7,6 +7,8 @@
  * E4-02 a apporté la numérotation, E4-03 l'écran de vente, E4-04 la résolution
  * du prix — forçage, incitation au palier, plancher —, E4-05 le cycle des
  * documents : la filiation, et le stock qui bouge à la confirmation d'un bon.
+ * E4-06 apporte le retour : un quatrième type de document, le stock qui revient,
+ * et jamais plus que le bon n'a livré.
  */
 
 export {
@@ -26,6 +28,7 @@ export {
   type ConfirmedDocument,
   type SequenceKey,
 } from '@/modules/sales/numbering'
+export { ReturnScreen } from '@/modules/sales/ReturnScreen'
 export { SaleScreen } from '@/modules/sales/SaleScreen'
 export {
   documentTotals,
@@ -64,6 +67,14 @@ export {
   loadForTransformation,
   type TransformationSource,
 } from '@/modules/sales/transform'
+export {
+  RETURN_DOC_TYPE,
+  RETURN_MESSAGES,
+  lineOverReturnable,
+  loadForReturn,
+  returnIsComplete,
+  type ReturnSource,
+} from '@/modules/sales/returns'
 export {
   documentLineage,
   type DocumentLineage,

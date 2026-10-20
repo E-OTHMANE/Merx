@@ -372,7 +372,7 @@ Unicité sur `(variant_id, warehouse_id)`.
 `stock_movement`
 `id, tenant_id, variant_id, warehouse_id, movement_type, quantity, source_type, source_id, note, device_id, created_by, created_at`
 
-- `movement_type` : `sale | return | receipt | adjustment | inventory | sale_cancellation` — le sixième, ajouté en E4-01 : l'inverse d'un mouvement `sale` quand son document est annulé (RÈGLE M2-5, addendum E4-01)
+- `movement_type` : `sale | return | receipt | adjustment | inventory | sale_cancellation` — le sixième, ajouté en E4-01 : l'inverse de ce que la **confirmation** d'un document avait écrit, quand ce document est annulé — `sale` pour un bon, `return` pour un retour (RÈGLE M2-5, addenda E4-01 et E4-06)
 - `quantity` signée, négative en sortie.
 - `note` : le motif, obligatoire sur un `adjustment` et libre partout ailleurs — RÈGLE M2-5.
 - `created_by` a pour défaut `merx.current_app_user()` : le jeton ne porte pas l'identifiant `app_user`, donc l'écran ne peut pas le remplir, et l'auteur d'un mouvement se lit à l'historique (E3-02). Arbitré en E3-03.
@@ -406,7 +406,11 @@ La table est vide à la création du module : tant qu'aucun écran n'écrit un t
 
 Le registre existe parce que le motif d'E4-01 ne se transpose pas : `sale_cancellation` est un mot distinctif au corps d'une fonction, **`sale` ne l'est pas**, et chercher le littéral transtypé (`'sale'::public.stock_movement_type`) se contourne en écrivant `movement_type = 'sale'`, que Postgres accepte. La règle ne lit donc plus aucun littéral : elle demande qui insère, et confronte au registre. Limite résiduelle : un écrivain *déclaré* pourrait écrire un autre type que celui qu'on lui prête.
 
-`return` (E4-06), `receipt` (E8-02) et `inventory` (E3-04) restent fermés.
+*Addendum E4-06.* **`return` est ouvert, sur `create_sale`** — la seconde capacité qu'annonçait l'addendum E4-01, et toujours aucune nouvelle : les quatre copies de la matrice ne bougent pas. Un mouvement de retour **naît de la confirmation d'un bon de retour**, et la forme est celle de `sale`, pièce pour pièce : `merx.write_return_movements()` l'unique écrivain (trigger AFTER sur `draft → confirmed` au seul type `return`, un mouvement **positif** par ligne, `security invoker`), `merx.require_return_origin()` qui refuse l'écriture à la main (`pg_trigger_depth()`, `42501` rendu 403, sa propre phrase), et la ligne qu'il faut à `merx.movement_writer`. Sans ce garde, `create_sale` serait un `POST` de stock sans écran, sans bon d'origine à qui rendre compte, et sans entrée de journal.
+
+**Et `sale_cancellation` s'élargit, d'une phrase :** il inverse désormais les mouvements que la confirmation du document avait écrits, `sale` **ou** `return`. Un retour est un document de vente, donc annulable depuis E4-01 ; avec le filtre d'origine (`movement_type = 'sale'` seul), un retour annulé passait à `cancelled` en gardant le stock qu'il avait rendu. Le filtre reste un filtre — un `sale_cancellation` ne se réinverse jamais. Un septième type `return_cancellation` aurait coûté un label, deux migrations, un garde d'origine, une entrée au registre et une ligne de capacité pour une seule différence : le signe.
+
+`receipt` (E8-02) et `inventory` (E3-04) restent fermés.
 
 **Le motif d'un ajustement est obligatoire**, en base comme à l'écran : `stock_movement_adjustment_reason` refuse un `adjustment` dont `note` est vide ou en blancs, et ne regarde aucun autre type — une vente, une réception, un inventaire sont justifiés par leur document. § 2.6 ne s'y applique pas : cette RÈGLE-là vise les formulaires de création d'entités de référence, inscrits par `merx.register_creation_form()`, et le motif n'est pas un accessoire de l'ajustement, il en est le contenu. Un ajustement sans motif est un chiffre changé à la main sans raison, ce que la trace exigée ci-dessous existe pour empêcher. Arbitré en E3-03.
 
@@ -428,7 +432,7 @@ Le registre existe parce que le motif d'E4-01 ne se transpose pas : `sale_cancel
 - `doc_number` et `issued_at` sont nuls tant que le document est un brouillon (RÈGLE M3-2).
 - `cancellation_reason` est le motif de l'annulation, obligatoire dès que `status = 'cancelled'` — en base, par `sale_document_cancellation_reason`, pas seulement à l'écran. Ajouté en E4-01 : sans lui une annulation par l'API serait anonyme, et l'entrée `document_cancellation` du journal n'aurait rien à retenir (même raisonnement que le motif d'un ajustement, § 7).
 
-- `doc_type` : `quote | order | delivery_note`
+- `doc_type` : `quote | order | delivery_note | return` — le quatrième ajouté en E4-06 (voir ci-dessous)
 - `status` : `draft | confirmed | delivered | cancelled`
 
 `sale_line`
@@ -454,7 +458,15 @@ Le registre existe parce que le motif d'E4-01 ne se transpose pas : `sale_cancel
 - **Table dérivée** depuis E4-02 : `merx.advance_document_sequence()`, un trigger sur `sale_document`, y pose le plus grand numéro que l'appareil a réellement écrit. Elle ne s'écrit pas à la main, et `last_number` ne recule jamais (`greatest`). Le serveur ne l'attribue pas, il la **constate** — RÈGLE M3-2 intacte.
 - C'est la **borne** que l'appareil lit pour choisir son prochain numéro. `year` est l'année pleine (`2026`) ; le numéro n'en porte que les deux derniers chiffres.
 
-`return_document` + `return_line`
+**Un retour est un `sale_document` de type `return`, et non une table à part.** E4-06 a compté ce que chaque voie oblige à refaire, et c'est pour cela que `return_document` + `return_line` ne figurent plus ici.
+
+- `document_sequence` est clé par `(commerce, appareil, doc_type, année)` : l'étiquette donne au retour son propre compteur sans qu'une ligne soit ajoutée. Une table à part exigeait une **seconde table dérivée**, son trigger, son écrivain au registre, sa seconde unicité, et une seconde borne à lire par l'appareil — jusque dans la base locale d'E9.
+- Cinq fonctions de numérotation sont typées `public.sale_doc_type` ou posées sur `sale_document` : à dupliquer, ou à rendre génériques sur deux tables.
+- Le gel (M3-3), les totaux (`line_total` engendrée, `sale_document_total_consistent`, `merx.require_consistent_totals()`), l'annulation et son motif obligatoire, l'entrée `document_cancellation` au journal : tout cela vaut déjà pour la table, et rien n'en vaudrait pour une autre.
+- `source_document_id` **est** le « retour lié à un bon existant », avec sa clé composite, son index partiel et un garde de chaîne qui refuse déjà un original brouillon, annulé, ou d'un autre type.
+- Ce que l'étiquette coûte, et qui est payé : la table des codes de type a **quatre** copies (`merx.doc_type_code()`, le motif de `merx.require_document_number_shape()`, `DOC_TYPE_CODES` et `TRANSFORM_TARGET` côté appareil), et `document-numbering.test.ts` énumère les étiquettes **lues au catalogue** — la suite rougit d'elle-même jusqu'à ce que les copies soient à jour.
+- Une ligne de retour est une `sale_line` à quantité **positive**, et le total d'un retour est la **magnitude** de l'avoir, positive comme tous les montants : le signe vit dans `entry_type = 'credit'` du grand livre (M4, E6-02), pas dans le document.
+- Le **motif** d'un retour est `notes`, la note libre du document — saisissable, jamais obligatoire. Un motif codifié n'aurait de sens que pour un type sur quatre, et rien en V1 ne compte les retours par motif ; l'écran l'étiquette « Motif du retour ».
 
 **Règles**
 
@@ -462,7 +474,7 @@ Le registre existe parce que le motif d'E4-01 ne se transpose pas : `sale_cancel
 
 **RÈGLE M3-2** — Numérotation **locale**, préfixée par l'appareil : `BL-A-26-00001`. Séquence par `(tenant, device, doc_type, year)`, sans trou. Attribuée à la confirmation. Le serveur n'attribue rien.
 
-*Le format, arbitré en E4-02.* `BL-A-26-00001` : le code du type (`DV` devis, `CM` commande, `BL` bon de livraison), la lettre de l'appareil (§ 2.5, unique par commerce et jamais recyclée), l'année sur **deux** chiffres, la séquence sur **cinq**.
+*Le format, arbitré en E4-02.* `BL-A-26-00001` : le code du type (`DV` devis, `CM` commande, `BL` bon de livraison, `RT` retour depuis E4-06), la lettre de l'appareil (§ 2.5, unique par commerce et jamais recyclée), l'année sur **deux** chiffres, la séquence sur **cinq**.
 
 - **L'année est dans le numéro** parce que la séquence est annuelle. Sans elle, le premier bon de 2027 porterait le texte du premier bon de 2026, et aucune unicité ne pouvait être posée sur `doc_number` — ce que E4-01 avait relevé en s'abstenant d'en poser une.
 - **Deux chiffres et non quatre**, et c'est le papier qui décide : le numéro se lit à haute voix au comptoir et se dicte au téléphone. `BL-A-26-00001` fait douze caractères, `BL-A-2026-00001` quinze. Le siècle n'est jamais en doute sur un bon qu'un grossiste garde, et l'ordre du texte n'est comparé qu'à l'intérieur d'une même année, puisque l'année est dans la clé de la séquence.
@@ -476,6 +488,8 @@ Le registre existe parce que le motif d'E4-01 ne se transpose pas : `sale_cancel
 | `sale_document_number_per_tenant` | un numéro n'est porté qu'une fois par commerce. **L'autorité** : l'appareil choisit, l'index tranche — même partage qu'`variant_sku_per_tenant` pour le SKU engendré (§ 6) | `23505` | 409 |
 | `merx.require_document_number_shape()` | le numéro dit la vérité sur sa ligne : son code est celui du type, sa lettre celle de `device_id`, son année celle d'`issued_at`. Quatre branches, quatre phrases | `22023` | 400 |
 | `sale_document_number_when_numbered`, `sale_document_issued_at_when_numbered` | numéro et date nuls tant que brouillon, posés dès la confirmation | `23514` | 400 |
+
+*`RT`, et pas `BR`, arbitré en E4-06.* « Bon de retour » appellerait `BR` — et `BL` et `BR` ne diffèrent que d'une lettre sur un numéro qui se lit à haute voix au comptoir et se dicte au téléphone, ce qui est précisément la raison pour laquelle l'année ne fait que deux chiffres. `RT` ne partage aucune position avec `BL`, `CM` ni `DV`.
 
 La branche « appareil » n'est pas une politesse : la lettre est tout ce qui sépare deux tablettes qui ne se parlent pas. Si l'appareil A pouvait écrire un numéro en « B », il prendrait un numéro que B imprimera légitimement plus tard — et c'est B que l'unicité refuserait, des jours après, sur un papier déjà remis.
 
@@ -492,7 +506,9 @@ La branche « appareil » n'est pas une politesse : la lettre est tout ce qui s�
 *Arbitré en E4-05.* La filiation est **une colonne sur l'enfant**, `sale_document.source_document_id`, et non une table de liens : un enfant n'a qu'un parent — c'est la définition d'« issu de » — et les deux sens se lisent, le parent par la colonne, les enfants par l'index partiel `sale_document_source`.
 
 - **Un parent, plusieurs enfants, et aucune unicité.** Une commande de 100 livrée en deux camions fait deux bons ; un devis accepté à moitié fait deux commandes. C'est le cas normal, pas une anomalie.
-- **La chaîne admise vit en données**, `merx.document_transformation` : devis → commande, devis → bon, commande → bon. **Le saut `devis → bon` est admis** — un client accepte un devis et on le livre ; l'interdire forcerait une commande fictive pour le cas le plus courant du comptoir. Rien ne part d'un bon de livraison, et aucun lien ne remonte la chaîne.
+- **La chaîne admise vit en données**, `merx.document_transformation` : devis → commande, devis → bon, commande → bon, et **bon → retour** depuis E4-06. **Le saut `devis → bon` est admis** — un client accepte un devis et on le livre ; l'interdire forcerait une commande fictive pour le cas le plus courant du comptoir. Aucun lien ne remonte la chaîne.
+
+  *Corrigé en E4-06 :* la note d'E4-05 disait « rien ne part d'un bon de livraison ». Un **retour** part d'un bon, et c'est la même colonne et le même garde qui le tiennent (RÈGLE M3-9). Ce n'est pas le pas suivant d'une chaîne de vente mais le geste inverse, et c'est pourquoi l'écran de transformation ne le propose pas — `TRANSFORM_TARGET[delivery_note]` reste nul, le retour a sa propre porte.
 - `merx.require_transformation_shape()` tient quatre branches, quatre phrases, `22023` rendu **400** : pas d'auto-référence, pas d'original brouillon (il n'y a rien à transformer), pas d'original annulé, et la chaîne. L'original hors du commerce ne reçoit aucun avis de ce garde : c'est la clé composite qui refuse (`23503`, rendu 409).
 - **L'original n'est pas muté, et rien n'a eu à être ajouté pour cela** : il est figé depuis sa confirmation (RÈGLE M3-3). La transformation ne fait que créer la ligne de l'enfant.
 - **Le prix repris n'est pas un forçage de celui qui transforme.** Une ligne copiée porte le prix du document d'origine et `overridden_price` **nul**, quoi qu'en dise la grille du jour. Recalculer la colonne ferait écrire une entrée `price_override` au nom de l'employé qui transforme un devis fait par le patron un mois plus tôt — `merx.log_audit()` prend l'auteur dans le jeton de celui qui écrit (E1-04), et le journal ne pose qu'une question, « qui ». `price_source` se **mesure** contre la grille du jour (`auto` si le prix repris est celui du palier, `manual` sinon) ; le forçage d'origine reste écrit sur le document d'origine, que la filiation retrouve. Le plancher et l'arrondi d'aujourd'hui s'appliquent aux lignes copiées : un devis ancien passé sous un plancher relevé depuis est refusé, au comptoir, devant quelqu'un qui peut encore agir.
@@ -531,9 +547,31 @@ Arrondi **demi loin de zéro**, **au niveau de la ligne**. Tranché en E4-04 ; E
 
 **RÈGLE M3-8** — **Le plancher et la trace du forçage.** Un prix sous `variant.floor_price` exige `override_price_below_floor` (§ 3.1, l'astérisque) : `merx.require_floor_price()`, un trigger sur `sale_line`, refuse en `42501` rendu **403**, avec sa phrase — qui n'est pas celle de l'écran, pour qu'un test sache lequel des deux niveaux a refusé (E1-02).
 
+- **Il ne vaut pas sur un retour**, arbitré en E4-06 : le prix d'une ligne de retour est celui du bon d'origine — c'est ce que le client a payé, donc ce qu'on lui rend —, et un retour d'un bon ancien passé sous un plancher relevé depuis serait refusé en `42501`, un refus de vente appliqué à un remboursement. Le garde lit donc `doc_type` **dans le même `select`** que `floor_price` — une jointure, pas un aller-retour de plus sur le chemin des dix lignes au comptoir — et sort tôt. L'avoir est borné ailleurs, par la RÈGLE M3-9.
 - Le garde **ne regarde pas `price_source`** : s'il ne valait que pour `manual`, un employé poserait `auto` par l'API et passerait dessous. Conséquence assumée : un palier réglé *sous* le plancher est invendable par l'employé — c'est une contradiction de la grille, et le refus est le bon côté de l'erreur.
 - **Tout forçage est tracé** sous l'étiquette `price_override` (§ 9, RÈGLE M8-1), par un trigger conditionné à `overridden_price is not null`.
 - **La trace est posée sur la ligne, à l'écriture du prix forcé — jamais à la confirmation du document, et cela ne se « corrige » pas.** `merx.log_audit()` prend l'auteur dans le jeton de **celui qui écrit** (E1-04). Journalisée à la transition `draft → confirmed`, l'entrée attribuerait le forçage à celui qui confirme — le patron qui valide, pas l'employé qui a baissé le prix. Le journal ne pose qu'une question, « qui », et il y répondrait faux. Posée sur la ligne, le garde du plancher et la trace voient de surcroît le même instant : un forçage refusé n'entre pas au journal, un forçage accepté y est, dans la même transaction. Et « pas à chaque frappe » est déjà tenu par E4-03 : rien n'est écrit pendant la saisie, les lignes partent en un seul appel à l'appui sur « Enregistrer le bon ».
+
+**RÈGLE M3-9** — **Un retour ne rend jamais plus que son bon n'a livré.** Un retour est lié à un bon de livraison confirmé, total ou partiel, et jamais au-delà des quantités de ce bon, retours précédents déduits. Écrite en E4-06.
+
+Contrairement au reste à livrer de la RÈGLE M3-4 — où rien ne compare les quantités d'un enfant à celles de son parent, et où une commande de 100 peut donner deux bons de 100 —, l'excès **crée** ici deux choses à partir de rien : du stock, et un avoir. Un bon de trop est une erreur de gestion qui se voit sur le papier ; un retour de trop est une fuite.
+
+*Les pièces, et chacune sa phrase.*
+
+| Garde | Ce qu'il tient | Code | Statut |
+|---|---|---|---|
+| `sale_document_return_has_source` | un retour n'est pas issu de *rien*. Le garde de chaîne ne parle que si `source_document_id` est posé | `23514` | 400 |
+| `merx.document_transformation` + `merx.require_transformation_shape()` | l'origine est un **bon**, ni brouillon ni annulé — rien d'ajouté, la chaîne d'E4-05 suffit | `22023` | 400 |
+| `merx.require_returnable_quantity()`, branche quantité | Σ lignes du retour ≤ Σ lignes du bon − Σ déjà rendu, **par variante** | `PT400` | 400 |
+| `merx.require_returnable_quantity()`, branche avoir | Σ `line_total` du retour ≤ Σ d'origine − Σ déjà crédité. Sans elle, un `POST` crédite 1 000 DH pour une pièce vendue 9 DH, et la branche quantité ne voit rien passer | `PT400` | 400 |
+| `merx.require_no_active_return()` | un bon qui porte un retour non annulé ne s'annule pas | `PT409` | 409 |
+
+- **À la confirmation, et là seulement.** C'est le moment où le stock et l'avoir naissent, et le contenu se figeait déjà (M3-3) ; un garde permanent sur `sale_line` refuserait de surcroît le brouillon lui-même, qui s'écrit avant ses lignes (E4-03). Même moment que `merx.require_consistent_totals()`.
+- **Ce qui compte comme « déjà rendu »** : les retours du même bon au statut `confirmed` ou `delivered`. Pas les brouillons — un retour abandonné bloquerait le bon pour toujours ; pas les annulés — leur stock est reparti, et leur avoir sera contre-écrit (M4-2).
+- **Le registre est tenu par variante**, non par ligne d'origine : le commerçant rapporte « cinq de ce produit », pas « cinq de la ligne 3 ». Un bon portant deux lignes de la même variante à deux prix n'arrive que par l'API — l'écran de vente fusionne — et la ligne de retour prend alors le **plus bas** des deux prix, si bien que la branche avoir ne refuse aucun retour total légitime.
+- **Deux retours ne se croisent pas, et un retour ne croise pas une annulation.** Le garde prend un verrou `for update` sur le **bon d'origine** avant de compter : une ligne que les deux chemins doivent traverser, et une seule — l'annulation du bon étant elle-même un UPDATE sur cette ligne. En READ COMMITTED, la seconde transaction attend le commit de la première puis voit son retour. Même raisonnement que le `for share` de `merx.reject_frozen_child_write()` ; non mesuré, faute d'un harnais à deux connexions entrelacées (`docs/PENDING-CHECKS.md`, E9-03).
+- **Pourquoi refuser l'annulation du bon plutôt que de la propager.** Un bon de 10 (−10), un retour de 3 (+3), puis l'annulation du bon (+10) : le stock finirait à **+3 de trop**, les pièces rendues comptées deux fois, et l'avoir du retour survivrait à une vente qui n'existe plus. Annuler les retours d'office déciderait à la place du patron, et une cascade d'annulations est exactement ce que l'ajout seul refuse (M2-2) : il annule ses retours, puis son bon, et chaque geste laisse sa trace et son motif. La phrase **nomme** le retour en cause.
+- **L'écriture au crédit du client n'est pas ici** : `client_ledger_entry` naît en E6-02, qui porte le critère, et `client_id` en E6-01. Un retour n'a aujourd'hui aucun client à créditer. Le crédit s'accrochera à la **même** table et à la **même** transition que le débit d'un bon confirmé, et un retour annulé demandera son écriture inverse.
 
 **Écrans.** Écran de vente (le plus critique de l'application), liste des documents, détail, retour, aperçu avant impression.
 

@@ -80,6 +80,12 @@ export interface RecordSaleRequest {
   deviceId: string
   /** `cachedDevicePrefix()` — sa lettre. */
   prefix: string | null
+  /**
+   * La note libre du document. Sur un retour, c'est le **motif** — saisissable,
+   * jamais obligatoire (E4-06). Posée à la naissance du brouillon : elle gèle
+   * avec lui à la confirmation (RÈGLE M3-3).
+   */
+  notes?: string
   /** Ce qu'une tentative précédente a déjà écrit. */
   progress: SaleProgress
   /** Appelé après chaque étape réussie, pour que l'appelant le retienne. */
@@ -149,6 +155,7 @@ export async function recordSale(request: RecordSaleRequest): Promise<ConfirmedD
         ...(request.sourceDocumentId === undefined
           ? {}
           : { source_document_id: request.sourceDocumentId }),
+        ...(request.notes === undefined ? {} : { notes: request.notes }),
       })
       .select('id')
       .single()

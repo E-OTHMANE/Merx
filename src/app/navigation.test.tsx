@@ -89,6 +89,11 @@ const DETAIL: Readonly<Record<string, { visit: string; parent: string; label: st
    * la transformation se poursuit.
    */
   '/sale/from/:documentId': { visit: '/sale/from/d-1', parent: '/sale', label: 'Vente' },
+  /*
+   * E4-06. Le retour d'un bon : un écran à part — il ne cherche rien et ne
+   * scanne rien —, mais le même rangement, et le même parent.
+   */
+  '/sale/return/:documentId': { visit: '/sale/return/bl-1', parent: '/sale', label: 'Vente' },
   '/users': { visit: '/users', parent: '/', label: 'Accueil' },
   '/users/new': { visit: '/users/new', parent: '/users', label: 'Employés' },
   '/devices': { visit: '/devices', parent: '/', label: 'Accueil' },

@@ -325,12 +325,20 @@ describe('la confirmation', () => {
 })
 
 describe('les codes de type', () => {
-  it('couvrent les trois types, et rien de plus', () => {
+  /*
+   * `return` est le quatrième, ajouté en E4-06 : `RT`, et pas `BR` — « BL » et
+   * « BR » ne diffèrent que d'une lettre sur un numéro qui se dicte au
+   * téléphone (SPEC § 8, RÈGLE M3-2). L'accord avec `merx.doc_type_code()` se
+   * mesure sur la vraie base, dans `supabase/tests/document-numbering.test.ts`,
+   * sur les étiquettes lues au catalogue ; ce cas-ci tient la couverture.
+   */
+  it('couvrent les quatre types, et rien de plus', () => {
     expect(Object.keys(DOC_TYPE_CODES).sort()).toStrictEqual([
       'delivery_note',
       'order',
       'quote',
+      'return',
     ])
-    expect(Object.values(DOC_TYPE_CODES).sort()).toStrictEqual(['BL', 'CM', 'DV'])
+    expect(Object.values(DOC_TYPE_CODES).sort()).toStrictEqual(['BL', 'CM', 'DV', 'RT'])
   })
 })

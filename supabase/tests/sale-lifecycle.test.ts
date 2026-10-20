@@ -529,6 +529,8 @@ describe('un mouvement de type sale', () => {
     )
     expect(rows).toEqual([
       { function_name: 'reverse_sale_movements', movement_type: 'sale_cancellation' },
+      // E4-06 : le retour a son écrivain, et il est déclaré comme les autres.
+      { function_name: 'write_return_movements', movement_type: 'return' },
       { function_name: 'write_sale_movements', movement_type: 'sale' },
     ])
   })
@@ -658,7 +660,16 @@ describe('la transformation', () => {
     const first = await confirmed('delivery_note', [[fixture.variant, '60', '10.00']], order)
     const second = await confirmed('delivery_note', [[fixture.variant, '40', '10.00']], order)
 
-    expect((await childrenOf(order)).map((c) => c.id)).toEqual([first, second])
+    /*
+     * Les deux enfants sont comparés **sans ordre**, et c'est une correction
+     * d'E4-06 : `created_at` a pour valeur `now()`, l'instant de la
+     * transaction, donc deux documents créés dans celle-ci le portent à
+     * l'identique et le `order by created_at` du harnais ne les range pas. Le
+     * cas passait par la chance de l'ordre physique des lignes, et il a fini
+     * par tomber. Ce qu'il mesure est qu'un parent porte **les deux** enfants,
+     * pas lequel vient d'abord.
+     */
+    expect((await childrenOf(order)).map((c) => c.id).sort()).toEqual([first, second].sort())
     expect(await level(fixture.variant)).toBe('0.000')
   })
 
@@ -676,6 +687,8 @@ describe('la transformation', () => {
       'select source_type::text, target_type::text from merx.document_transformation order by 1, 2',
     )
     expect(rows).toEqual([
+      // E4-06 : le retour est issu d'un bon, et c'est la même chaîne qui le dit.
+      { source_type: 'delivery_note', target_type: 'return' },
       { source_type: 'order', target_type: 'delivery_note' },
       { source_type: 'quote', target_type: 'delivery_note' },
       { source_type: 'quote', target_type: 'order' },

@@ -153,6 +153,12 @@ describe('la chaîne proposée', () => {
       quote: 'order',
       order: 'delivery_note',
       delivery_note: null,
+      /*
+       * Un bon ne se transforme pas : il se **retourne**, et le retour a sa
+       * propre porte (E4-06). La chaîne admise en base le connaît — c'est la
+       * même table —, cet écran-ci ne le propose pas.
+       */
+      return: null,
     })
   })
 })

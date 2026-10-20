@@ -67,7 +67,15 @@ import { resolvedPrice, type PriceSource, type SaleLine } from '@/modules/sales/
 export const TRANSFORM_TARGET: Readonly<Record<SaleDocType, SaleDocType | null>> = {
   quote: 'order',
   order: 'delivery_note',
+  /*
+   * Un bon ne se « transforme » pas : il se **retourne**, et le retour a sa
+   * propre porte (`/sale/return/:documentId`, E4-06). Ce n'est pas le pas
+   * suivant d'une chaîne de vente, c'est le geste inverse — la chaîne admise en
+   * base (`merx.document_transformation`) le connaît, cet écran-ci ne le
+   * propose pas.
+   */
   delivery_note: null,
+  return: null,
 }
 
 export const TRANSFORM_MESSAGES = {

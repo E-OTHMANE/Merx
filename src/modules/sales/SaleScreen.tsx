@@ -184,6 +184,17 @@ const DOC_TYPE_LABELS: Readonly<
     save: 'Enregistrer le bon',
     saved: (docNumber) => `Bon ${docNumber} enregistré.`,
   },
+  /*
+   * Le retour n'est pas un choix de cet écran-ci — il se prend sur le bon
+   * d'origine (`ReturnScreen`, E4-06) et `DocTypeSwitch` n'en propose que
+   * trois. L'étiquette est là parce que le type en a quatre, et elle dit la
+   * vérité si quelque chose amenait un retour jusqu'ici.
+   */
+  return: {
+    short: 'Retour',
+    save: 'Enregistrer le retour',
+    saved: (docNumber) => `Retour ${docNumber} enregistré.`,
+  },
 }
 
 /*

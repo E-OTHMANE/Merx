@@ -2,8 +2,8 @@
  * La forme d'un numéro de document — E4-02. `BL-A-26-00001`.
  *
  * SPEC § 8, RÈGLE M3-2. Le code du type (`DV` devis, `CM` commande, `BL` bon de
- * livraison), la lettre de l'appareil (E1-03, unique par commerce et jamais
- * recyclée), l'année sur deux chiffres, la séquence sur cinq.
+ * livraison, `RT` retour), la lettre de l'appareil (E1-03, unique par commerce
+ * et jamais recyclée), l'année sur deux chiffres, la séquence sur cinq.
  *
  * **Ce fichier ne dépend de rien.** C'est délibéré : `merx.doc_type_code()`
  * tient l'autre copie des codes en base, et
@@ -16,8 +16,8 @@
  * Ce qui parle au réseau est dans `numbering.ts`.
  */
 
-/** Les trois types de document du § 8. */
-export type SaleDocType = 'quote' | 'order' | 'delivery_note'
+/** Les quatre types de document du § 8 — `return` ajouté en E4-06. */
+export type SaleDocType = 'quote' | 'order' | 'delivery_note' | 'return'
 
 /**
  * Le code que porte le numéro, par type.
@@ -30,6 +30,10 @@ export const DOC_TYPE_CODES: Readonly<Record<SaleDocType, string>> = {
   quote: 'DV',
   order: 'CM',
   delivery_note: 'BL',
+  // E4-06. Pas `BR` (« bon de retour ») : `BL` et `BR` ne diffèrent que d'une
+  // lettre sur un numéro qui se dicte au téléphone, ce qui est précisément
+  // pourquoi l'année ne fait que deux chiffres.
+  return: 'RT',
 }
 
 /** Cinq chiffres, largeur fixe : l'ordre du texte est celui des nombres. */
@@ -43,7 +47,7 @@ const TIME_ZONE = 'Africa/Casablanca'
 const YEAR = new Intl.DateTimeFormat('fr-MA', { timeZone: TIME_ZONE, year: 'numeric' })
 
 const NUMBER_PATTERN = new RegExp(
-  `^(DV|CM|BL)-([A-Z])-([0-9]{2})-([0-9]{${SEQUENCE_DIGITS}})$`,
+  `^(DV|CM|BL|RT)-([A-Z])-([0-9]{2})-([0-9]{${SEQUENCE_DIGITS}})$`,
 )
 
 /**

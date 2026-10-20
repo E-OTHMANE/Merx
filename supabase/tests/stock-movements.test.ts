@@ -315,11 +315,12 @@ async function openType(movementType: string, capability: string): Promise<void>
  * mouvement saisi hors ligne, arrivé après de plus récents. Laissé de côté, la
  * colonne prend son défaut, `now()`.
  *
- * Seul `require_sale_origin` est suspendu (E4-05) : un mouvement `sale` naît de
- * la confirmation d'un bon, et ce peuplement-ci produit une série de
- * quantités, pas une vente. Un `withoutTriggers()` emporterait l'agrégat que
- * ces cas mesurent (CLAUDE.md, `session_replication_role`) ; le garde, lui, est
- * mesuré dans `sale-lifecycle.test.ts`.
+ * Seuls `require_sale_origin` (E4-05) et `require_return_origin` (E4-06) sont
+ * suspendus : ces deux mouvements naissent de la confirmation d'un document, et
+ * ce peuplement-ci produit une série de quantités, pas une vente ni un retour.
+ * Un `withoutTriggers()` emporterait l'agrégat que ces cas mesurent (CLAUDE.md,
+ * `session_replication_role`) ; les gardes, eux, sont mesurés dans
+ * `sale-lifecycle.test.ts` et `returns.test.ts`.
  */
 async function postMovement(
   movementType: string,
@@ -328,19 +329,21 @@ async function postMovement(
 ): Promise<void> {
   await client.query('reset role')
   await withoutTrigger(client, 'public.stock_movement', 'require_sale_origin', async () => {
-    await client.query(
-      'insert into public.stock_movement' +
-        ' (tenant_id, variant_id, warehouse_id, movement_type, quantity, created_at)' +
-        ' values ($1, $2, $3, $4::public.stock_movement_type, $5, coalesce($6::timestamptz, now()))',
-      [
-        fixture.tenant,
-        fixture.variant,
-        fixture.warehouse,
-        movementType,
-        quantity,
-        createdAt ?? null,
-      ],
-    )
+    await withoutTrigger(client, 'public.stock_movement', 'require_return_origin', async () => {
+      await client.query(
+        'insert into public.stock_movement' +
+          ' (tenant_id, variant_id, warehouse_id, movement_type, quantity, created_at)' +
+          ' values ($1, $2, $3, $4::public.stock_movement_type, $5, coalesce($6::timestamptz, now()))',
+        [
+          fixture.tenant,
+          fixture.variant,
+          fixture.warehouse,
+          movementType,
+          quantity,
+          createdAt ?? null,
+        ],
+      )
+    })
   })
 }
 
@@ -829,7 +832,9 @@ describe('l’écriture d’un mouvement est fermée par défaut', () => {
    * `adjustment` ; E4-01 a ouvert `sale_cancellation`, que l'annulation d'un
    * document écrit ; E4-05 a ouvert `sale`, que la confirmation d'un bon de
    * livraison écrit — et lui non plus ne s'écrit pas à la main
-   * (`merx.require_sale_origin()`). `inventory` attend E3-04, `return` E4-06,
+   * (`merx.require_sale_origin()`) ; E4-06 a ouvert `return`, que la
+   * confirmation d'un bon de retour écrit, et qui ne s'écrit pas à la main
+   * davantage (`merx.require_return_origin()`). `inventory` attend E3-04,
    * `receipt` E8-02. Ce test est ce qui empêche une porte de s'ouvrir sans
    * story : il tombe aussi bien sur un type ouvert trop tôt que sur un type
    * fermé par mégarde.
@@ -842,6 +847,7 @@ describe('l’écriture d’un mouvement est fermée par défaut', () => {
     )
     expect(rows).toEqual([
       { movement_type: 'adjustment', capability: 'adjust_stock' },
+      { movement_type: 'return', capability: 'create_sale' },
       { movement_type: 'sale', capability: 'create_sale' },
       { movement_type: 'sale_cancellation', capability: 'cancel_document' },
     ])

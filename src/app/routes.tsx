@@ -33,7 +33,7 @@ import {
   ProductFormScreen,
   ProductListScreen,
 } from '@/modules/catalogue'
-import { SaleScreen } from '@/modules/sales'
+import { ReturnScreen, SaleScreen } from '@/modules/sales'
 import { VariantStockScreen } from '@/modules/stock'
 
 /**
@@ -79,6 +79,9 @@ export function AppRoutes() {
             capacité est celle de la vente : transformer, c'est vendre. */}
         <Route element={<RequireCapability capability="create_sale" />}>
           <Route path="/sale/from/:documentId" element={<SaleScreen />} />
+          {/* Le retour d'un bon — E4-06. Écran de détail, comme la
+              transformation : il part du bon d'origine et y revient. */}
+          <Route path="/sale/return/:documentId" element={<ReturnScreen />} />
         </Route>
 
         {/* Les écrans de l'éditeur. E1-01. Deux gardes emboîtés : le premier
