@@ -762,9 +762,20 @@ Elle est **posée par l'appareil, jamais recalculée à l'arrivée** : recalcule
 
 `merx.log_audit()` prend `current_tenant`, qu'elle avait déjà. Le registre porte désormais le **schéma** — sa clé était le nom nu, et deux fonctions homonymes se seraient confondues, c'est-à-dire qu'une entrée aurait couvert une fonction qui n'est pas celle qu'on croit : la faute même que ces règles existent pour attraper. Dix-huit entrées, énumérées exactement dans `conventions.test.ts`.
 
-**Sabotage de la règle étendue — six témoins, chacun avec son jumeau conforme.** Celui que l'arbitrage demandait : une fonction de `merx`, `definer`, qui lit `product` **sans filtre de commerce** — invisible avant l'extension, nommée maintenant ; son jumeau, qui lit la même table en se bornant au commerce du jeton, ne dit rien. Puis un témoin par forme neuve (`row_tenant` sans `new.tenant_id`, `new.id` sans être posé sur `tenant`, `argument_tenant` qui n'emploie pas son argument, `auth_identity` sans identité), le refus d'un troisième schéma, et le volet inverse dans les deux schémas — une entrée dont la fonction a disparu masquerait la prochaine du même nom.
+**Sabotage de la règle étendue — six témoins, chacun avec son jumeau conforme ; six morceaux de la règle retirés, un par un, `conventions.test.ts` seul.** Tous font rougir au moins un test.
 
-**Suite complète, machine libre, base remise à zéro : 72 fichiers, 1 804 tests, tous verts.** `typecheck` et `lint` lus sur la sortie des commandes, après la dernière édition.
+- **portée ramenée à `public`** — 5 tombent, et ce sont **tous les témoins de `merx`** : celui que l'arbitrage demandait (une fonction de `merx`, `definer`, qui lit `product` **sans filtre de commerce** — invisible avant l'extension) et les quatre formes de garde. C'est la mesure de l'extension elle-même ;
+- **volet `row_tenant` retiré** — 2 tombent : le garde qui ne borne rien, et `new.id` hors d'un trigger sur `tenant` ;
+- **exception `new.id` pour un trigger sur `tenant` retirée** — 2 tombent, dont **le contrôle positif sur le schéma réel** : `merx.open_default_warehouse()` se fait nommer, ce qui est exactement ce que l'exception existe pour éviter ;
+- **volet `argument_tenant` retiré** — 1 tombe : la fonction qui reçoit le commerce et ne s'en sert pas ;
+- **volet `auth_identity` retiré** — 1 tombe : la fonction qu'aucune identité ne borne ;
+- **volet inverse ramené à `public`** — 3 tombent : une entrée de `merx` dont la fonction a disparu n'est plus nommée, et masquerait la prochaine du même nom.
+
+Le jumeau conforme de chaque témoin — qui lit la même table en se bornant comme il le déclare — n'est jamais signalé : une règle qui nommerait toute fonction `definer` de `merx` passerait les cas négatifs aussi.
+
+**Vérifiée sur le stack local le 2026-10-20**, le moteur Docker ayant été arrêté le temps d'écrire cette extension : `db reset` applique les deux migrations et finit sur sa ligne `Finished` ; `conventions.test.ts` est vert, liste des dix-huit entrées comprise ; les six sabotages ci-dessus ont été rejoués un par un. **Suite complète, machine libre, base remise à zéro : 72 fichiers, 1 810 tests, tous verts.** `typecheck` et `lint` lus sur la sortie des commandes, après la dernière édition.
+
+**Suite complète, machine libre, base remise à zéro : 72 fichiers, 1 804 tests, tous verts** à la clôture de la story — 1 810 après les six témoins de la règle étendue ci-dessus. `typecheck` et `lint` lus sur la sortie des commandes, après la dernière édition.
 
 **Une correction de voisinage, trouvée par cette passe-là.** `sale-lifecycle.test.ts` comparait les deux enfants d'une commande **dans l'ordre**, et le harnais les range par `created_at` — qui vaut `now()`, l'instant de la *transaction* : deux documents créés dans la même transaction le portent à l'identique, et rien ne les ordonne. Le cas passait par la chance de l'ordre physique des lignes depuis E4-05, et il a fini par tomber. Il compare désormais sans ordre : ce qu'il mesure est qu'un parent porte **les deux** enfants (RÈGLE M3-4), pas lequel vient d'abord.
 
