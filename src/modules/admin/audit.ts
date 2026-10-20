@@ -18,6 +18,7 @@
  * apparaître.
  */
 
+import { endOfDay, startOfDay } from '@/lib/day'
 import { supabase } from '@/lib/supabase'
 
 /** Les six actions de la RÈGLE M8-1, telles que l'enum les nomme. */
@@ -76,38 +77,6 @@ export interface AuditFilter {
   /** Bornes de l'intervalle, en date locale `AAAA-MM-JJ`. */
   from?: string | undefined
   to?: string | undefined
-}
-
-/*
- * Une journée de commerce se lit à Casablanca, pas en UTC (SPEC § 4). Une borne
- * saisie « du 9 » doit donc couvrir le 9 marocain, et non le 9 à Greenwich :
- * pendant l'heure d'été, l'écart d'une heure ferait sortir les ventes du matin
- * ou entrer celles de la veille au soir. Le décalage est demandé au navigateur
- * pour la date concernée — jamais une constante, le Maroc en change.
- */
-const TIME_ZONE = 'Africa/Casablanca'
-
-function offsetAt(day: string): string {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: TIME_ZONE,
-    timeZoneName: 'longOffset',
-  }).formatToParts(new Date(`${day}T12:00:00Z`))
-
-  const zone = parts.find((part) => part.type === 'timeZoneName')?.value ?? 'GMT+00:00'
-  return zone.replace('GMT', '') || '+00:00'
-}
-
-/** Le début du jour local, en instant absolu. */
-export function startOfDay(day: string): string {
-  return `${day}T00:00:00${offsetAt(day)}`
-}
-
-/** Le début du jour *suivant* : la borne haute est exclusive, donc juste. */
-export function endOfDay(day: string): string {
-  const next = new Date(`${day}T12:00:00Z`)
-  next.setUTCDate(next.getUTCDate() + 1)
-  const following = next.toISOString().slice(0, 10)
-  return `${following}T00:00:00${offsetAt(following)}`
 }
 
 /**

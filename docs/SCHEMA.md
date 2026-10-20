@@ -556,6 +556,7 @@ RLS activée et **forcée**.
 | `sale_document_number_per_tenant` | `CREATE UNIQUE INDEX sale_document_number_per_tenant ON public.sale_document USING btree (tenant_id, doc_number) WHERE (doc_number IS NOT NULL)` |
 | `sale_document_source` | `CREATE INDEX sale_document_source ON public.sale_document USING btree (tenant_id, source_document_id) WHERE (source_document_id IS NOT NULL)` |
 | `sale_document_tenant_id_idx` | `CREATE INDEX sale_document_tenant_id_idx ON public.sale_document USING btree (tenant_id)` |
+| `sale_document_tenant_recent` | `CREATE INDEX sale_document_tenant_recent ON public.sale_document USING btree (tenant_id, COALESCE(issued_at, created_at) DESC)` |
 
 **Policies**
 
@@ -1106,6 +1107,7 @@ infraction, pas une colonne vide.
 | `create_tenant(business_name text, owner_name text, phone text, city text, auth_user_id uuid)` | `uuid` | plpgsql | volatile | **definer** | {search_path=""} | `super_admin` |
 | `create_worker(full_name text, phone text, auth_user_id uuid)` | `uuid` | plpgsql | volatile | **definer** | {search_path=""} | `current_tenant` |
 | `import_products(rows jsonb)` | `jsonb` | plpgsql | volatile | invoker | {search_path=""} | — |
+| `list_sale_documents(p_from timestamp with time zone, p_to timestamp with time zone, p_status sale_doc_status, p_doc_type sale_doc_type, p_device_id uuid, p_search text, p_document_id uuid, p_limit integer)` | `TABLE(id uuid, doc_type sale_doc_type, doc_number text, status sale_doc_status, subtotal money_amount, discount_total money_amount, total money_amount, notes text, cancellation_reason text, issued_at timestamp with time zone, created_at timestamp with time zone, sort_at timestamp with time zone, source_document_id uuid, device_id uuid, device_label text, device_prefix device_prefix, author_name text)` | plpgsql | stable | **definer** | {search_path="", plan_cache_mode=force_custom_plan} | `current_tenant` |
 | `list_stock_movements(p_variant_id uuid, p_limit integer)` | `TABLE(id uuid, created_at timestamp with time zone, movement_type stock_movement_type, quantity quantity, source_type stock_source_type, source_id uuid, note text, author_name text)` | plpgsql | stable | **definer** | {search_path="", plan_cache_mode=force_custom_plan} | `current_tenant` |
 | `register_device(device_key uuid, device_label text)` | `TABLE(id uuid, label text, prefix device_prefix, last_sync_at timestamp with time zone)` | plpgsql | volatile | **definer** | {search_path=""} | `current_tenant` |
 | `search_products(q text)` | `TABLE(variant_id uuid, product_id uuid, name_fr text, name_ar text, code text, sku text, barcode text, photo_url text)` | plpgsql | stable | **definer** | {search_path="", plan_cache_mode=force_custom_plan, pg_trgm.word_similarity_threshold=0.4} | `current_tenant` |
@@ -1196,7 +1198,7 @@ infraction, pas une colonne vide.
 
 ## Exceptions RLS inscrites — SPEC § 2.1
 
-18 entrées. Une exception n'est pas un précédent : chacune porte son
+19 entrées. Une exception n'est pas un précédent : chacune porte son
 garde et sa justification en texte, que la base refuse vide.
 
 - `merx.current_app_user` — garde `auth_identity`
@@ -1227,6 +1229,8 @@ garde et sa justification en texte, que la base refuse vide.
   Crée un commerce et sa population initiale — tenant, app_user, device, warehouse. Ne peut pas filtrer sur le commerce du jeton : elle le crée, et l'éditeur qui l'appelle n'en a aucun. Réservée à super_admin, garde en première ligne. E1-01.
 - `public.create_worker` — garde `current_tenant`
   Écrit app_user hors RLS : le compte d'authentification est créé par la fonction Edge, qui rappelle la base avec le jeton de l'appelant (même raison qu'E1-01, dit sa migration). Le commerce vient du jeton, le rôle est écrit dans le corps, manage_users est exigé en première ligne. E1-02.
+- `public.list_sale_documents` — garde `current_tenant`
+  Rend le nom de l'auteur et le libellé de l'appareil de chaque document, que les policies restrictives d'app_user et de device réservent à manage_users et manage_devices — or l'acteur de la story est celui qui tient le comptoir. Et la policy OR merx.is_super_admin() de sale_document met toute liste en Seq Scan sur les documents de tous les commerces (BACKLOG E0-03). N'expose qu'un full_name et un libellé par document du commerce du jeton, jamais le registre des employés ni celui des appareils. Deux gardes : can(create_sale) en première ligne, et le filtre sur merx.current_tenant_id() — seul garde d'isolation de ce chemin. E4-07.
 - `public.list_stock_movements` — garde `current_tenant`
   Rend le nom de l'auteur de chaque mouvement, que la policy restrictive d'app_user réserve à manage_users — or l'acteur de la story est le vendeur, et le critère exige l'auteur. N'expose qu'un full_name par mouvement d'une variante du commerce du jeton, jamais le registre des employés. Trois gardes : can(view_catalogue) en première ligne, l'appartenance de la variante au commerce (zéro ligne sinon), et le filtre sur merx.current_tenant_id() des mouvements rendus. E3-02.
 - `public.register_device` — garde `current_tenant`

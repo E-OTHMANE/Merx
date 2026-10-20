@@ -33,7 +33,7 @@ import {
   ProductFormScreen,
   ProductListScreen,
 } from '@/modules/catalogue'
-import { ReturnScreen, SaleScreen } from '@/modules/sales'
+import { DocumentDetailScreen, DocumentListScreen, ReturnScreen, SaleScreen } from '@/modules/sales'
 import { VariantStockScreen } from '@/modules/stock'
 
 /**
@@ -82,6 +82,15 @@ export function AppRoutes() {
           {/* Le retour d'un bon — E4-06. Écran de détail, comme la
               transformation : il part du bon d'origine et y revient. */}
           <Route path="/sale/return/:documentId" element={<ReturnScreen />} />
+          {/* La liste des documents et leur détail — E4-07. Deux écrans de
+              détail, donc deux retours et aucune barre : la liste mène à
+              l'Accueil (d'où elle s'ouvre, le bouton « Documents »), le détail
+              à la liste. Sous `create_sale`, la capacité de la vente : les
+              deux rôles lisent. Le garde de route masque l'écran ; ce qui
+              protège sont les deux gardes de `list_sale_documents()`, et pour
+              l'annulation la capacité `cancel_document` de la base. */}
+          <Route path="/documents" element={<DocumentListScreen />} />
+          <Route path="/documents/:documentId" element={<DocumentDetailScreen />} />
         </Route>
 
         {/* Les écrans de l'éditeur. E1-01. Deux gardes emboîtés : le premier

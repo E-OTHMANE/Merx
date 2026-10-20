@@ -789,7 +789,7 @@ Le jumeau conforme de chaque témoin — qui lit la même table en se bornant co
 **En tant que** patron, **je veux** retrouver un bon, **afin de** régler un litige.
 
 **Critères d'acceptation**
-- [ ] Liste filtrable par date, client, statut, type, appareil
+- [ ] Liste filtrable par date, client, statut, type, appareil — *date, statut, type, appareil : écrits en E4-07, non vérifiés (docs/PENDING-CHECKS.md). **Client : tenu par E6-01** — `sale_document.client_id` naît avec la table `client`, aucun paramètre ni colonne ici.*
 - [ ] Recherche par numéro
 - [ ] Détail affichant les lignes, les totaux, l'auteur, l'appareil et l'horodatage
 - [ ] Annulation réservée au `owner`, avec motif, tracée

@@ -4,8 +4,9 @@
  * BRAND-UI § 13 : tout ce qui n'est pas un onglet part d'ici. Les destinations
  * rares du patron sont dans le bloc « Gestion du commerce », en bas, au-dessus
  * de « Se déconnecter ». Le catalogue n'y est plus : c'est un onglet. Les
- * actions quotidiennes sans onglet — caisse, réception, inventaire — prendront
- * un bouton au-dessus du bloc, avec leur story.
+ * actions quotidiennes sans onglet — caisse, réception, inventaire — prennent
+ * un bouton au-dessus du bloc, avec leur story : « Documents » (E4-07) est le
+ * premier.
  */
 
 import { ChevronRight } from 'lucide-react'
@@ -46,6 +47,7 @@ function DestinationRow({ to, label }: { to: string; label: string }) {
 
 export function HomeScreen() {
   const { user, signOut } = useAuth()
+  const canCreateSale = useCan('create_sale')
   const canManageUsers = useCan('manage_users')
   const canManageDevices = useCan('manage_devices')
   const canViewAuditLog = useCan('view_audit_log')
@@ -92,6 +94,18 @@ export function HomeScreen() {
             <dd className="tabular text-body text-paper-900">{user?.tenantId ?? '—'}</dd>
           </div>
         </dl>
+
+        {/* Retrouver un bon (E4-07). Une action quotidienne sans onglet : un
+            bouton, au-dessus du bloc Gestion (BRAND-UI § 13). Masqué par la
+            capacité de la vente, comme la route. */}
+        {canCreateSale && (
+          <Link
+            to="/documents"
+            className="flex h-button items-center justify-center rounded-button border border-paper-300 bg-white text-body text-ink-700"
+          >
+            Documents
+          </Link>
+        )}
 
         {/* Un employé n'a aucune de ces destinations : le bloc n'existe pas
             pour lui, plutôt qu'un titre au-dessus du vide. */}

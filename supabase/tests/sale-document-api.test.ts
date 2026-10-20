@@ -76,15 +76,17 @@ const emails = {
   owner: `patron.docapi.${Date.now()}@merx.test`,
   worker: `employe.docapi.${Date.now()}@merx.test`,
   neighbour: `voisin.docapi.${Date.now()}@merx.test`,
+  /** E4-07 — un compte authentifié sans fiche app_user : un jeton sans commerce ni rôle. */
+  stranger: `inconnu.docapi.${Date.now()}@merx.test`,
 }
 
-type Role = 'owner' | 'worker' | 'neighbour'
-const ROLES = ['owner', 'worker', 'neighbour'] as const
+type Role = 'owner' | 'worker' | 'neighbour' | 'stranger'
+const ROLES = ['owner', 'worker', 'neighbour', 'stranger'] as const
 
 let client: Client
 
-const authUsers: Record<Role, string> = { owner: '', worker: '', neighbour: '' }
-const tokens: Record<Role, string> = { owner: '', worker: '', neighbour: '' }
+const authUsers: Record<Role, string> = { owner: '', worker: '', neighbour: '', stranger: '' }
+const tokens: Record<Role, string> = { owner: '', worker: '', neighbour: '', stranger: '' }
 
 const fixture = {
   tenant: '',
@@ -581,5 +583,86 @@ describe('la numérotation, par l’API', () => {
     expect(result.code, result.body).toBe(INVALID_PARAMETER)
     expect(result.body).toContain("n'est pas celui de cet appareil")
     expect(await statusOf(id)).toBe('draft')
+  })
+})
+
+/* ========================================================================== */
+/* 5. La liste des documents vue de PostgREST — E4-07                          */
+/* ========================================================================== */
+
+/*
+ * `list_sale_documents()` est `security definer` : aucune policy ne s'y
+ * applique, et ses deux gardes sont tout ce qui sépare la liste d'un commerce de
+ * celle du voisin. `sale-document-list.test.ts` les éprouve en SQL ; ici, ce que
+ * seule l'API montre — le **statut** rendu (SPEC § 4, RÈGLE des refus en 4xx),
+ * et le contenu tel que l'application le reçoit, auteur compris, sous le jeton
+ * d'un employé.
+ *
+ * Le refus du premier garde est mesuré avec un compte qui s'est authentifié mais
+ * n'a **aucune fiche** : son jeton ne porte ni commerce ni rôle, donc
+ * `merx.can('create_sale')` répond non. C'est le seul compte réel qui le déclenche
+ * sans déclencher le privilège d'exécution, que `revoke ... from anon` tient à part.
+ */
+describe('la liste des documents, par l’API', () => {
+  const LIST_HTTP_DENIED = 403
+  /* La phrase du premier garde — aucun autre garde de la fonction ne répond 42501. */
+  const NO_LIST_RIGHT = 'consulter les documents de vente'
+
+  const list = (token: string, body: Record<string, unknown> = {}) =>
+    rest('rpc/list_sale_documents', { token, method: 'POST', body })
+
+  interface Row {
+    id: string
+    doc_number: string | null
+    author_name: string | null
+    device_label: string | null
+  }
+
+  const rowsOf = (result: { body: string }): Row[] => JSON.parse(result.body) as Row[]
+
+  it('rend à un employé les documents du commerce, auteur et appareil compris', async () => {
+    const id = await confirmedWithSale()
+
+    const result = await list(tokens.worker)
+
+    expect(result.ok, result.body).toBe(true)
+    const found = rowsOf(result).find((row) => row.id === id)
+    expect(found, 'le document du commerce n’est pas listé').toBeDefined()
+    // Le nom que `app_user` refuse à l'employé, rendu par la fonction.
+    expect(found?.author_name).toBe('Patron')
+    expect(found?.device_label).toBe('Comptoir')
+  })
+
+  it('et le même employé ne lit pas app_user par PostgREST', async () => {
+    const result = await rest('app_user?select=full_name', { token: tokens.worker })
+
+    expect(rowsOf(result), 'FUITE — un employé lit le registre des employés').toHaveLength(0)
+  })
+
+  it('ne rend rien des documents du commerce au patron du voisin', async () => {
+    const id = await confirmedWithSale()
+
+    const result = await list(tokens.neighbour)
+
+    expect(result.ok, result.body).toBe(true)
+    expect(
+      rowsOf(result).map((row) => row.id),
+      'FUITE — un document d’un autre commerce est listé',
+    ).not.toContain(id)
+    // Et le détail, par l'identifiant réel : zéro ligne, pas une erreur.
+    const detail = await list(tokens.neighbour, { p_document_id: id })
+    expect(detail.status, detail.body).toBe(200)
+    expect(rowsOf(detail)).toHaveLength(0)
+  })
+
+  it('refuse un compte sans commerce en 403, avec la phrase du premier garde', async () => {
+    await confirmedWithSale()
+
+    const result = await list(tokens.stranger)
+
+    expect(result.ok, 'FUITE — la liste sort sans create_sale').toBe(false)
+    expect(result.status, result.body).toBe(LIST_HTTP_DENIED)
+    expect(result.code, result.body).toBe('42501')
+    expect(result.body).toContain(NO_LIST_RIGHT)
   })
 })

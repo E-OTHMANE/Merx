@@ -652,9 +652,11 @@ describe('les règles attrapent une table fautive', () => {
      * ici, pas s'ajouter en silence. Les six de `public` sont celles d'E2-04 à
      * E3-02 ; les douze de `merx` sont celles que la règle étendue a nommées en
      * E4-06 — six gardes de trigger, deux fonctions bornées par leur argument,
-     * deux qui précèdent le commerce, et le journal.
+     * deux qui précèdent le commerce, et le journal. La dix-neuvième est
+     * `list_sale_documents()` (E4-07), une lecture qui rend à l'employé un
+     * nom que `app_user` ou `device` lui refuse.
      */
-    it('inscrit exactement les dix-huit fonctions connues, chacune justifiée', async () => {
+    it('inscrit exactement les dix-neuf fonctions connues, chacune justifiée', async () => {
       const { rows } = await client.query<{
         schema_name: string
         function_name: string
@@ -687,6 +689,7 @@ describe('les règles attrapent une table fautive', () => {
         entry('merx', 'seed_tenant_settings', 'argument_tenant'),
         entry('public', 'create_tenant', 'super_admin'),
         entry('public', 'create_worker', 'current_tenant'),
+        entry('public', 'list_sale_documents', 'current_tenant'),
         entry('public', 'list_stock_movements', 'current_tenant'),
         entry('public', 'register_device', 'current_tenant'),
         entry('public', 'search_products', 'current_tenant'),

@@ -94,6 +94,17 @@ const DETAIL: Readonly<Record<string, { visit: string; parent: string; label: st
    * scanne rien —, mais le même rangement, et le même parent.
    */
   '/sale/return/:documentId': { visit: '/sale/return/bl-1', parent: '/sale', label: 'Vente' },
+  /*
+   * E4-07. La liste s'ouvre du bouton « Documents » de l'Accueil — la barre est
+   * pleine, et l'Accueil est le premier onglet : son retour y mène. Le détail
+   * revient à la liste, d'où on l'a ouvert.
+   */
+  '/documents': { visit: '/documents', parent: '/', label: 'Accueil' },
+  '/documents/:documentId': {
+    visit: '/documents/d-1',
+    parent: '/documents',
+    label: 'Documents',
+  },
   '/users': { visit: '/users', parent: '/', label: 'Accueil' },
   '/users/new': { visit: '/users/new', parent: '/users', label: 'Employés' },
   '/devices': { visit: '/devices', parent: '/', label: 'Accueil' },
@@ -227,6 +238,41 @@ describe('la barre suit le rôle', () => {
     expect(home).not.toHaveClass('bg-ink-100')
     // BRAND-UI § 5 : l'inactif en papier 600, jamais 400.
     expect(home).toHaveClass('text-paper-600')
+  })
+})
+
+/* ========================================================================== */
+/* Le bouton « Documents » de l'Accueil — E4-07                                */
+/* ========================================================================== */
+
+describe('le bouton « Documents »', () => {
+  /*
+   * Une action quotidienne sans onglet : un bouton sur l'Accueil, **au-dessus**
+   * du bloc Gestion (BRAND-UI § 13), pas dedans. Les deux rôles l'ont — c'est la
+   * capacité de la vente.
+   */
+  it.each([['owner'], ['worker']])('est offert à un %s, hors du bloc Gestion', async (role) => {
+    renderAt('/', role)
+
+    const link = await screen.findByRole('link', { name: 'Documents' })
+    expect(link).toHaveAttribute('href', '/documents')
+    expect(link.closest('section')).toBeNull()
+  })
+
+  it('précède le bloc « Gestion du commerce »', async () => {
+    renderAt('/', 'owner')
+
+    const link = await screen.findByRole('link', { name: 'Documents' })
+    const block = await screen.findByRole('region', { name: 'Gestion du commerce' })
+    expect(link.compareDocumentPosition(block) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  /* Le garde du bouton, seul : sans capacité, il n'est pas là. */
+  it('n’existe pas sans la capacité de la vente', async () => {
+    renderAt('/', null)
+
+    await waitFor(() => expect(tabBar()).toBeInTheDocument())
+    expect(screen.queryByRole('link', { name: 'Documents' })).not.toBeInTheDocument()
   })
 })
 

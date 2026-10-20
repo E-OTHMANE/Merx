@@ -7,6 +7,91 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
 
 ## Ouvertes
 
+### Depuis E4-07
+
+**Tout E4-07 est écrit et rien n'a tourné.** La session était dans le cloud, sans
+Docker ni Supabase, et `npm ci` y échoue (`403 Forbidden` sur
+`https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`, la dépendance `xlsx`) :
+ni `typecheck`, ni `lint`, ni les tests du front n'ont pu être lancés non plus.
+Aucune assertion des fichiers ci-dessous n'a été vue verte ni rouge. Aucun
+critère d'E4-07 n'est coché dans le BACKLOG.
+
+- [ ] **Rejouer, dans cet ordre, sur le stack local, machine libre** :
+      1. `until docker exec supabase_db_Merx pg_isready -U postgres; do sleep 2; done`,
+         puis `npx supabase db reset` — jugé sur sa ligne `Finished supabase db reset`,
+         pas sur le code de sortie. C'est la première fois que
+         `20261021090000_sale_document_list.sql` s'applique ;
+      2. `npm run schema:doc`, puis **lire le diff de `docs/SCHEMA.md`**. Le fichier
+         a été **corrigé à la main** à partir de la migration (une fonction, un
+         index, une exception, « 19 entrées »), ce que la règle du projet interdit
+         et que seule l'absence de base excuse. Le moindre écart avec la sortie
+         engendrée est une erreur de cette édition, pas du générateur ;
+      3. `npm run typecheck` et `npm run lint` — lus sur la sortie, après la
+         dernière édition (CLAUDE.md). Points à surveiller : `exactOptionalPropertyTypes`
+         sur `DocumentFilter`, l'union de promesses de `DocumentDetailScreen`, et
+         les règles `react-hooks` sur les deux écrans ;
+      4. les fichiers touchés, un par un : `src/modules/sales/documents.test.ts`,
+         `DocumentScreens.test.tsx`, `src/lib/day.test.ts`, `src/app/navigation.test.tsx`,
+         `src/modules/admin/audit.test.tsx` (le déplacement de `startOfDay` /
+         `endOfDay`), puis `supabase/tests/sale-document-list.test.ts`,
+         `sale-document-api.test.ts`, `conventions.test.ts` (dix-neuf entrées),
+         `schema-doc.test.ts`, `refusal-status.test.ts` ;
+      5. la suite complète, une fois, sur une machine qui a la main — on lit le
+         nombre de tests sur la ligne `Tests  N passed`, jamais le code de sortie.
+- [ ] **Les plans.** `sale-document-list.test.ts`, dernier `describe`, sème
+      40 000 documents et 80 000 lignes et lit quatre plans à trois passages. Ses
+      seuils sont des **attentes** écrites sans mesure : un Seq Scan inattendu sur
+      la liste, la recherche par chiffres ou par fragment est à lire dans le plan
+      avant de toucher quoi que ce soit.
+- [ ] **Décision en attente — lignes et filiation.** Si `sale_line` (lecture par
+      `sale_document_id`) ou `sale_document` (lecture des enfants par
+      `source_document_id`) ressortent en **Seq Scan** sous le jeton d'un employé,
+      le correctif prévu est **un index sur la colonne de l'égalité**
+      (`sale_line (sale_document_id)`, `sale_document (source_document_id)`), pas
+      une seconde fonction `security definer`. **Il n'est pas posé.** Raison
+      probable, à vérifier au plan : `sale_line_document` et `sale_document_source`
+      commencent par `tenant_id`, et la policy `tenant_id = … OR merx.is_super_admin()`
+      ne laisse pas servir cette colonne de condition d'index (BACKLOG E0-03, ouverte).
+      Les messages d'échec des trois tests concernés renvoient ici.
+- [ ] **Preuve que l'exception se justifie.** Les deux derniers tests de plan
+      exigent que la lecture **directe** (tri par `issued_at`, égalité sur
+      `doc_number`) soit en Seq Scan. S'ils ne le sont pas, `list_sale_documents()`
+      ne se justifie plus par le plan : elle reste nécessaire pour l'auteur et
+      l'appareil, mais sa justification (`merx.rls_exception_registry`, SPEC § 2.1)
+      est à réécrire.
+- [ ] **Sabotages prévus, non lancés** (fichiers : `sale-document-list.test.ts`
+      et `sale-document-api.test.ts` seulement ; une ligne par cas au rapport) :
+      1. *garde de capacité retiré* (`if not merx.can('create_sale')` supprimé) —
+         attendu rouge : `refuse une session sans create_sale…` (SQL) et
+         `refuse un compte sans commerce en 403…` (API). Les deux seuls tests qui
+         atteignent ce garde sans passer par l'autre ;
+      2. *filtre de commerce retiré* (`d.tenant_id = home_tenant` supprimé de la
+         clause `where`) — attendu rouge : `à numéro égal, ne rend que celui de son
+         commerce`, `ne rend aucun document du voisin` (×2), `rend zéro ligne… le
+         détail`, `ne rend rien non plus pour l'appareil du voisin`, et le cas du
+         voisin de l'API. **Condition de validité** : les deux commerces portent
+         `BL-A-26-00042` dans **une seule** transaction (`beforeAll`), et le
+         comptage se fait hors RLS (`le voisin a bien ses documents…`) ; sans cela
+         le cas resterait vert quoi qu'il arrive (CLAUDE.md, E2-06) ;
+      3. *index de la liste retiré* (`drop index sale_document_tenant_recent`) —
+         attendu rouge : `liste les plus récents par l'index du tri…` et `porte
+         l'index du tri…`. **Jugé sur plusieurs runs**, pas sur un : un plan
+         borderline flotte (CLAUDE.md, E2-04) ; le fichier lit déjà trois passages
+         par plan, il en faut aussi plusieurs exécutions du fichier.
+- [ ] **Deux assertions qui dépendent de la machine.** `src/lib/day.test.ts` attend
+      `+00:00` le 1er mars 2026 (Ramadan, UTC+0 au Maroc) : ça dépend des données
+      de fuseau d'ICU. Et les tests d'écran attendent `06/10/2026 09:00` pour
+      08:00 UTC, comme `stock.test.tsx` — même formateur, mêmes réserves.
+- [ ] **« Annulation… tracée »** (critère 4) repose sur E4-01 : l'entrée
+      `document_cancellation` est écrite par la base et mesurée dans
+      `sale-document.test.ts`. E4-07 ne l'a pas re-mesurée — l'écran appelle
+      `UPDATE`, il n'écrit rien au journal. À confirmer en lisant le journal après
+      une annulation faite depuis l'écran, sur un vrai navigateur.
+- [ ] **À regarder à l'œil** : les deux écrans sur une tablette réelle, en arabe
+      (RTL — le chevron de la ligne de liste n'existe pas, l'écran n'en a pas
+      besoin), le marquage d'un document annulé (le mot, le cadre, le montant
+      barré) en plein soleil, et la cible de « Documents » sur l'Accueil.
+
 ### Depuis E4-06
 
 - [ ] **Deux retours du même bon qui se croisent, et un retour qui croise
