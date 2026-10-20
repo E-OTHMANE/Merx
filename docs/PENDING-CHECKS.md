@@ -9,6 +9,23 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
 
 ### Depuis E4-06
 
+- [ ] **Le registre des exceptions RLS étendu à `merx`, non exécuté sur la
+      base.** Le moteur Docker s'est arrêté entre la clôture d'E4-06 et cette
+      extension (`failed to connect to the docker API at npipe:…`, le
+      2026-10-20), et le redémarrer est la décision de l'utilisateur, pas celle
+      de Claude (CLAUDE.md). Tout a été écrit depuis les migrations — qui sont
+      ce qu'un `db reset` construit — et depuis un balayage hors base
+      reproduisant la règle étendue sur les corps de fonction (dix-huit
+      fonctions nommées, douze dans `merx`). **Rien de cela n'a tourné contre
+      Postgres.** Restent à exécuter et à lire : `npx supabase db reset` avec
+      les deux migrations neuves (`20261020090000_rls_exception_guards.sql`,
+      `20261020100000_rls_exception_merx.sql`) ; `conventions.test.ts` en
+      entier, dont la liste exacte des dix-huit entrées et les six témoins de
+      la règle étendue ; et la **suite complète**, seul endroit où une fonction
+      `definer` oubliée se verrait. La partie front est verte sans la base —
+      40 fichiers, 728 tests —, `typecheck` et `lint` sont propres, et c'est
+      tout ce qui a pu être mesuré.
+
 - [ ] **Deux retours du même bon qui se croisent, et un retour qui croise
       l'annulation de son bon.** `merx.require_returnable_quantity()` prend un
       verrou `for update` sur le **bon d'origine** avant de compter : c'est la

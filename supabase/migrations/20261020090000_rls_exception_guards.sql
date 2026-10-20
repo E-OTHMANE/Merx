@@ -1,0 +1,48 @@
+-- ============================================================================
+-- Merx — trois formes de garde de plus au registre des exceptions RLS
+--
+-- Référence : docs/SPEC.md § 2.1 (exception nommée) ; docs/BACKLOG.md E4-06,
+--             et la note « À instruire » d'E0-03 que cette migration efface.
+--
+-- La règle « exception nommée » de `supabase/tests/conventions.ts` ne balayait
+-- que `public` : `where n.nspname = 'public' and p.prosecdef`. Elle s'étend à
+-- `merx`, parce que `security definer` s'exécute sous `postgres`, qui porte
+-- BYPASSRLS, **quel que soit le schéma de la fonction** — le commerce n'est
+-- alors borné que par le corps. Qu'une fonction ne soit pas exposée par
+-- PostgREST la rend inappelable, pas inoffensive : elle tourne quand même, et
+-- une de ces fonctions qui oublierait son filtre lirait chez le voisin sans que
+-- rien ne la nomme.
+--
+-- Étendue, la règle nomme **douze** fonctions de `merx` — et non les six gardes
+-- d'E4 qu'on avait comptés. Les six autres se bornent autrement, et le registre
+-- doit pouvoir le dire : une forme de garde qui ne se contrôle pas
+-- mécaniquement serait une case à cocher, pas un garde (même objection que
+-- `super_admin` en E2-04).
+--
+--   | forme              | ce qu'elle veut dire                                   | ce que la règle vérifie |
+--   |--------------------|--------------------------------------------------------|-------------------------|
+--   | `current_tenant`   | borné au commerce du jeton                             | `merx.current_tenant_id()` au corps |
+--   | `super_admin`      | réservé à l'éditeur, qui n'a pas de commerce           | `merx.is_super_admin()` au corps |
+--   | `row_tenant`       | garde de trigger borné à la **ligne écrite**           | `new.tenant_id` au corps — ou `new.id` pour un trigger posé sur `tenant`, dont la ligne *est* le commerce |
+--   | `argument_tenant`  | borné au commerce **reçu en argument**                 | un argument dont le nom contient `tenant`, nommé au corps |
+--   | `auth_identity`    | borné à l'**identité authentifiée**, qui précède tout commerce | `auth.uid()` ou l'identifiant de l'événement d'authentification |
+--
+-- `row_tenant` est la forme qui manquait, et c'est celle des gardes de trigger :
+-- `new.tenant_id` n'est pas le commerce du jeton, c'est celui de la ligne qu'on
+-- écrit — et le `with check` de `tenant_isolation` a déjà refusé une ligne d'un
+-- autre commerce avant que le garde parle. Les deux filtres ne sont donc pas
+-- interchangeables, et c'est pourquoi `current_tenant` n'aurait pas convenu :
+-- un garde de trigger qui filtrerait sur `merx.current_tenant_id()` cesserait
+-- de garder le jour où une migration écrirait sans jeton.
+--
+-- ----------------------------------------------------------------------------
+-- Pourquoi une migration pour trois lignes
+--
+-- Une valeur d'enum n'est pas utilisable dans la transaction qui la crée : la
+-- suite — colonne `schema_name`, fonction d'inscription, et les douze entrées —
+-- vit dans `20261020100000_rls_exception_merx.sql`.
+-- ============================================================================
+
+alter type merx.rls_exception_guard add value 'row_tenant';
+alter type merx.rls_exception_guard add value 'argument_tenant';
+alter type merx.rls_exception_guard add value 'auth_identity';

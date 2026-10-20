@@ -54,7 +54,23 @@ La raison est mesurée, pas supposée. Sous RLS, Postgres n'accepte comme condit
 
 Une première mesure, 139 ms contre 2,4 ms, figurait ici. Elle avait été prise sur un texte dont l'accent s'était abîmé en transit : la recherche indexée n'y trouvait aucune ligne, et les 2,4 ms mesuraient une recherche vide. Elle est remplacée, et la raison est écrite pour qu'on ne la reprenne pas.
 
-Une exception n'est pas un précédent. **RÈGLE** — toute fonction `security definer` de `public` qui lit ou écrit une table métier s'inscrit à `merx.rls_exception_registry` par `merx.register_rls_exception()`, avec son garde et sa justification en texte, que la base refuse vide. Le garde vaut `current_tenant` — le corps filtre sur `merx.current_tenant_id()` — ou `super_admin` — le corps exige `merx.is_super_admin()`, pour ce qui crée un commerce et ne peut donc pas en avoir un (`create_tenant`). `supabase/tests/conventions.ts` signale par son nom toute fonction non inscrite, et toute fonction inscrite dont le corps, lu dans `pg_proc`, n'appelle pas le garde déclaré : inscrire `super_admin` sans le garde ne passe pas. Le registre compte cinq entrées à la fin d'E2-04 : `create_tenant`, `create_worker`, `set_user_active`, `register_device`, `search_products`.
+Une exception n'est pas un précédent. **RÈGLE** — toute fonction `security definer` de `public` **ou de `merx`** qui lit ou écrit une table métier s'inscrit à `merx.rls_exception_registry` par `merx.register_rls_exception()`, avec son schéma, son garde et sa justification en texte, que la base refuse vide. `supabase/tests/conventions.ts` signale par son nom toute fonction non inscrite, et toute fonction inscrite dont le corps, lu dans `pg_proc`, ne porte pas le garde déclaré : inscrire une forme sans l'avoir ne passe pas.
+
+*Étendue à `merx` en E4-06, et c'est une correction.* Le balayage ne lisait que `public`, les seules fonctions que PostgREST expose — ce qui confondait « inappelable » et « inoffensive ». `security definer` s'exécute sous `postgres`, qui porte BYPASSRLS, **quel que soit le schéma** : un garde de trigger de `merx` tourne comme le reste, et celui qui oublierait son filtre lirait chez le voisin sans que rien ne le nomme. Étendue, la règle a nommé **douze** fonctions de `merx` là où on en comptait six.
+
+*Les cinq formes de garde, et chacune se contrôle au corps* — une forme invérifiable serait une case à cocher, pas un garde :
+
+| forme | ce qu'elle veut dire | ce que la règle vérifie |
+|---|---|---|
+| `current_tenant` | borné au commerce du jeton | `merx.current_tenant_id()` au corps |
+| `super_admin` | réservé à l'éditeur, qui n'a pas de commerce (`create_tenant`) | `merx.is_super_admin()` au corps |
+| `row_tenant` | garde de trigger borné à la **ligne écrite** | `new.tenant_id` au corps — ou `new.id` pour un trigger posé sur `tenant`, dont la ligne *est* le commerce, et c'est le catalogue qui dit sur quelle table le trigger est posé |
+| `argument_tenant` | borné au commerce **reçu en argument** ; l'appelante inscrite porte le droit | un argument dont le nom contient `tenant`, nommé au corps |
+| `auth_identity` | borné à l'**identité authentifiée**, qui précède tout commerce | `auth.uid()`, ou l'identifiant de l'événement d'authentification |
+
+`row_tenant` n'est pas `current_tenant` déguisé : `new.tenant_id` est le commerce de la **ligne**, que le `with check` de `tenant_isolation` a déjà forcé à celui du jeton avant que le garde parle — alors qu'un garde de trigger filtrant sur `merx.current_tenant_id()` cesserait de garder le jour où une migration écrirait sans jeton. Et `auth_identity` existe parce que deux fonctions *trouvent* le commerce (`merx.current_app_user()`, `merx.custom_access_token()`) : s'y borner serait circulaire.
+
+Le registre compte **dix-huit** entrées à la fin d'E4-06 : six dans `public` (`create_tenant`, `create_worker`, `set_user_active`, `register_device`, `search_products`, `list_stock_movements`) et douze dans `merx` — sept gardes de trigger en `row_tenant`, deux fonctions en `argument_tenant`, deux en `auth_identity`, et `merx.log_audit()` en `current_tenant`. `conventions.test.ts` en tient la liste exacte : une entrée de plus se lit, elle ne s'ajoute pas en silence.
 
 ### 2.2 Noyau + packs
 

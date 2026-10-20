@@ -552,56 +552,122 @@ const CREATION_FORM_REQUIRED = `
  * corps. C'est le filtre à la main que la RÈGLE refuse ; il n'est admis
  * qu'inscrit à `merx.rls_exception_registry`, avec le garde qui le tient.
  *
- * Trois volets, un par façon de manquer :
+ * **`public` et `merx`, depuis E4-06.** Le balayage ne lisait que `public`, les
+ * seules fonctions que PostgREST expose — et c'était confondre « inappelable »
+ * avec « inoffensive ». Un garde de trigger de `merx` tourne quand même, sous
+ * `postgres`, et celui qui oublierait son filtre lirait chez le voisin sans que
+ * rien ne le nomme. Étendue, la règle en a nommé **douze** (E4-06).
+ *
+ * Six volets, un par façon de manquer — et chaque forme de garde se contrôle au
+ * corps, sans quoi le registre serait une case à cocher plutôt qu'un garde :
  *   — non inscrite : la fonction est nommée, avec les tables qu'elle touche ;
- *   — inscrite en `current_tenant`, sans `merx.current_tenant_id()` dans le
- *     corps ;
- *   — inscrite en `super_admin`, sans `merx.is_super_admin()` dans le corps.
- *     La valeur du registre ne suffit pas : `super_admin` ne doit pas devenir
- *     la case qu'on coche quand le filtre par commerce est gênant à écrire.
+ *   — `current_tenant` sans `merx.current_tenant_id()` ;
+ *   — `super_admin` sans `merx.is_super_admin()` — qui ne doit pas devenir la
+ *     case qu'on coche quand le filtre par commerce est gênant à écrire ;
+ *   — `row_tenant` sans `new.tenant_id` : la forme des gardes de trigger, qui
+ *     se bornent à la **ligne écrite** et non au commerce du jeton. Un trigger
+ *     posé sur `tenant` lui-même se borne à `new.id`, sa ligne *étant* le
+ *     commerce — et c'est vérifié au catalogue, pas admis sur parole ;
+ *   — `argument_tenant` sans argument « tenant » nommé au corps ;
+ *   — `auth_identity` sans `auth.uid()` ni l'identifiant de l'événement
+ *     d'authentification : la forme des deux fonctions qui *trouvent* le
+ *     commerce et ne peuvent donc pas s'y borner.
  *
  * « Touche une table métier » : le corps nomme `public.<table du registre de
  * conventions>` après `from`, `join`, `update` ou `into`. Grossier comme le
  * contrôle d'`audit_log` plus haut, et pour la même raison : il attrape la
  * faute au moment où elle s'écrit, dans E4 ou E2-05. Les fonctions de `public`
- * sont toutes en `search_path = ''`, donc toute table y est qualifiée.
+ * comme celles de `merx` sont en `search_path = ''`, donc toute table y est
+ * qualifiée.
  */
 const RLS_EXCEPTIONS = `
   with definer as (
-    select p.proname,
+    select p.oid,
+           n.nspname as schema_name,
+           p.proname,
            p.prosrc,
+           coalesce(p.proargnames, '{}'::text[]) as arg_names,
            (select string_agg(r.table_name, ', ' order by r.table_name)
               from merx.convention_registry r
              where p.prosrc ~* ('(from|join|update|into)\\s+public\\."?' || r.table_name || '"?\\M'))
              as tables
     from pg_proc p
     join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public' and p.prosecdef
+    where n.nspname in ('public', 'merx') and p.prosecdef
+  ),
+  registered as (
+    select d.*, e.guard
+    from definer d
+    join merx.rls_exception_registry e
+      on e.schema_name = d.schema_name and e.function_name = d.proname
   )
-  select 'public.' || d.proname as table_name,
+  select d.schema_name || '.' || d.proname as table_name,
          format('security definer, touche %s hors RLS, absente de merx.rls_exception_registry '
                 '— SPEC § 2.1', d.tables) as detail
   from definer d
   where d.tables is not null
-    and not exists (select 1 from merx.rls_exception_registry e where e.function_name = d.proname)
+    and not exists (
+      select 1 from merx.rls_exception_registry e
+      where e.schema_name = d.schema_name and e.function_name = d.proname)
 
   union all
 
-  select 'public.' || d.proname as table_name,
+  select r.schema_name || '.' || r.proname as table_name,
          'inscrite en current_tenant, mais son corps n''appelle pas merx.current_tenant_id() '
          '— SPEC § 2.1' as detail
-  from definer d
-  join merx.rls_exception_registry e on e.function_name = d.proname
-  where e.guard = 'current_tenant' and d.prosrc !~ 'merx\\.current_tenant_id\\(\\)'
+  from registered r
+  where r.guard = 'current_tenant' and r.prosrc !~ 'merx\\.current_tenant_id\\(\\)'
 
   union all
 
-  select 'public.' || d.proname as table_name,
+  select r.schema_name || '.' || r.proname as table_name,
          'inscrite en super_admin, mais son corps n''appelle pas merx.is_super_admin() '
          '— SPEC § 2.1' as detail
-  from definer d
-  join merx.rls_exception_registry e on e.function_name = d.proname
-  where e.guard = 'super_admin' and d.prosrc !~ 'merx\\.is_super_admin\\(\\)'
+  from registered r
+  where r.guard = 'super_admin' and r.prosrc !~ 'merx\\.is_super_admin\\(\\)'
+
+  union all
+
+  -- row_tenant : la ligne écrite borne la lecture. new.tenant_id, ou new.id
+  -- pour un trigger posé sur \`tenant\`, dont la ligne **est** le commerce — et
+  -- c'est le catalogue qui dit sur quelle table le trigger est posé, pas la
+  -- fonction qui le prétend.
+  select r.schema_name || '.' || r.proname as table_name,
+         'inscrite en row_tenant, mais son corps ne borne rien à new.tenant_id '
+         '(ni à new.id pour un trigger sur tenant) — SPEC § 2.1' as detail
+  from registered r
+  where r.guard = 'row_tenant'
+    and r.prosrc !~ 'new\\.tenant_id\\M'
+    and not (
+      r.prosrc ~ 'new\\.id\\M'
+      and exists (
+        select 1 from pg_trigger t
+        join pg_class c on c.oid = t.tgrelid
+        where t.tgfoid = r.oid and c.relname = 'tenant'))
+
+  union all
+
+  -- argument_tenant : le commerce arrive en argument, et le corps le nomme.
+  select r.schema_name || '.' || r.proname as table_name,
+         'inscrite en argument_tenant, mais aucun de ses arguments « tenant » '
+         'n''est nommé dans son corps — SPEC § 2.1' as detail
+  from registered r
+  where r.guard = 'argument_tenant'
+    and not exists (
+      select 1 from unnest(r.arg_names) as a
+      where a like '%tenant%' and r.prosrc ~ ('\\m' || a || '\\M'))
+
+  union all
+
+  -- auth_identity : elle trouve le commerce, elle ne s'y borne pas. Ce qui la
+  -- borne est l'identité authentifiée.
+  select r.schema_name || '.' || r.proname as table_name,
+         'inscrite en auth_identity, mais son corps ne borne rien à auth.uid() '
+         'ni à l''identifiant de l''événement d''authentification — SPEC § 2.1' as detail
+  from registered r
+  where r.guard = 'auth_identity'
+    and r.prosrc !~ 'auth\\.uid\\(\\)'
+    and r.prosrc !~ 'event\\s*->>\\s*''user_id'''
 
   order by 1, 2
 `
@@ -614,19 +680,19 @@ const RLS_EXCEPTIONS = `
  * où la contrainte tomberait.
  */
 const RLS_EXCEPTION_REGISTRY = `
-  select 'public.' || e.function_name as table_name,
-         'inscrite au registre des exceptions RLS, mais absente de public ou plus '
+  select e.schema_name || '.' || e.function_name as table_name,
+         'inscrite au registre des exceptions RLS, mais absente de son schéma ou plus '
          'security definer' as detail
   from merx.rls_exception_registry e
   where not exists (
     select 1 from pg_proc p
     join pg_namespace n on n.oid = p.pronamespace
-    where n.nspname = 'public' and p.proname = e.function_name and p.prosecdef
+    where n.nspname = e.schema_name and p.proname = e.function_name and p.prosecdef
   )
 
   union all
 
-  select 'public.' || e.function_name as table_name,
+  select e.schema_name || '.' || e.function_name as table_name,
          'justification vide au registre des exceptions RLS — SPEC § 2.1' as detail
   from merx.rls_exception_registry e
   where btrim(coalesce(e.justification, '')) = ''

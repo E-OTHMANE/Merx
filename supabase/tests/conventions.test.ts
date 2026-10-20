@@ -634,31 +634,243 @@ describe('les règles attrapent une table fautive', () => {
    * devenir une habitude. Chaque volet de la règle a sa fonction témoin, et
    * chaque témoin fautif son jumeau conforme : une règle qui signalerait toute
    * fonction `security definer` passerait les tests négatifs aussi.
+   *
+   * **`merx` y entre en E4-06**, avec trois formes de garde de plus. Le
+   * balayage ne lisait que `public` — les seules fonctions que PostgREST expose
+   * —, ce qui confondait « inappelable » et « inoffensive » : un garde de
+   * trigger de `merx` tourne sous `postgres` comme le reste, et celui qui
+   * oublierait son filtre lirait chez le voisin sans que rien ne le nomme. Le
+   * témoin du bas est exactement cette fonction-là.
    */
   describe('fonctions security definer et registre des exceptions RLS', () => {
     const rule: RuleName = 'security definer inscrite et gardée'
-    const onFunction = (found: readonly Violation[], name: string) =>
-      found.filter((v) => v.table_name === `public.${name}`)
+    const onFunction = (found: readonly Violation[], name: string, schema = 'public') =>
+      found.filter((v) => v.table_name === `${schema}.${name}`)
 
-    it('inscrit exactement les six fonctions connues, chacune justifiée', async () => {
+    /*
+     * Liste exacte, et dans les deux schémas : une entrée de plus doit se lire
+     * ici, pas s'ajouter en silence. Les six de `public` sont celles d'E2-04 à
+     * E3-02 ; les douze de `merx` sont celles que la règle étendue a nommées en
+     * E4-06 — six gardes de trigger, deux fonctions bornées par leur argument,
+     * deux qui précèdent le commerce, et le journal.
+     */
+    it('inscrit exactement les dix-huit fonctions connues, chacune justifiée', async () => {
       const { rows } = await client.query<{
+        schema_name: string
         function_name: string
         guard: string
         justified: boolean
       }>(`
-        select function_name, guard::text, btrim(justification) <> '' as justified
-        from merx.rls_exception_registry order by function_name
+        select schema_name, function_name, guard::text, btrim(justification) <> '' as justified
+        from merx.rls_exception_registry order by schema_name, function_name
       `)
 
-      // Liste exacte : une septième entrée doit se lire ici, pas s'ajouter en silence.
+      const entry = (schema: string, name: string, guard: string) => ({
+        schema_name: schema,
+        function_name: name,
+        guard,
+        justified: true,
+      })
+
       expect(rows).toEqual([
-        { function_name: 'create_tenant', guard: 'super_admin', justified: true },
-        { function_name: 'create_worker', guard: 'current_tenant', justified: true },
-        { function_name: 'list_stock_movements', guard: 'current_tenant', justified: true },
-        { function_name: 'register_device', guard: 'current_tenant', justified: true },
-        { function_name: 'search_products', guard: 'current_tenant', justified: true },
-        { function_name: 'set_user_active', guard: 'current_tenant', justified: true },
+        entry('merx', 'current_app_user', 'auth_identity'),
+        entry('merx', 'custom_access_token', 'auth_identity'),
+        entry('merx', 'log_audit', 'current_tenant'),
+        entry('merx', 'next_device_prefix', 'argument_tenant'),
+        entry('merx', 'open_default_warehouse', 'row_tenant'),
+        entry('merx', 'require_consistent_totals', 'row_tenant'),
+        entry('merx', 'require_document_number_shape', 'row_tenant'),
+        entry('merx', 'require_floor_price', 'row_tenant'),
+        entry('merx', 'require_no_active_return', 'row_tenant'),
+        entry('merx', 'require_returnable_quantity', 'row_tenant'),
+        entry('merx', 'require_transformation_shape', 'row_tenant'),
+        entry('merx', 'seed_tenant_settings', 'argument_tenant'),
+        entry('public', 'create_tenant', 'super_admin'),
+        entry('public', 'create_worker', 'current_tenant'),
+        entry('public', 'list_stock_movements', 'current_tenant'),
+        entry('public', 'register_device', 'current_tenant'),
+        entry('public', 'search_products', 'current_tenant'),
+        entry('public', 'set_user_active', 'current_tenant'),
       ])
+    })
+
+    /*
+     * Le témoin demandé par l'arbitrage d'E4-06 : une fonction de **`merx`**,
+     * `security definer`, qui lit une table métier **sans filtre de commerce**.
+     * Avant l'extension, la règle ne la voyait pas — le balayage s'arrêtait à
+     * `public`. Son jumeau conforme lit la même table en se bornant au
+     * commerce du jeton, et n'est pas signalé : une règle qui nommerait toute
+     * fonction definer de `merx` passerait ce test-ci aussi.
+     */
+    it('nomme une fonction definer de merx qui lit une table métier sans filtre de commerce', async () => {
+      await client.query('begin')
+      await client.query(`
+        create function merx.rogue_merx_probe() returns bigint
+        language sql security definer set search_path = ''
+        as $probe$ select count(*) from public.product $probe$;
+
+        create function merx.scoped_merx_probe() returns bigint
+        language sql security definer set search_path = ''
+        as $probe$
+          select count(*) from public.product where tenant_id = merx.current_tenant_id()
+        $probe$;
+        select merx.register_rls_exception('merx.scoped_merx_probe()', 'current_tenant',
+          'Témoin conforme de conventions.test.ts.');
+      `)
+
+      const found = await violations(client, rule)
+      expect(describeViolations(onFunction(found, 'rogue_merx_probe', 'merx'))).toContain(
+        'security definer, touche product hors RLS, absente de merx.rls_exception_registry',
+      )
+      // Le jumeau conforme, inscrit et filtré, ne dit rien.
+      expect(onFunction(found, 'scoped_merx_probe', 'merx')).toEqual([])
+    })
+
+    /*
+     * `row_tenant` est la forme des gardes de trigger : ils se bornent à la
+     * **ligne écrite**, et non au commerce du jeton — qui est nul dans une
+     * migration ou un peuplement. Le témoin fautif se dit `row_tenant` sans
+     * rien borner ; son jumeau lit la même table par `new.tenant_id`.
+     */
+    it('nomme une fonction inscrite en row_tenant qui ne borne rien à new.tenant_id', async () => {
+      await client.query('begin')
+      await client.query(`
+        create function merx.loose_row_probe() returns trigger
+        language plpgsql security definer set search_path = ''
+        as $probe$
+        begin
+          perform count(*) from public.product;
+          return new;
+        end;
+        $probe$;
+        select merx.register_rls_exception('merx.loose_row_probe()', 'row_tenant',
+          'Témoin de conventions.test.ts : se dit borné à sa ligne, sans l''être.');
+
+        create function merx.scoped_row_probe() returns trigger
+        language plpgsql security definer set search_path = ''
+        as $probe$
+        begin
+          perform count(*) from public.product p where p.tenant_id = new.tenant_id;
+          return new;
+        end;
+        $probe$;
+        select merx.register_rls_exception('merx.scoped_row_probe()', 'row_tenant',
+          'Témoin conforme de conventions.test.ts.');
+      `)
+
+      const found = await violations(client, rule)
+      expect(describeViolations(onFunction(found, 'loose_row_probe', 'merx'))).toContain(
+        'inscrite en row_tenant, mais son corps ne borne rien à new.tenant_id',
+      )
+      expect(onFunction(found, 'scoped_row_probe', 'merx')).toEqual([])
+    })
+
+    /*
+     * `new.id` ne vaut que pour un trigger posé sur `tenant`, dont la ligne
+     * **est** le commerce — et c'est le catalogue qui le dit, pas la fonction
+     * qui le prétend. Le témoin lit `new.id` sans être attaché à `tenant` : il
+     * est nommé. Le contrôle positif est l'état réel du schéma,
+     * `merx.open_default_warehouse()`, qui l'est.
+     */
+    it('n’admet new.id que pour un trigger posé sur tenant', async () => {
+      await client.query('begin')
+      await client.query(`
+        create function merx.row_id_probe() returns trigger
+        language plpgsql security definer set search_path = ''
+        as $probe$
+        begin
+          perform count(*) from public.product p where p.id = new.id;
+          return new;
+        end;
+        $probe$;
+        select merx.register_rls_exception('merx.row_id_probe()', 'row_tenant',
+          'Témoin de conventions.test.ts : new.id sans être posé sur tenant.');
+      `)
+
+      const found = await violations(client, rule)
+      expect(describeViolations(onFunction(found, 'row_id_probe', 'merx'))).toContain(
+        'inscrite en row_tenant, mais son corps ne borne rien',
+      )
+      // Le vrai trigger de `tenant`, lui, passe.
+      expect(onFunction(found, 'open_default_warehouse', 'merx')).toEqual([])
+    })
+
+    /*
+     * `argument_tenant` : le commerce arrive en argument, et le corps doit le
+     * nommer. Une fonction qui reçoit le commerce et lit la table sans s'en
+     * servir est exactement la faute que la forme doit attraper.
+     */
+    it('nomme une fonction inscrite en argument_tenant qui n’emploie pas son argument', async () => {
+      await client.query('begin')
+      await client.query(`
+        create function merx.loose_arg_probe(target_tenant uuid) returns bigint
+        language sql security definer set search_path = ''
+        as $probe$ select count(*) from public.product $probe$;
+        select merx.register_rls_exception('merx.loose_arg_probe(uuid)', 'argument_tenant',
+          'Témoin de conventions.test.ts : reçoit le commerce et ne s''en sert pas.');
+
+        create function merx.scoped_arg_probe(target_tenant uuid) returns bigint
+        language sql security definer set search_path = ''
+        as $probe$
+          select count(*) from public.product where tenant_id = target_tenant
+        $probe$;
+        select merx.register_rls_exception('merx.scoped_arg_probe(uuid)', 'argument_tenant',
+          'Témoin conforme de conventions.test.ts.');
+      `)
+
+      const found = await violations(client, rule)
+      expect(describeViolations(onFunction(found, 'loose_arg_probe', 'merx'))).toContain(
+        'inscrite en argument_tenant',
+      )
+      expect(onFunction(found, 'scoped_arg_probe', 'merx')).toEqual([])
+    })
+
+    /*
+     * `auth_identity` : les deux fonctions qui *trouvent* le commerce ne
+     * peuvent pas s'y borner — un filtre sur le commerce du jeton y serait
+     * circulaire. Ce qui les borne est l'identité authentifiée, et la forme le
+     * vérifie.
+     */
+    it('nomme une fonction inscrite en auth_identity qui ne borne rien à l’identité', async () => {
+      await client.query('begin')
+      await client.query(`
+        create function merx.loose_identity_probe() returns bigint
+        language sql security definer set search_path = ''
+        as $probe$ select count(*) from public.app_user $probe$;
+        select merx.register_rls_exception('merx.loose_identity_probe()', 'auth_identity',
+          'Témoin de conventions.test.ts : aucune identité ne la borne.');
+
+        create function merx.scoped_identity_probe() returns bigint
+        language sql security definer set search_path = ''
+        as $probe$ select count(*) from public.app_user where auth_user_id = auth.uid() $probe$;
+        select merx.register_rls_exception('merx.scoped_identity_probe()', 'auth_identity',
+          'Témoin conforme de conventions.test.ts.');
+      `)
+
+      const found = await violations(client, rule)
+      expect(describeViolations(onFunction(found, 'loose_identity_probe', 'merx'))).toContain(
+        'inscrite en auth_identity',
+      )
+      expect(onFunction(found, 'scoped_identity_probe', 'merx')).toEqual([])
+    })
+
+    /*
+     * Et le registre ne connaît que `public` et `merx` : une table métier ne
+     * vit pas ailleurs (SPEC § 4), donc une fonction d'un troisième schéma est
+     * une faute de rangement avant d'être une exception RLS.
+     */
+    it('refuse d’inscrire une fonction hors de public et de merx', async () => {
+      await client.query('begin')
+      await client.query(`
+        create schema probe_schema;
+        create function probe_schema.stray_probe() returns bigint
+        language sql security definer set search_path = ''
+        as $probe$ select count(*) from public.product $probe$;
+      `)
+
+      await expect(
+        client.query("select merx.register_rls_exception('probe_schema.stray_probe()', 'current_tenant', 'Témoin.')"),
+      ).rejects.toThrow('ne connaît que public et merx')
     })
 
     it('nomme une fonction definer qui touche une table métier sans être inscrite', async () => {
@@ -770,12 +982,18 @@ describe('les règles attrapent une table fautive', () => {
     it('signale une inscription dont la fonction n’existe plus', async () => {
       await client.query('begin')
       await client.query(`
-        insert into merx.rls_exception_registry (function_name, guard, justification)
-        values ('ghost_function_probe', 'current_tenant', 'Témoin.')
+        insert into merx.rls_exception_registry (schema_name, function_name, guard, justification)
+        values ('public', 'ghost_function_probe', 'current_tenant', 'Témoin.'),
+               ('merx', 'ghost_merx_probe', 'row_tenant', 'Témoin.')
       `)
 
+      // Les deux schémas, et chacun nommé par le sien : une entrée de `merx`
+      // dont la fonction a disparu masquerait la prochaine du même nom.
       const found = await violations(client, 'registre des exceptions RLS tenu')
-      expect(found.map((v) => v.table_name)).toEqual(['public.ghost_function_probe'])
+      expect(found.map((v) => v.table_name)).toEqual([
+        'merx.ghost_merx_probe',
+        'public.ghost_function_probe',
+      ])
     })
   })
 
