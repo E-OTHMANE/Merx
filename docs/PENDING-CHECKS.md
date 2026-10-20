@@ -9,88 +9,15 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
 
 ### Depuis E4-07
 
-**Tout E4-07 est écrit et rien n'a tourné.** La session était dans le cloud, sans
-Docker ni Supabase, et `npm ci` y échoue (`403 Forbidden` sur
-`https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz`, la dépendance `xlsx`) :
-ni `typecheck`, ni `lint`, ni les tests du front n'ont pu être lancés non plus.
-Aucune assertion des fichiers ci-dessous n'a été vue verte ni rouge. Aucun
-critère d'E4-07 n'est coché dans le BACKLOG.
+Tout le reste a été rejoué le 2026-10-20 sur le stack local : voir « Faites »
+plus bas. Ne reste que ce qu'aucune commande ne mesure.
 
-- [ ] **Rejouer, dans cet ordre, sur le stack local, machine libre** :
-      1. `until docker exec supabase_db_Merx pg_isready -U postgres; do sleep 2; done`,
-         puis `npx supabase db reset` — jugé sur sa ligne `Finished supabase db reset`,
-         pas sur le code de sortie. C'est la première fois que
-         `20261021090000_sale_document_list.sql` s'applique ;
-      2. `npm run schema:doc`, puis **lire le diff de `docs/SCHEMA.md`**. Le fichier
-         a été **corrigé à la main** à partir de la migration (une fonction, un
-         index, une exception, « 19 entrées »), ce que la règle du projet interdit
-         et que seule l'absence de base excuse. Le moindre écart avec la sortie
-         engendrée est une erreur de cette édition, pas du générateur ;
-      3. `npm run typecheck` et `npm run lint` — lus sur la sortie, après la
-         dernière édition (CLAUDE.md). Points à surveiller : `exactOptionalPropertyTypes`
-         sur `DocumentFilter`, l'union de promesses de `DocumentDetailScreen`, et
-         les règles `react-hooks` sur les deux écrans ;
-      4. les fichiers touchés, un par un : `src/modules/sales/documents.test.ts`,
-         `DocumentScreens.test.tsx`, `src/lib/day.test.ts`, `src/app/navigation.test.tsx`,
-         `src/modules/admin/audit.test.tsx` (le déplacement de `startOfDay` /
-         `endOfDay`), puis `supabase/tests/sale-document-list.test.ts`,
-         `sale-document-api.test.ts`, `conventions.test.ts` (dix-neuf entrées),
-         `schema-doc.test.ts`, `refusal-status.test.ts` ;
-      5. la suite complète, une fois, sur une machine qui a la main — on lit le
-         nombre de tests sur la ligne `Tests  N passed`, jamais le code de sortie.
-- [ ] **Les plans.** `sale-document-list.test.ts`, dernier `describe`, sème
-      40 000 documents et 80 000 lignes et lit quatre plans à trois passages. Ses
-      seuils sont des **attentes** écrites sans mesure : un Seq Scan inattendu sur
-      la liste, la recherche par chiffres ou par fragment est à lire dans le plan
-      avant de toucher quoi que ce soit.
-- [ ] **Décision en attente — lignes et filiation.** Si `sale_line` (lecture par
-      `sale_document_id`) ou `sale_document` (lecture des enfants par
-      `source_document_id`) ressortent en **Seq Scan** sous le jeton d'un employé,
-      le correctif prévu est **un index sur la colonne de l'égalité**
-      (`sale_line (sale_document_id)`, `sale_document (source_document_id)`), pas
-      une seconde fonction `security definer`. **Il n'est pas posé.** Raison
-      probable, à vérifier au plan : `sale_line_document` et `sale_document_source`
-      commencent par `tenant_id`, et la policy `tenant_id = … OR merx.is_super_admin()`
-      ne laisse pas servir cette colonne de condition d'index (BACKLOG E0-03, ouverte).
-      Les messages d'échec des trois tests concernés renvoient ici.
-- [ ] **Preuve que l'exception se justifie.** Les deux derniers tests de plan
-      exigent que la lecture **directe** (tri par `issued_at`, égalité sur
-      `doc_number`) soit en Seq Scan. S'ils ne le sont pas, `list_sale_documents()`
-      ne se justifie plus par le plan : elle reste nécessaire pour l'auteur et
-      l'appareil, mais sa justification (`merx.rls_exception_registry`, SPEC § 2.1)
-      est à réécrire.
-- [ ] **Sabotages prévus, non lancés** (fichiers : `sale-document-list.test.ts`
-      et `sale-document-api.test.ts` seulement ; une ligne par cas au rapport) :
-      1. *garde de capacité retiré* (`if not merx.can('create_sale')` supprimé) —
-         attendu rouge : `refuse une session sans create_sale…` (SQL) et
-         `refuse un compte sans commerce en 403…` (API). Les deux seuls tests qui
-         atteignent ce garde sans passer par l'autre ;
-      2. *filtre de commerce retiré* (`d.tenant_id = home_tenant` supprimé de la
-         clause `where`) — attendu rouge : `à numéro égal, ne rend que celui de son
-         commerce`, `ne rend aucun document du voisin` (×2), `rend zéro ligne… le
-         détail`, `ne rend rien non plus pour l'appareil du voisin`, et le cas du
-         voisin de l'API. **Condition de validité** : les deux commerces portent
-         `BL-A-26-00042` dans **une seule** transaction (`beforeAll`), et le
-         comptage se fait hors RLS (`le voisin a bien ses documents…`) ; sans cela
-         le cas resterait vert quoi qu'il arrive (CLAUDE.md, E2-06) ;
-      3. *index de la liste retiré* (`drop index sale_document_tenant_recent`) —
-         attendu rouge : `liste les plus récents par l'index du tri…` et `porte
-         l'index du tri…`. **Jugé sur plusieurs runs**, pas sur un : un plan
-         borderline flotte (CLAUDE.md, E2-04) ; le fichier lit déjà trois passages
-         par plan, il en faut aussi plusieurs exécutions du fichier.
-- [ ] **Deux assertions qui dépendent de la machine.** `src/lib/day.test.ts` attend
-      `+00:00` le 1er mars 2026 (Ramadan, UTC+0 au Maroc) : ça dépend des données
-      de fuseau d'ICU. Et les tests d'écran attendent `06/10/2026 09:00` pour
-      08:00 UTC, comme `stock.test.tsx` — même formateur, mêmes réserves.
-- [ ] **« Annulation… tracée »** (critère 4) repose sur E4-01 : l'entrée
-      `document_cancellation` est écrite par la base et mesurée dans
-      `sale-document.test.ts`. E4-07 ne l'a pas re-mesurée — l'écran appelle
-      `UPDATE`, il n'écrit rien au journal. À confirmer en lisant le journal après
-      une annulation faite depuis l'écran, sur un vrai navigateur.
 - [ ] **À regarder à l'œil** : les deux écrans sur une tablette réelle, en arabe
       (RTL — le chevron de la ligne de liste n'existe pas, l'écran n'en a pas
       besoin), le marquage d'un document annulé (le mot, le cadre, le montant
-      barré) en plein soleil, et la cible de « Documents » sur l'Accueil.
+      barré) en plein soleil, la cible de « Documents » sur l'Accueil, et la main
+      sur le bouton d'annulation — ce que jsdom ne peut pas atteindre, l'entrée
+      du journal étant désormais mesurée sur la requête que l'écran émet.
 
 ### Depuis E4-06
 
@@ -156,6 +83,62 @@ critère d'E4-07 n'est coché dans le BACKLOG.
       le même harnais, noté en E9-03.**
 
 ## Faites
+
+### E4-07, vérifiée le 2026-10-20 sur le stack local
+
+La story avait été écrite dans une session cloud, sans Docker ni Supabase, et
+`npm ci` y échouait : aucune de ses assertions n'avait été vue verte ni rouge.
+Tout a été rejoué ici, dans l'ordre que cette section prescrivait.
+
+- [x] **`npx supabase db reset`** — les 21 migrations appliquées, dont
+      `20261021090000_sale_document_list.sql` pour la première fois, terminé sur
+      « Finished supabase db reset ».
+- [x] **`npm run schema:doc`** — **diff vide**. Le fichier corrigé à la main
+      depuis la migration était identique à la sortie du générateur, « 19
+      entrées » comprise. Le seul écart apparu ensuite vient de la correction des
+      montants (`money_amount` → `text` sur les trois colonnes rendues), et il est
+      engendré.
+- [x] **`npm run typecheck` et `npm run lint`** — propres, lus sur la sortie des
+      commandes, après la dernière édition. `exactOptionalPropertyTypes` sur
+      `DocumentFilter`, l'union de promesses de `DocumentDetailScreen` et les
+      règles `react-hooks` des deux écrans : rien à corriger. Un seul rouge, sur
+      une édition de cette session (`no-useless-escape`), corrigé.
+- [x] **Les fichiers de la story, un par un** — 110 verts côté front
+      (`documents.test.ts`, `DocumentScreens.test.tsx`, `day.test.ts`,
+      `navigation.test.tsx`, `audit.test.tsx`), puis 177 côté base
+      (`sale-document-list.test.ts`, `sale-document-api.test.ts`,
+      `conventions.test.ts` — dix-neuf entrées —, `schema-doc.test.ts`,
+      `refusal-status.test.ts`), dont **4 rouges au premier passage**, tous dans
+      le dernier `describe` : deux attentes de plan fausses et deux délais de
+      5 s dépassés par 27 exécutions d'un Seq Scan de 40 000 lignes. Corrigés sur
+      la mesure, pas sur l'attente ; 179 verts ensuite, les deux cas neufs
+      compris.
+- [x] **Les quatre plans, et les cinq autres du même `describe`** — lus trois
+      fois chacun en session chaude, sur 40 000 documents et 80 000 lignes.
+      Stables aux trois passages. Détail et conclusions en BACKLOG E4-07 :
+      aucun index neuf à poser, la liste directe bien en Seq Scan, et la
+      recherche directe d'un numéro qui **sert** son index — contre ce
+      qu'attendait la story.
+- [x] **La décision en attente sur les lignes et la filiation** — tranchée par la
+      mesure : `sale_line_document`, `sale_document_pkey` et
+      `sale_document_source` servent tous les trois en Index Scan sous le jeton
+      d'un employé. Les deux index de secours ne sont pas posés, et il n'y a plus
+      de raison de les poser.
+- [x] **La justification de l'exception § 2.1** — tenue pour la liste, retirée
+      pour la recherche par numéro. Le registre n'a pas eu à changer : il ne
+      nommait que la liste.
+- [x] **Les trois sabotages** — aucun resté vert : 2 rouges pour le garde de
+      capacité, 24 pour le filtre de commerce, 12 à chacun des trois passages
+      pour l'index du tri. Une ligne par cas en BACKLOG E4-07.
+- [x] **Les deux assertions qui dépendent de la machine** — vertes ici :
+      `src/lib/day.test.ts` rend bien `+00:00` au 1er mars 2026, et les écrans
+      affichent `06/10/2026 09:00` pour 08:00 UTC.
+- [x] **« Annulation… tracée »** — mesurée, et non plus déduite d'E4-01 : la
+      requête que `cancelDocument()` émet est rejouée par l'API, puis l'entrée
+      `document_cancellation` relue — action, entité, motif et auteur. Reste la
+      main sur le bouton, dans la ligne d'œil ci-dessus.
+- [x] **La suite complète**, machine libre, base remise à zéro — **77 fichiers,
+      1 938 tests, tous verts**, 362 s.
 
 ### E4-01, vérifiée le 2026-10-15 sur le stack local (Postgres 17)
 

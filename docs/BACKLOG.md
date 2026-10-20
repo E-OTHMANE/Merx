@@ -789,13 +789,35 @@ Le jumeau conforme de chaque témoin — qui lit la même table en se bornant co
 **En tant que** patron, **je veux** retrouver un bon, **afin de** régler un litige.
 
 **Critères d'acceptation**
-- [ ] Liste filtrable par date, client, statut, type, appareil — *date, statut, type, appareil : écrits en E4-07, non vérifiés (docs/PENDING-CHECKS.md). **Client : tenu par E6-01** — `sale_document.client_id` naît avec la table `client`, aucun paramètre ni colonne ici.*
-- [ ] Recherche par numéro
-- [ ] Détail affichant les lignes, les totaux, l'auteur, l'appareil et l'horodatage
-- [ ] Annulation réservée au `owner`, avec motif, tracée
-- [ ] Un document annulé reste visible, clairement marqué
+- [ ] Liste filtrable par date, client, statut, type, appareil — *date, statut, type, appareil : vérifiés le 2026-10-20 sur le stack local. **Client : tenu par E6-01** — `sale_document.client_id` naît avec la table `client`, aucun paramètre ni colonne ici.*
+- [x] Recherche par numéro — *trois formes : numéro entier, chiffres seuls, fragment*
+- [x] Détail affichant les lignes, les totaux, l'auteur, l'appareil et l'horodatage
+- [x] Annulation réservée au `owner`, avec motif, tracée — *l'entrée `document_cancellation` relue après l'annulation émise par la requête de l'écran, auteur compris*
+- [x] Un document annulé reste visible, clairement marqué — *le mot « Annulé » dans un cadre et le montant barré ; le rendu en plein soleil reste à voir à l'œil (`PENDING-CHECKS`)*
 
 **Notes** — **La filiation s'affiche ici.** E4-05 a livré sa lecture dans les deux sens (`documentLineage()`, module Ventes) et s'est arrêtée là : l'écran où l'accrocher est ce détail-ci, et le construire là-bas aurait été bâtir en avance. Le détail porte donc le document d'origine et ce qui en est issu, avec un lien vers chacun — et un parent peut avoir **plusieurs** enfants (RÈGLE M3-4).
+
+**La story a été écrite dans une session sans base, et rejouée le 2026-10-20 sur le stack local.** Rien de ce qui suit n'était mesuré au moment de l'écriture ; trois attentes du premier jet se sont révélées fausses, et deux choix ont été corrigés. `docs/SCHEMA.md`, corrigé à la main faute de base, s'est révélé **identique** à la sortie du générateur — le seul écart apparu après coup vient de la correction des montants.
+
+**Les plans, mesurés sur 40 000 documents et 80 000 lignes, quatre commerces, trois passages chacun en session chaude.** Les quatre lectures de la liste passent par un index, aucun parcours séquentiel : la liste par `sale_document_tenant_recent` (Incremental Sort), le numéro entier par `sale_document_number_per_tenant`, les chiffres par `sale_document_tenant_id_idx` (Bitmap), le fragment par l'index du tri.
+
+**Les deux index prévus en secours n'ont pas été posés, parce qu'ils ne servaient à rien.** La crainte écrite était que `sale_line_document` et `sale_document_source`, commençant tous deux par `tenant_id`, ne puissent pas servir sous la policy `OR merx.is_super_admin()` (E0-03) — d'où un index sur la seule colonne de l'égalité, en secours. Mesuré : les lignes sortent par `sale_line_document`, le parent par `sale_document_pkey`, les enfants par `sale_document_source`, tous en Index Scan sur les trois passages. Une colonne non-première **peut** porter la condition d'index ; ce qui bloque sous RLS est le `leakproof` (`like`, `unaccent`, `pg_trgm`), pas la position. Aucun index neuf, aucune seconde fonction `security definer`.
+
+**L'exception § 2.1 se justifie par la liste, et par elle seule — la story en attendait plus.** La lecture directe que PostgREST émet pour la liste (tri sur `issued_at`, `limit 101`) est bien en **Seq Scan** sur les trois passages : `list_sale_documents()` tient. Mais la recherche directe d'un numéro, dont le premier jet affirmait qu'elle parcourait aussi la table, **sert son index** (`sale_document_number_per_tenant`, Index Scan) : `texteq` est leakproof — l'égalité sur une colonne stockée de CLAUDE.md —, donc la policy ne l'empêche pas de servir de condition d'index, et le `OR merx.is_super_admin()` ne reste qu'un filtre sur l'unique ligne touchée. Le test dit désormais l'inverse de ce qu'il disait, et le registre n'a pas eu à changer : sa justification ne nomme que la liste, plus l'auteur et l'appareil que `app_user` et `device` refusent.
+
+**Trois choix du premier jet corrigés.**
+
+- **Les montants sortent en `text`, plus en `numeric`.** PostgREST rend un `numeric` en **nombre JSON**, que le navigateur relit en `double` avant que l'écran ne le remette en chaîne : exact à cette échelle, et c'est pourtant le flottant que la RÈGLE des domaines nommés interdit (SPEC § 4), sans rien qui le garde demain. La preuve était dans le test lui-même, qui attendait `'1250.5'` pour `1250.50` : les centimes étaient déjà perdus de la représentation. Mesuré sur le corps de la réponse HTTP, guillemets compris — une assertion sur `typeof` passerait aussi sur un nombre relu puis reconverti.
+- **Le filtre par appareil est rendu à l'employé, avec les seules lettres.** Le premier jet le lui refusait, en comptant sur une recherche par fragment (« -B- ») qu'il n'a aucun moyen d'apprendre. La voie la moins chère n'a demandé **ni paramètre neuf, ni fonction neuve, ni lecture de `device`** : chaque ligne de la liste porte déjà son `device_id` à côté de son `device_prefix`, et la paire suffit à filtrer par le même `p_device_id` que le patron. L'employé voit « B », le patron « B — Tablette 2 ». Les lettres s'accumulent au fil des chargements : filtré sur « B », la page ne porte plus que des « B », et une liste rebâtie à chaque chargement perdrait le moyen d'en sortir.
+- **« Annulation… tracée » est mesurée, et non plus déduite d'E4-01.** L'écran n'écrit rien au journal : il émet un seul `PATCH`, et c'est la base qui en tire l'entrée. Le cas rejoue cette requête, forme comprise, et relit l'entrée `document_cancellation` — son action, son entité, son motif et son **auteur**. Ce qu'il ne distingue pas, et ne peut pas : l'auteur du créateur du bon, `cancel_document` n'étant qu'au patron, qui est aussi celui qui a créé le document du montage.
+
+**Sabotages (3 gardes retirés, un par un ; `sale-document-list.test.ts` et `sale-document-api.test.ts` seulement) :** aucun n'est resté vert.
+
+- **garde de capacité retiré** (`if not merx.can('create_sale')`) — **2 tombent**, et ce sont les deux seuls qui atteignent ce garde sans passer par l'autre : `refuse une session sans create_sale, avec sa propre phrase` (SQL) et `refuse un compte sans commerce en 403, avec la phrase du premier garde` (API) ;
+- **filtre de commerce retiré** (`d.tenant_id = home_tenant`) — **24 tombent**, dont les six cas d'isolation visés : `à numéro égal, ne rend que celui de son commerce`, `ne rend aucun document du voisin` (sous `owner` et sous `worker`), `rend zéro ligne… pour le détail d'un document du voisin`, `ne rend rien non plus pour l'appareil du voisin`, et le cas du voisin par l'API. Les deux commerces portent `BL-A-26-00042` dans **une seule** transaction et le comptage se fait hors RLS, sans quoi le cas resterait vert quoi qu'il arrive (CLAUDE.md, E2-06) ;
+- **index du tri retiré** (`drop index sale_document_tenant_recent`) — **12 tombent à chacun des trois passages du fichier**, dont les deux visés : `porte l'index du tri sur la même expression que la fonction` et `liste les plus récents par l'index du tri, sans parcours séquentiel`. Jugé sur plusieurs exécutions, un plan borderline flottant d'un run à l'autre (CLAUDE.md, E2-04).
+
+**Suite complète, machine libre, base remise à zéro : 77 fichiers, 1 938 tests, tous verts**, 362 s. `typecheck` et `lint` lus sur la sortie des commandes, après la dernière édition.
 
 ---
 

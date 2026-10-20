@@ -20,10 +20,11 @@
  * portent sur la date d'émission, ou de création pour un brouillon — sans quoi
  * un brouillon, qui n'a pas d'`issued_at`, serait injoignable.
  *
- * **Les montants arrivent par PostgREST en nombres JSON** (c'est son rendu d'un
- * `numeric`) ; ils sont remis en texte tels quels pour l'affichage
- * (`moneyText()`), jamais additionnés ni comparés ici. `numeric(12,2)` tient
- * exactement dans la représentation décimale la plus courte d'un nombre JSON.
+ * **Les montants arrivent en texte**, et n'en sortent pas : `list_sale_documents()`
+ * les rend en `text`, et les lignes sont lues avec `::text` sur chaque montant.
+ * Aucun montant ne passe par un `number` — ce serait un flottant, que la RÈGLE
+ * des domaines nommés interdit (SPEC § 4). Ils sont affichés (`moneyText()`),
+ * jamais additionnés ni comparés ici.
  *
  * **Pas de filtre par client** : `sale_document.client_id` naît en E6-01.
  */
@@ -94,6 +95,8 @@ export interface SaleDocumentSummary {
   /** La date que la liste trie : émission, ou création pour un brouillon. */
   sortAt: string
   sourceDocumentId: string | null
+  /** L'appareil qui a émis le document — ce que le filtre renvoie à la fonction. */
+  deviceId: string | null
   deviceLabel: string | null
   devicePrefix: string | null
   /** `null` si l'auteur n'est plus dans la fiche du commerce. */
@@ -105,15 +108,16 @@ interface SummaryRow {
   doc_type: SaleDocType
   doc_number: string | null
   status: DocStatus
-  subtotal: number | string
-  discount_total: number | string
-  total: number | string
+  subtotal: string
+  discount_total: string
+  total: string
   notes: string | null
   cancellation_reason: string | null
   issued_at: string | null
   created_at: string
   sort_at: string
   source_document_id: string | null
+  device_id: string | null
   device_label: string | null
   device_prefix: string | null
   author_name: string | null
@@ -124,9 +128,9 @@ const summary = (row: SummaryRow): SaleDocumentSummary => ({
   docType: row.doc_type,
   docNumber: row.doc_number,
   status: row.status,
-  subtotal: String(row.subtotal),
-  discountTotal: String(row.discount_total),
-  total: String(row.total),
+  subtotal: row.subtotal,
+  discountTotal: row.discount_total,
+  total: row.total,
   notes: row.notes,
   cancellationReason: row.cancellation_reason,
   issuedAt: row.issued_at,
@@ -134,6 +138,7 @@ const summary = (row: SummaryRow): SaleDocumentSummary => ({
   sortAt: row.sort_at,
   sourceDocumentId: row.source_document_id,
   deviceLabel: row.device_label,
+  deviceId: row.device_id,
   devicePrefix: row.device_prefix,
   authorName: row.author_name,
 })

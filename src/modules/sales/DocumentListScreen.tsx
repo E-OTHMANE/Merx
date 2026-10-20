@@ -17,9 +17,19 @@
  *
  * **Le filtre par client n'existe pas** : `client_id` naît en E6-01.
  *
- * **L'appareil** ne se filtre que pour qui peut lire la liste des appareils
- * (`manage_devices`, le patron) : un employé n'a pas de liste d'où choisir, et la
- * recherche par fragment (« -B- ») retrouve les bons d'un appareil sans elle.
+ * **L'appareil se filtre pour tout le monde, et l'employé n'en voit que la
+ * lettre.** Le patron choisit dans la liste des appareils (`manage_devices`),
+ * « A — Comptoir » ; l'employé, qui ne peut pas lire cette liste, choisit dans
+ * les **lettres que les documents listés portent** — `device_prefix` arrive déjà
+ * avec chaque ligne, à côté de son `device_id`, et la paire suffit à filtrer par
+ * le même paramètre `p_device_id` que le patron. Aucune fonction neuve, aucun
+ * paramètre neuf, rien de plus que ce que la liste rend déjà : c'était la voie
+ * la moins chère. Lui laisser taper « -B- » dans la recherche n'en était pas
+ * une — il n'a aucun moyen de l'apprendre.
+ *
+ * Les lettres s'**accumulent** au fil des chargements : une fois filtré sur « B »,
+ * la page ne porte plus que des « B », et une liste rebâtie à chaque fois
+ * perdrait les autres lettres — donc le moyen d'en sortir.
  *
  * BRAND-UI : quatre états (§ 8), lignes de 64 px (§ 8), montants en chiffres
  * tabulaires (§ 6), propriétés logiques (§ 9), cibles de 48 px (§ 7).
@@ -109,6 +119,8 @@ export function DocumentListScreen() {
 
   const [state, setState] = useState<State>({ status: 'loading' })
   const [devices, setDevices] = useState<Device[]>([])
+  /** Les lettres rencontrées, pour l'employé : union, jamais remplacement. */
+  const [letters, setLetters] = useState<ReadonlyArray<{ id: string; prefix: string }>>([])
 
   const [typed, setTyped] = useState('')
   const [search, setSearch] = useState('')
@@ -133,12 +145,29 @@ export function DocumentListScreen() {
 
   const filtered = [search, docType, status, deviceId, from, to].some((value) => value !== '')
 
+  const deviceOptions: ReadonlyArray<{ id: string; text: string }> = canSeeDevices
+    ? devices.map((device) => ({ id: device.id, text: `${device.prefix} — ${device.label}` }))
+    : letters.map((letter) => ({ id: letter.id, text: letter.prefix }))
+
   const load = useCallback((): (() => void) => {
     let current = true
     const filter: DocumentFilter = { search, docType, status, deviceId, from, to }
     listSaleDocuments(filter)
       .then((page) => {
-        if (current) setState({ status: 'loaded', page })
+        if (!current) return
+        setState({ status: 'loaded', page })
+        setLetters((known) => {
+          const merged = new Map(known.map((letter) => [letter.prefix, letter]))
+          for (const document of page.documents) {
+            if (document.devicePrefix && document.deviceId && !merged.has(document.devicePrefix)) {
+              merged.set(document.devicePrefix, {
+                id: document.deviceId,
+                prefix: document.devicePrefix,
+              })
+            }
+          }
+          return [...merged.values()].sort((a, b) => a.prefix.localeCompare(b.prefix))
+        })
       })
       .catch((error: unknown) => {
         if (current) {
@@ -221,7 +250,7 @@ export function DocumentListScreen() {
             </label>
           </div>
 
-          {canSeeDevices && (
+          {deviceOptions.length > 0 && (
             <label className="flex flex-col gap-1">
               <span className="text-note text-paper-600">Appareil</span>
               <select
@@ -230,9 +259,9 @@ export function DocumentListScreen() {
                 className={SELECT_CLASS}
               >
                 <option value="">Tous</option>
-                {devices.map((device) => (
-                  <option key={device.id} value={device.id}>
-                    {`${device.prefix} — ${device.label}`}
+                {deviceOptions.map((option) => (
+                  <option key={option.id} value={option.id}>
+                    {option.text}
                   </option>
                 ))}
               </select>

@@ -100,15 +100,16 @@ const summaryRow = (n: number, overrides: Record<string, unknown> = {}): Record<
   doc_type: 'delivery_note',
   doc_number: `BL-A-26-${String(n).padStart(5, '0')}`,
   status: 'confirmed',
-  subtotal: 228,
-  discount_total: 0,
-  total: 228,
+  subtotal: '228.00',
+  discount_total: '0.00',
+  total: '228.00',
   notes: null,
   cancellation_reason: null,
   issued_at: '2026-10-06T08:00:00Z',
   created_at: '2026-10-06T07:59:00Z',
   sort_at: '2026-10-06T08:00:00Z',
   source_document_id: null,
+  device_id: 'dev-a',
   device_label: 'Comptoir',
   device_prefix: 'A',
   author_name: 'Fatima',
@@ -157,7 +158,7 @@ describe('la liste des documents', () => {
   it('liste les documents avec leur numéro, leur type, leur statut et leur total', async () => {
     respondRpc.mockReturnValue({
       data: [
-        summaryRow(2, { total: 1250.5 }),
+        summaryRow(2, { total: '1250.50' }),
         summaryRow(1, { doc_type: 'quote', doc_number: 'DV-A-26-00001', status: 'confirmed' }),
       ],
       error: null,
@@ -259,8 +260,10 @@ describe('la liste des documents', () => {
   })
 
   /*
-   * Le filtre par appareil exige de lire la liste des appareils, que `device`
-   * ferme à l'employé (`manage_devices`). Il n'est offert qu'à qui peut la lire.
+   * Le filtre par appareil est offert aux deux rôles, et pas de la même source :
+   * le patron lit la liste des appareils (`manage_devices`) et voit « A —
+   * Comptoir » ; l'employé, à qui `device` est fermée, voit les **lettres** que
+   * les documents listés portent — et ne lit jamais `device`.
    */
   it('offre le filtre par appareil au patron, avec ses appareils', async () => {
     respondRpc.mockReturnValue({ data: [], error: null })
@@ -284,13 +287,63 @@ describe('la liste des documents', () => {
     await waitFor(() => expect(rpcCalls.at(-1)?.args['p_device_id']).toBe('dev-b'))
   })
 
-  it('ne l’offre pas à un employé', async () => {
-    respondRpc.mockReturnValue({ data: [], error: null })
+  it('l’offre à l’employé avec les seules lettres, sans jamais lire device', async () => {
+    respondRpc.mockReturnValue({
+      data: [
+        summaryRow(1),
+        summaryRow(2, { id: 'd-2', device_id: 'dev-b', device_prefix: 'B', device_label: 'Tablette 2' }),
+      ],
+      error: null,
+    })
     renderAt('/documents', 'worker')
 
-    await screen.findByLabelText('Statut')
-    expect(screen.queryByLabelText('Appareil')).not.toBeInTheDocument()
-    expect(calls.filter((call) => call.table === 'device')).toHaveLength(0)
+    const select = await screen.findByLabelText('Appareil')
+    /* La lettre, et rien de l'appareil : ni libellé, ni « Tablette 2 ». */
+    await screen.findByRole('option', { name: 'B' })
+    expect(screen.queryByRole('option', { name: /Tablette 2/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: /Comptoir/ })).not.toBeInTheDocument()
+
+    await userEvent.selectOptions(select, 'dev-b')
+
+    /* Filtré par le même paramètre que le patron : la paire vient des lignes. */
+    await waitFor(() => expect(rpcCalls.at(-1)?.args['p_device_id']).toBe('dev-b'))
+    expect(
+      calls.filter((call) => call.table === 'device'),
+      'FUITE — l’employé lit le registre des appareils',
+    ).toHaveLength(0)
+  })
+
+  /*
+   * Une fois filtré sur « B », la page ne porte plus que des « B » : une liste
+   * rebâtie à chaque chargement perdrait « A », donc le moyen d'en sortir.
+   */
+  it('garde les lettres déjà rencontrées quand la page filtrée n’en porte plus qu’une', async () => {
+    respondRpc.mockImplementation((args: Record<string, unknown>) =>
+      args['p_device_id'] === 'dev-b'
+        ? {
+            data: [
+              summaryRow(2, { id: 'd-2', device_id: 'dev-b', device_prefix: 'B', device_label: 'Tablette 2' }),
+            ],
+            error: null,
+          }
+        : {
+            data: [
+              summaryRow(1),
+              summaryRow(2, { id: 'd-2', device_id: 'dev-b', device_prefix: 'B', device_label: 'Tablette 2' }),
+            ],
+            error: null,
+          },
+    )
+    renderAt('/documents', 'worker')
+
+    const select = await screen.findByLabelText('Appareil')
+    await screen.findByRole('option', { name: 'B' })
+    await userEvent.selectOptions(select, 'dev-b')
+    await waitFor(() => expect(rpcCalls.at(-1)?.args['p_device_id']).toBe('dev-b'))
+
+    expect(screen.getByRole('option', { name: 'A' })).toBeInTheDocument()
+    await userEvent.selectOptions(select, 'dev-a')
+    await waitFor(() => expect(rpcCalls.at(-1)?.args['p_device_id']).toBe('dev-a'))
   })
 
   it('n’offre aucun filtre par client : la colonne naît en E6-01', async () => {
@@ -369,7 +422,9 @@ describe('le détail d’un document', () => {
 
   /* Le critère : lignes, totaux, auteur, appareil, horodatage — lus par un employé. */
   it('affiche les lignes, les totaux, l’auteur, l’appareil et l’horodatage', async () => {
-    scenario({ document: summaryRow(7, { subtotal: 240, discount_total: 12, total: 228 }) })
+    scenario({
+      document: summaryRow(7, { subtotal: '240.00', discount_total: '12.00', total: '228.00' }),
+    })
     renderAt('/documents/d-7', 'worker')
 
     expect(await screen.findByRole('heading', { level: 1, name: 'BL-A-26-00007' })).toBeInTheDocument()

@@ -130,9 +130,16 @@ returns table (
   doc_type           public.sale_doc_type,
   doc_number         text,
   status             public.sale_doc_status,
-  subtotal           public.money_amount,
-  discount_total     public.money_amount,
-  total              public.money_amount,
+  -- Les trois montants sortent en **texte**, jamais en `numeric`. PostgREST
+  -- rend un `numeric` en nombre JSON, que le navigateur relit en `double` avant
+  -- que l'écran ne le remette en chaîne : exact à cette échelle, mais c'est le
+  -- flottant que la RÈGLE des domaines nommés interdit (SPEC § 4), et rien ne
+  -- garderait le jour où un montant cesse de tenir dans un `double`. Le texte
+  -- est la représentation que `numeric(12,2)` donne de lui-même, et c'est ce que
+  -- le front lit partout ailleurs (`sale_line`, `::text` sur chaque montant).
+  subtotal           text,
+  discount_total     text,
+  total              text,
   notes              text,
   cancellation_reason text,
   issued_at          timestamptz,
@@ -199,7 +206,7 @@ begin
 
   return query
   select d.id, d.doc_type, d.doc_number, d.status,
-         d.subtotal, d.discount_total, d.total,
+         d.subtotal::text, d.discount_total::text, d.total::text,
          d.notes, d.cancellation_reason,
          d.issued_at, d.created_at,
          coalesce(d.issued_at, d.created_at),

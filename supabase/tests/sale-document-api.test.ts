@@ -436,6 +436,63 @@ describe('l’annulation par l’API', () => {
     expect(entries.map((e) => e.action)).toEqual(['document_cancellation'])
   })
 
+  /*
+   * E4-07, critère « annulation… tracée ». L'écran appelle `cancelDocument()`
+   * (`src/modules/sales/documents.ts`), qui n'écrit **rien** au journal : il
+   * émet un seul `PATCH`, et c'est la base qui en tire l'entrée
+   * `document_cancellation` (`merx.apply_audit`, E4-01). Ce qui n'avait jamais
+   * été mesuré est l'**auteur** de cette entrée : le journal qui répond « qui »
+   * avec la ligne du mauvais employé ne répond rien, et la ligne est le seul
+   * souvenir du motif une fois l'écran fermé.
+   *
+   * La requête ci-dessous est celle de l'écran, forme comprise — le corps à deux
+   * clés et `select=id`, que `cancelDocument()` relit pour distinguer une ligne
+   * écartée par la RLS d'une ligne annulée. Ce que jsdom ne peut pas atteindre,
+   * et qui reste à voir à l'œil sur une tablette, est la main sur le bouton.
+   */
+  it('écrit l’entrée du journal au nom de celui qui a annulé depuis l’écran', async () => {
+    const id = await confirmedWithSale('-3')
+
+    /* La requête exacte de cancelDocument(documentId, reason). */
+    const result = await rest(`sale_document?id=eq.${id}&select=id`, {
+      token: tokens.owner,
+      method: 'PATCH',
+      body: { status: 'cancelled', cancellation_reason: 'client parti sans payer' },
+    })
+
+    expect(result.ok, result.body).toBe(true)
+    /* La ligne relue, sans quoi l'écran dirait « document introuvable ». */
+    expect(result.rows).toHaveLength(1)
+
+    const { rows: entries } = await client.query<{
+      action: string
+      user_id: string
+      entity_type: string
+      reason: string | null
+    }>(
+      'select action::text as action, user_id, entity_type,' +
+        " \"after\" ->> 'cancellation_reason' as reason" +
+        ' from public.audit_log where tenant_id = $1 and entity_id = $2',
+      [fixture.tenant, id],
+    )
+
+    expect(entries).toHaveLength(1)
+    const entry = entries[0]!
+    expect(entry.action).toBe('document_cancellation')
+    expect(entry.entity_type).toBe('sale_document')
+    expect(entry.reason).toBe('client parti sans payer')
+    /*
+     * L'auteur, pris du jeton par `merx.write_audit()` et non d'un paramètre
+     * (E1-04). Il n'est pas distingué du créateur du bon ici, et ne peut pas
+     * l'être : `cancel_document` n'est qu'au patron (§ 3.1), et c'est lui qui a
+     * créé le document de ce montage. Ce que le cas mesure est donc la présence
+     * de l'auteur juste sur l'entrée, non l'origine de sa valeur.
+     */
+    expect(entry.user_id, 'le journal attribue l’annulation au mauvais compte').toBe(
+      fixture.ownerAppUser,
+    )
+  })
+
   it('est refusée à l’employé, avec la phrase du droit d’annuler', async () => {
     const id = await confirmedWithSale()
 
@@ -616,6 +673,9 @@ describe('la liste des documents, par l’API', () => {
     doc_number: string | null
     author_name: string | null
     device_label: string | null
+    subtotal: string
+    discount_total: string
+    total: string
   }
 
   const rowsOf = (result: { body: string }): Row[] => JSON.parse(result.body) as Row[]
@@ -631,6 +691,36 @@ describe('la liste des documents, par l’API', () => {
     // Le nom que `app_user` refuse à l'employé, rendu par la fonction.
     expect(found?.author_name).toBe('Patron')
     expect(found?.device_label).toBe('Comptoir')
+  })
+
+  /*
+   * La RÈGLE des domaines nommés (SPEC § 4) interdit le flottant partout. Un
+   * `numeric` rendu par PostgREST est un **nombre JSON**, que `JSON.parse()`
+   * relit en `double` : le navigateur ne verrait jamais le `numeric(12,2)`, mais
+   * son arrondi — exact à l'échelle d'aujourd'hui, et rien ne le garderait
+   * demain. La fonction déclare donc ses trois montants en `text`.
+   *
+   * Mesuré sur le corps de la réponse, pas seulement sur la valeur relue : une
+   * assertion sur `typeof` passerait aussi sur `"total": 228.0` relu puis
+   * reconverti. Ce qui est asserté est la présence des guillemets.
+   */
+  it('rend les montants en chaînes, jamais en nombres JSON', async () => {
+    await confirmedWithSale()
+
+    const result = await list(tokens.worker)
+
+    expect(result.ok, result.body).toBe(true)
+    for (const column of ['subtotal', 'discount_total', 'total']) {
+      expect(
+        result.body,
+        `${column} sort en nombre JSON — c'est un double côté navigateur (SPEC § 4)`,
+      ).toMatch(new RegExp(`"${column}":"-?[0-9]+[.][0-9]{2}"`))
+    }
+    for (const row of rowsOf(result)) {
+      expect(typeof row.subtotal).toBe('string')
+      expect(typeof row.discount_total).toBe('string')
+      expect(typeof row.total).toBe('string')
+    }
   })
 
   it('et le même employé ne lit pas app_user par PostgREST', async () => {

@@ -86,15 +86,16 @@ const summaryRow = (n: number, overrides: Record<string, unknown> = {}): Record<
   doc_type: 'delivery_note',
   doc_number: `BL-A-26-${String(n).padStart(5, '0')}`,
   status: 'confirmed',
-  subtotal: 100,
-  discount_total: 0,
-  total: 100,
+  subtotal: '100.00',
+  discount_total: '0.00',
+  total: '100.00',
   notes: null,
   cancellation_reason: null,
   issued_at: '2026-10-06T08:00:00Z',
   created_at: '2026-10-06T07:59:00Z',
   sort_at: '2026-10-06T08:00:00Z',
   source_document_id: null,
+  device_id: 'dev-a',
   device_label: 'Comptoir',
   device_prefix: 'A',
   author_name: 'Patron',
@@ -191,15 +192,24 @@ describe('listSaleDocuments', () => {
     expect(page.documents[0]!.id).toBe('d-1')
   })
 
-  it('remet les montants en texte, sans les calculer', async () => {
+  /*
+   * Les montants arrivent en texte et n'en sortent pas : `list_sale_documents()`
+   * les rend en `text` (SPEC § 4). Le passage par un nombre JSON, qui était le
+   * premier jet de cette story, perdait les centimes de sa représentation —
+   * `1250.50` relu en `double` puis remis en chaîne donne « 1250.5 », et c'est
+   * le flottant que la RÈGLE interdit. Ce que la base dit est ce qui s'affiche.
+   */
+  it('porte les montants tels que la base les dit, centimes compris', async () => {
     respondRpc.mockReturnValue({
-      data: [summaryRow(1, { subtotal: 1250.5, discount_total: 0, total: 1250.5 })],
+      data: [summaryRow(1, { subtotal: '1250.50', discount_total: '0.00', total: '1250.50' })],
       error: null,
     })
 
     const [document] = (await listSaleDocuments()).documents
 
-    expect(document!.total).toBe('1250.5')
+    expect(document!.total).toBe('1250.50')
+    expect(document!.subtotal).toBe('1250.50')
+    expect(document!.discountTotal).toBe('0.00')
     expect(document!.authorName).toBe('Patron')
     expect(document!.deviceLabel).toBe('Comptoir')
   })

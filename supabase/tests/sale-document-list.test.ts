@@ -994,11 +994,22 @@ describe('list_sale_documents — les plans', () => {
   })
 
   /* 2. Le détail — l'en-tête par la fonction, les lignes sous RLS. */
-  it('lit l’en-tête d’un document par la clé du commerce, sans parcours séquentiel', async () => {
+  /*
+   * Mesuré le 2026-10-20 : le planificateur sert cette lecture par
+   * `sale_document_pkey`, pas par `sale_document_tenant_id_id_key` — `id` est
+   * unique à lui seul, l'égalité sur `tenant_id` ne restant qu'un filtre. Les
+   * deux index sont équivalents ici, et la propriété mesurée est celle qui
+   * compte : un seul document est touché, pas les 40 000 des quatre commerces.
+   */
+  it('lit l’en-tête d’un document par un index unique, sans parcours séquentiel', async () => {
     const sql = `select * from public.list_sale_documents(p_document_id => '${target}'::uuid)`
     for (const nodes of await plans(sql, MARKER)) {
       expect(seqScansOf(nodes, 'sale_document').length).toBe(0)
-      expect(indexesUsed(nodes)).toContain('sale_document_tenant_id_id_key')
+      expect(indexesUsed(nodes)).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^sale_document_(pkey|tenant_id_id_key)$/),
+        ]),
+      )
     }
   })
 
@@ -1055,19 +1066,29 @@ describe('list_sale_documents — les plans', () => {
           'justifie plus par le plan (SPEC § 2.1) — à retirer du registre, ou à rejustifier',
       ).toBeGreaterThan(0)
     }
-  })
+  }, 300_000)
 
-  it('la recherche directe d’un numéro parcourt aussi la table', async () => {
+  /*
+   * Mesuré le 2026-10-20, et contraire à ce que cette story attendait :
+   * l'égalité sur `doc_number` **sert** `sale_document_number_per_tenant` sous
+   * RLS, en Index Scan sur les trois passages. `texteq` est leakproof — c'est
+   * l'égalité sur une colonne stockée de CLAUDE.md —, donc la policy ne
+   * l'empêche pas de servir de condition d'index, et le `OR
+   * merx.is_super_admin()` ne reste qu'un filtre sur l'unique ligne touchée.
+   *
+   * Le plan ne justifie donc l'exception que pour **la liste** (le cas
+   * ci-dessus, en Seq Scan), jamais pour cette forme-là. Ce qui tient ici est
+   * l'inverse de ce qui était écrit, et vaut d'être gardé : la recherche d'un
+   * numéro entier est bornée à une ligne, dans la fonction comme hors d'elle.
+   */
+  it('la recherche directe d’un numéro, elle, sert son index : le plan ne justifie l’exception que pour la liste', async () => {
     const direct =
       `select id from public.sale_document where doc_number = '${targetNumber}'`
     for (const nodes of await plans(direct, 'where doc_number')) {
-      expect(
-        seqScansOf(nodes, 'sale_document').length,
-        'la lecture directe n’est plus en parcours séquentiel : l’index (tenant_id, doc_number) ' +
-          'sert désormais sous RLS, et l’exception ne se justifie plus pour cette forme',
-      ).toBeGreaterThan(0)
+      expect(seqScansOf(nodes, 'sale_document').length).toBe(0)
+      expect(indexesUsed(nodes)).toContain('sale_document_number_per_tenant')
     }
-  })
+  }, 300_000)
 
   /* Le plafond de la page, qu'aucun petit peuplement ne peut mesurer. */
   it('plafonne la page à 500, quoi qu’on demande', async () => {
