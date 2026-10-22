@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Variante **debug** seulement. E5-01.
+
+  `android:usesCleartextTraffic` autorise le HTTP en clair, que l'Android de la
+  tablette refuse par défaut depuis l'API 28 (le projet vise 36). Un APK d'essai
+  en a besoin pour joindre le stack Supabase local d'un PC sur le Wi-Fi —
+  `http://<IP du PC>:54521` — et l'imprimante de laboratoire.
+
+  Le fusionneur de manifestes n'emporte ce fichier que dans les variantes de
+  debug : `assembleRelease` ne le voit pas. C'est exactement pour cela qu'il est
+  ici plutôt que dans le manifeste principal.
+
+  **Conséquence à ne pas oublier : l'APK remis aux pilotes doit être un
+  `assembleRelease` signé.** Un APK de debug distribué emporterait cette
+  permission. La signature de publication est encore ouverte
+  (docs/PENDING-CHECKS.md).
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:usesCleartextTraffic="true" />
+</manifest>

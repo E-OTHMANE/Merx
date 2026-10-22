@@ -24,11 +24,18 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   android: {
     /*
-     * Le stack de développement est servi en clair sur le LAN
-     * (`http://<IP>:54521`, CLAUDE.md « Testing on a real phone »). En
-     * production, Supabase est en HTTPS et rien ne passe en clair.
+     * **Faux par défaut, et c'est la décision.** La page est servie depuis
+     * `https://localhost` (schéma Android de Capacitor) : un appel vers un
+     * `http://` du réseau local est du contenu mixte, que la WebView refuse.
+     * L'autoriser n'a de sens que pour un APK d'essai dirigé sur le stack local
+     * d'un PC — en production, Supabase est en HTTPS et rien ne doit passer en
+     * clair.
+     *
+     * La bascule est donc **une variable d'environnement de `cap sync`**, posée
+     * par le seul workflow d'essai (`android-test-apk.yml`). Un APK construit
+     * sans elle — celui de `main`, celui des pilotes — ne l'a pas.
      */
-    allowMixedContent: true,
+    allowMixedContent: process.env['MERX_TEST_CLEARTEXT'] === '1',
   },
 }
 

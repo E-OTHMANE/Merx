@@ -1,0 +1,158 @@
+# ============================================================================
+# Merx — un APK d'essai dirigé sur le stack local d'un PC.
+#
+# **Il ne se déclenche jamais tout seul.** Ni sur une poussée, ni sur une
+# étiquette : uniquement à la main, depuis l'onglet Actions, avec l'adresse du
+# PC en paramètre. Rien de ce qu'il fait n'entre dans l'APK de `main` ni dans
+# celui des pilotes, et c'est toute la raison d'un second fichier plutôt que
+# d'un `if` dans le premier :
+#
+#   — `VITE_SUPABASE_URL` pointe sur l'IP du PC sur le Wi-Fi, au lieu de
+#     `127.0.0.1` qui, sur le téléphone, désigne le téléphone ;
+#   — `MERX_TEST_CLEARTEXT=1` fait poser `allowMixedContent` par `cap sync`
+#     (la page est servie en `https://localhost` et appelle un `http://` du
+#     réseau local : sans cela, la WebView refuse le contenu mixte) ;
+#   — `assembleDebug` emporte `android/app/src/debug/AndroidManifest.xml`, qui
+#     autorise le trafic en clair — ce qu'Android refuse par défaut depuis
+#     l'API 28. `assembleRelease` ne le voit pas.
+#
+# L'artefact porte un autre nom que celui de `main`, pour qu'aucun des deux ne
+# se prenne pour l'autre.
+# ============================================================================
+
+name: APK d'essai (stack local)
+
+on:
+  workflow_dispatch:
+    inputs:
+      supabase_url:
+        description: "Adresse du stack local, vue du Wi-Fi — ex. http://192.168.1.12:54521"
+        required: true
+        type: string
+      anon_key:
+        description: "Clé anon du stack local (publique par construction ; celle de .env.example par défaut)"
+        required: false
+        type: string
+        default: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZS1kZW1vIiwicm9sZSI6ImFub24iLCJleHAiOjE5ODM4MTI5OTZ9.CRXP1A7WOeoJeXxjNni43kdQwgnWNReilDMblYTn_I0
+
+permissions:
+  contents: read
+
+env:
+  XLSX_TARBALL: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Refuser une adresse qui ne mène nulle part
+        run: |
+          url='${{ inputs.supabase_url }}'
+          case "$url" in
+            http://127.0.0.1*|http://localhost*|https://localhost*)
+              echo "::error::$url désigne le téléphone, pas le PC. Donnez l'IPv4 du PC sur le Wi-Fi (Get-NetIPConfiguration), par exemple http://192.168.1.12:54521."
+              exit 1
+              ;;
+            http://*|https://*) echo "Stack visé : $url" ;;
+            *)
+              echo "::error::adresse attendue sous la forme http://<IP>:54521, reçu : $url"
+              exit 1
+              ;;
+          esac
+
+      - name: Récupérer le dépôt
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Node
+        # actions/setup-node v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24.12.0
+
+      - name: JDK 21
+        # actions/setup-java v6.1.0
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: SDK Android
+        # android-actions/setup-android v4.0.4
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd
+        with:
+          packages: platform-tools platforms;android-36 build-tools;36.0.0
+
+      - name: Cache npm
+        id: npm-cache
+        # actions/cache v6.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.npm
+          key: npm-ubuntu-24.04-node-24.12.0-${{ hashFiles('package-lock.json') }}
+
+      # Même raison et même traitement que dans `android-debug-apk.yml` : `xlsx`
+      # vient de cdn.sheetjs.com, pas du registre npm.
+      - name: Prendre xlsx chez SheetJS, avant tout le reste
+        run: |
+          set -u
+          for try in 1 2 3 4 5; do
+            if npm cache add "$XLSX_TARBALL"; then
+              echo "xlsx : pris au CDN SheetJS (tentative $try)."
+              exit 0
+            fi
+            echo "xlsx : échec de la tentative $try."
+            sleep $((try * 5))
+          done
+
+          if [ "${{ steps.npm-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "::warning::cdn.sheetjs.com injoignable ; le cache npm restauré devrait contenir xlsx. On continue."
+            exit 0
+          fi
+
+          echo "::error::cdn.sheetjs.com injoignable et aucun cache npm à restaurer : xlsx ne peut pas être installé (package.json l'installe depuis ce CDN, pas depuis le registre npm)."
+          exit 1
+
+      - name: Installer les dépendances
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      # Les deux variables sont lues par Vite **à la construction** et gravées
+      # dans le bundle : c'est ici, et nulle part ailleurs, que l'APK apprend
+      # quel Supabase il appelle.
+      - name: Construire l'application web, dirigée sur le stack local
+        env:
+          VITE_SUPABASE_URL: ${{ inputs.supabase_url }}
+          VITE_SUPABASE_ANON_KEY: ${{ inputs.anon_key }}
+        run: npm run build
+
+      - name: Porter les assets, contenu mixte autorisé
+        env:
+          MERX_TEST_CLEARTEXT: '1'
+        run: |
+          npx cap sync android
+          echo "allowMixedContent dans la configuration portée :"
+          grep -o '"allowMixedContent":[^,}]*' android/app/src/main/assets/capacitor.config.json
+
+      - name: Construire l'APK d'essai
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Publier l'APK d'essai
+        # actions/upload-artifact v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: merx-essai-local-${{ github.run_number }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          # Court : un APK d'essai pointe sur une IP qui change avec le réseau.
+          retention-days: 3
+
+      - name: Récapituler ce qui a été gravé
+        run: |
+          echo "### APK d'essai" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Supabase : \`${{ inputs.supabase_url }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Contenu mixte autorisé, trafic en clair autorisé (variante debug)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- À ne pas distribuer : APK de debug, dirigé sur un réseau privé" >> "$GITHUB_STEP_SUMMARY"
