@@ -9,17 +9,10 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
 
 ### Depuis E5-01 — l'enveloppe Capacitor et le ticket
 
-Rien de ce qui suit n'est mesurable par la suite : il y faut un JDK, un SDK
-Android, une tablette, et deux imprimantes. **Rien de tout cela n'est sur cette
-machine** (`java` absent, `ANDROID_HOME` vide), donc l'APK n'a jamais été
-construit : ce qui est vérifié s'arrête au `cap sync`.
+Rien de ce qui suit n'est mesurable par la suite : il y faut une vraie
+imprimante, et des décisions. **L'APK, lui, est construit et éprouvé** — voir
+« E5-01, le chemin natif » dans « Faites ».
 
-- [ ] **Construire l'APK, et le faire tourner.** `npm run android:sync` passe
-      (assets copiés, plugin `capacitor-tcp-socket@7.1.1` reconnu), mais
-      `gradlew assembleDebug` n'a pas été lancé faute de JDK et de SDK. C'est
-      aussi le seul moyen de savoir si le plugin, dont le pair est
-      `@capacitor/core >= 7`, tient sur Capacitor **8.5.3** : rien ne l'a
-      mesuré. Repli prévu si non : quatre méthodes à réécrire en Kotlin.
 - [ ] **Le ticket sur une vraie imprimante** — le plan du § 8 de
       `docs/research/E5-02-arabe-thermique.md`, à faire en une fois :
       - la **largeur de tête réelle** (576 ou 512 ?), qui décide du réglage
@@ -33,14 +26,38 @@ construit : ce qui est vérifié s'arrête au `cap sync`.
       - **au moins deux marques**, dont la moins chère trouvée sur place ;
       - et, pour E5-02 : liaison des lettres arabes, sens, et arabe + chiffres
         latins sur la même ligne.
-- [ ] **L'APK contre l'imprimante de laboratoire** (`npm run printer:fake` sur
-      le PC, `printer_address` = `<IP du PC>:9100` sur la tablette). C'est le
-      niveau 4 du plan de test : le seul qui traverse le plugin, le socket
-      Android et le Wi-Fi — et il ne demande aucune imprimante. À faire **avant**
-      d'en acheter une.
-- [ ] **À regarder à l'œil** : le bouton « Imprimer le ticket » sous le pouce en
-      bas du détail, et le ticket qui part tout seul après une vente — qu'aucune
-      seconde ne s'ajoute au comptoir.
+- [ ] **Deux défauts constatés sur l'APK d'essai le 2026-10-22, à diagnostiquer
+      — aucun n'a été corrigé, et aucun n'est diagnostiqué.** Le reste de
+      l'application marchait, impression comprise.
+
+      1. **La photo d'un produit ne s'affiche pas.** Ce qui est **établi** en
+         regardant le stack, et qui épargnera le faux départ : la photo **a
+         bien été envoyée** depuis le téléphone (`product-photo`,
+         `<id produit>/<uuid>.jpg`, 45 163 octets, `image/jpeg`, 17:39) ; et la
+         piste « URL signée bâtie sur `127.0.0.1` » **ne tient pas pour ce
+         chemin** — l'API Storage rend un chemin **relatif**
+         (`/object/sign/...`) et `supabase-js` le préfixe par l'URL du client,
+         donc par celle gravée au build, l'IP du PC. Le contenu mixte est
+         douteux lui aussi : les appels XHR en clair passent (connexion, vente,
+         impression), et une image est du contenu mixte *passif*, plus permissif
+         encore. Restent à examiner : ce que `signedPhotoUrls()` reçoit
+         réellement sur l'appareil — elle avale ses erreurs par construction et
+         rend la vignette de remplacement en silence (SPEC § 2.6) —, et le
+         `photo_url` de la ligne `product`. **À faire avec la console distante
+         branchée sur la WebView**, sans quoi on devine.
+      2. **Le bouton de scan disparaît au toucher, sans ouvrir la caméra.** Le
+         comportement est cohérent avec le code : le bouton ne s'affiche que si
+         `BarcodeDetector` existe, et `getUserMedia` n'est appelé **qu'à
+         l'appui** (`src/lib/barcode/`). Donc le détecteur est là et c'est la
+         caméra qui est refusée — premier suspect, le manifeste, qui ne déclare
+         que `INTERNET` : **aucune permission caméra**. À vérifier aussi : ce
+         que la WebView empaquetée fait de `BarcodeDetector`, qui n'est pas
+         garanti hors de Chrome.
+
+- [ ] **À regarder à l'œil, au comptoir** : le bouton « Imprimer le ticket »
+      sous le pouce en bas du détail, et le temps réellement ajouté à une vente.
+      Le ticket part bien tout seul (vérifié le 2026-10-22) ; ce qui reste est
+      une appréciation de geste, debout, une main occupée.
 
 Et deux conséquences de la décision du 2026-10-20 (SPEC § 2.7), aucune
 mesurable par la suite non plus.
@@ -139,6 +156,27 @@ plus bas. Ne reste que ce qu'aucune commande ne mesure.
       le même harnais, noté en E9-03.**
 
 ## Faites
+
+### E5-01, le chemin natif, vérifié le 2026-10-22 sur un téléphone
+
+L'APK d'essai, construit par GitHub Actions et dirigé sur le stack local du PC,
+a imprimé un bon vers l'imprimante de laboratoire. C'est le niveau 4 du plan de
+test d'E5-01 : le seul qui traverse le plugin, le socket Android et le Wi-Fi.
+
+- [x] **L'APK se construit et se lance.** Donc `capacitor-tcp-socket@7.1.1`,
+      dont le pair est `@capacitor/core >= 7`, **tient sur Capacitor 8.5.3** :
+      le repli prévu — quatre méthodes à réécrire en Kotlin — ne sert pas.
+- [x] **L'APK contre l'imprimante de laboratoire** (`npm run printer:fake` sur
+      le PC, `printer_address` = `<IP du PC>:9100` sur le téléphone) :
+      **BL-B-26-00001**, ticket correct, montants justes. Le préfixe `B` est le
+      sien : le téléphone s'est enregistré comme second appareil du commerce,
+      et sa séquence est repartie de 1 — RÈGLE de numérotation locale, § 2.5.
+- [x] Et, par la même occasion : le contenu mixte et le trafic en clair
+      autorisés par la variante debug suffisent à joindre Supabase sur l'IP du
+      PC depuis `https://localhost`.
+
+Ce que ce passage **ne dit pas** : qu'une imprimante accepte le flux. Aucune
+imprimante ne l'a reçu — la ligne reste ouverte plus haut.
 
 ### E4-07, vérifiée le 2026-10-20 sur le stack local
 

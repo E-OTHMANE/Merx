@@ -14,7 +14,8 @@
     "schema:doc": "node scripts/schema-doc.mjs",
     "android:sync": "npm run build && cap sync android",
     "android:run": "cap run android",
-    "printer:fake": "node scripts/fake-printer.mjs"
+    "printer:fake": "node scripts/fake-printer.mjs",
+    "dev:account": "node scripts/dev-account.mjs"
   },
   "dependencies": {
     "@capacitor/core": "^8.5.3",

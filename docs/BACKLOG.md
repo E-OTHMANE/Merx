@@ -829,7 +829,7 @@ Le jumeau conforme de chaque témoin — qui lit la même table en se bornant co
 **En tant que** vendeur, **je veux** remettre un papier au client, **afin qu'**il ait sa preuve.
 
 **Critères d'acceptation**
-- [ ] Impression ESC/POS sur imprimante **réseau Wi-Fi** — *le flux est mesuré de bout en bout sur un vrai socket, mais aucune imprimante ne l'a reçu : voir `docs/PENDING-CHECKS.md`*
+- [ ] Impression ESC/POS sur imprimante **réseau Wi-Fi** — *tenu jusqu'au matériel : le 2026-10-22, l'APK d'essai a imprimé `BL-B-26-00001` depuis un téléphone vers l'imprimante de laboratoire, en traversant le plugin, le socket Android et le Wi-Fi. **Aucune imprimante n'a encore reçu le flux** : `docs/PENDING-CHECKS.md`*
 - [x] Adresse configurée dans les paramètres du commerce
 - [x] Contient : nom et coordonnées du commerce, numéro du bon, date et heure, client, lignes avec quantité et prix, total — *le client est M4 (étape 6) : le champ existe, vide, et sa ligne ne s'imprime pas*
 - [x] Échec d'impression non bloquant : le bon reste enregistré, réimpression possible
