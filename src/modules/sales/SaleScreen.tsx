@@ -96,6 +96,14 @@ import {
   stepQuantity,
   type SaleLine,
 } from '@/modules/sales/sale'
+import {
+  TICKET_MESSAGES,
+  loadTicketPrinter,
+  printTicketOn,
+  saleTicket,
+  type Ticket,
+  type TicketPrinter,
+} from '@/modules/sales/printing'
 import { SALE_MESSAGES, SALE_DOC_TYPE, recordSale, type SaleProgress } from '@/modules/sales/saleWrite'
 import { loadForTransformation } from '@/modules/sales/transform'
 import { Quantity, stockLevelsFor, type StockLevel } from '@/modules/stock'
@@ -495,6 +503,32 @@ export function SaleScreen() {
   const [issued, setIssued] = useState<string | null>(null)
 
   /*
+   * L'impression du ticket (E5-01). Le bon part à l'imprimante **sans un tap
+   * de plus** : au comptoir, chaque geste superflu est payé mille fois par jour
+   * (point de rupture n° 2). Le ticket est retenu tel qu'il a été imprimé, pour
+   * que « Imprimer de nouveau » n'ait rien à relire.
+   *
+   * Hors de l'enveloppe Android, ou sans adresse d'imprimante, `printer` reste
+   * `null` : rien ne s'imprime et rien ne s'affiche (SPEC § 2.6 et § 2.7).
+   */
+  const [printer, setPrinter] = useState<TicketPrinter | null>(null)
+  const [ticket, setTicket] = useState<Ticket | null>(null)
+  const [printing, setPrinting] = useState(false)
+  const [printFailure, setPrintFailure] = useState<string | null>(null)
+
+  useEffect(() => {
+    let current = true
+    loadTicketPrinter()
+      .then((found) => {
+        if (current) setPrinter(found)
+      })
+      .catch(() => undefined)
+    return () => {
+      current = false
+    }
+  }, [])
+
+  /*
    * La transformation. `documentId` vient de la route `/sale/from/:documentId` :
    * absent, cet écran est l'écran de vente ordinaire et rien ici ne part.
    *
@@ -637,6 +671,22 @@ export function SaleScreen() {
   const totals = documentTotals(lines)
   const complete = saleIsComplete(lines, canGoBelowFloor)
 
+  /*
+   * Imprimer n'est jamais bloquant : le bon est déjà enregistré quand on
+   * arrive ici, et un échec ne fait qu'ajouter une phrase et un bouton.
+   */
+  const print = async (toPrint: Ticket, on: TicketPrinter): Promise<void> => {
+    setPrinting(true)
+    setPrintFailure(null)
+    try {
+      await printTicketOn(toPrint, on)
+    } catch {
+      setPrintFailure(TICKET_MESSAGES.failed)
+    } finally {
+      setPrinting(false)
+    }
+  }
+
   const save = async (): Promise<void> => {
     if (saving || !complete) return
     setFailure(null)
@@ -661,8 +711,23 @@ export function SaleScreen() {
         },
       })
       setIssued(confirmed.docNumber)
-      setLines([])
       setProgress({})
+
+      if (printer !== null) {
+        const next = saleTicket(
+          {
+            docNumber: confirmed.docNumber,
+            issuedAt: confirmed.issuedAt,
+            lines,
+            total: totals.total,
+          },
+          printer,
+        )
+        setTicket(next)
+        void print(next, printer)
+      }
+
+      setLines([])
     } catch (error: unknown) {
       setFailure(error instanceof Error ? error.message : SALE_MESSAGES.notSaved)
     } finally {
@@ -673,6 +738,8 @@ export function SaleScreen() {
   const newSale = (): void => {
     setIssued(null)
     setFailure(null)
+    setPrintFailure(null)
+    setTicket(null)
     setQuery('')
   }
 
@@ -697,13 +764,30 @@ export function SaleScreen() {
             <p role="status" className="text-body text-paper-900">
               {DOC_TYPE_LABELS[docType].saved(issued)}
             </p>
-            <button
-              type="button"
-              onClick={newSale}
-              className="h-touch rounded-button border border-paper-300 bg-white px-4 text-body text-ink-700"
-            >
-              Nouveau bon
-            </button>
+            {printFailure !== null && (
+              <p role="alert" className="text-body text-red-600">
+                {printFailure}
+              </p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={newSale}
+                className="h-touch rounded-button border border-paper-300 bg-white px-4 text-body text-ink-700"
+              >
+                Nouveau bon
+              </button>
+              {ticket !== null && printer !== null && (
+                <button
+                  type="button"
+                  disabled={printing}
+                  onClick={() => void print(ticket, printer)}
+                  className="h-touch rounded-button border border-paper-300 bg-white px-4 text-body text-ink-700"
+                >
+                  {printing ? TICKET_MESSAGES.printing : 'Imprimer de nouveau'}
+                </button>
+              )}
+            </div>
           </div>
         )}
 

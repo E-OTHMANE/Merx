@@ -19,7 +19,12 @@
  */
 
 /** Les clés de `public.setting_key`, dans l'ordre de l'enum. */
-export const SETTING_KEYS = ['print_header', 'default_language', 'printer_address'] as const
+export const SETTING_KEYS = [
+  'print_header',
+  'default_language',
+  'printer_address',
+  'printer_width',
+] as const
 
 export type SettingKey = (typeof SETTING_KEYS)[number]
 
@@ -43,4 +48,30 @@ export type Language = (typeof LANGUAGES)[number]
 
 export function isLanguage(value: unknown): value is Language {
   return typeof value === 'string' && (LANGUAGES as readonly string[]).includes(value)
+}
+
+/**
+ * Les largeurs de tête d'impression admises, en points (E5-01, SPEC § 2.7).
+ *
+ * Le ticket est rendu en image à la largeur exacte de la tête : une largeur
+ * fausse décale tout le papier. Les trois valeurs sont celles du matériel —
+ * 80 mm à 203 points par pouce donne 576 points, certains 80 mm n'en pilotent
+ * que 512, et un 58 mm en a 384 (docs/research/E5-02-arabe-thermique.md § 3).
+ *
+ * **La liste n'a pas de jumelle en base**, et c'est délibéré : `tenant_setting`
+ * ne porte aucune contrainte de forme, sous peine de sortir du balayage
+ * d'isolation (voir la tête de `20260910090000_tenant_settings.sql`). Une
+ * valeur hors de cette liste est donc possible en base, et se lit comme un
+ * réglage illisible : l'impression thermique ne s'offre pas, elle n'imprime pas
+ * de travers (SPEC § 2.6).
+ *
+ * 576 en tête : c'est le défaut de `merx.setting_default`, et l'ordre de la
+ * liste est l'ordre des choix à l'écran.
+ */
+export const PRINTER_WIDTHS = [576, 512, 384] as const
+
+export type PrinterWidth = (typeof PRINTER_WIDTHS)[number]
+
+export function isPrinterWidth(value: unknown): value is PrinterWidth {
+  return typeof value === 'number' && (PRINTER_WIDTHS as readonly number[]).includes(value)
 }

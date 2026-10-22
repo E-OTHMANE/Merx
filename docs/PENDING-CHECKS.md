@@ -7,6 +7,62 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
 
 ## Ouvertes
 
+### Depuis E5-01 — l'enveloppe Capacitor et le ticket
+
+Rien de ce qui suit n'est mesurable par la suite : il y faut un JDK, un SDK
+Android, une tablette, et deux imprimantes. **Rien de tout cela n'est sur cette
+machine** (`java` absent, `ANDROID_HOME` vide), donc l'APK n'a jamais été
+construit : ce qui est vérifié s'arrête au `cap sync`.
+
+- [ ] **Construire l'APK, et le faire tourner.** `npm run android:sync` passe
+      (assets copiés, plugin `capacitor-tcp-socket@7.1.1` reconnu), mais
+      `gradlew assembleDebug` n'a pas été lancé faute de JDK et de SDK. C'est
+      aussi le seul moyen de savoir si le plugin, dont le pair est
+      `@capacitor/core >= 7`, tient sur Capacitor **8.5.3** : rien ne l'a
+      mesuré. Repli prévu si non : quatre méthodes à réécrire en Kotlin.
+- [ ] **Le ticket sur une vraie imprimante** — le plan du § 8 de
+      `docs/research/E5-02-arabe-thermique.md`, à faire en une fois :
+      - la **largeur de tête réelle** (576 ou 512 ?), qui décide du réglage
+        `printer_width` ;
+      - **`GS v 0` accepté**, et sinon `ESC *` / `ESC b` avant de renoncer à
+        l'image ;
+      - la **netteté** au corps retenu (24 points de corps courant, seuil fixe
+        à 160) : c'est le genre de valeur qu'aucun écran ne permet de régler ;
+      - le **débit** d'un ticket de 60 lignes sur Wi-Fi, et la troncature
+        au-delà ;
+      - **au moins deux marques**, dont la moins chère trouvée sur place ;
+      - et, pour E5-02 : liaison des lettres arabes, sens, et arabe + chiffres
+        latins sur la même ligne.
+- [ ] **L'APK contre l'imprimante de laboratoire** (`npm run printer:fake` sur
+      le PC, `printer_address` = `<IP du PC>:9100` sur la tablette). C'est le
+      niveau 4 du plan de test : le seul qui traverse le plugin, le socket
+      Android et le Wi-Fi — et il ne demande aucune imprimante. À faire **avant**
+      d'en acheter une.
+- [ ] **À regarder à l'œil** : le bouton « Imprimer le ticket » sous le pouce en
+      bas du détail, et le ticket qui part tout seul après une vente — qu'aucune
+      seconde ne s'ajoute au comptoir.
+
+Et deux conséquences de la décision du 2026-10-20 (SPEC § 2.7), aucune
+mesurable par la suite non plus.
+
+- [ ] **PowerSync dans la WebView de Capacitor — le risque le plus grave de ce
+      fichier.** Tout le hors-ligne en dépend (SPEC § 2.5, E9), et rien ne dit
+      que le SDK web de PowerSync tient dans une WebView Android : il s'appuie
+      sur OPFS et sur `wa-sqlite`, dont la prise en charge dans la WebView
+      empaquetée n'est pas la même que dans Chrome. **Essai court, avant
+      d'ouvrir E9** : une base locale ouverte, une écriture, une relecture après
+      redémarrage de l'application. Si ça ne tient pas, le choix se fait entre
+      le SDK React Native de PowerSync et un plugin SQLite natif — c'est-à-dire
+      une décision d'architecture, et elle ne se prend pas le jour d'E9.
+- [ ] **La distribution et la mise à jour de l'APK, à trancher avant l'arrêt
+      terrain — pas à l'étape 10.** Les assets sont empaquetés dans l'APK
+      (décidé avec l'enveloppe) : la mise à jour automatique de la PWA ne joue
+      plus, et **chaque correctif pendant la visite des trois commerçants est un
+      APK à réinstaller à la main**. À décider : installation manuelle (APK
+      transmis, « sources inconnues » à autoriser sur chaque tablette) ou Play
+      Store (compte éditeur, revue, délai), et si une mise à jour des seuls
+      assets web mérite un mécanisme (Capgo et consorts) ou si l'APK suffit.
+
 ### Depuis E4-07
 
 Tout le reste a été rejoué le 2026-10-20 sur le stack local : voir « Faites »

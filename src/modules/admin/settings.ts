@@ -24,7 +24,9 @@
 import { supabase } from '@/lib/supabase'
 import {
   isLanguage,
+  isPrinterWidth,
   type Language,
+  type PrinterWidth,
   type PrintHeaderValue,
   type SettingKey,
 } from '@/modules/admin/settingKeys'
@@ -35,6 +37,14 @@ export interface Settings {
   /** `''` si la valeur stockée n'est pas une langue connue — E11-01 tranchera. */
   language: Language | ''
   printerAddress: string
+  /**
+   * La largeur de la tête d'impression, en points (E5-01). `''` si la valeur
+   * stockée n'est pas une des largeurs admises — même rendu que la langue, et
+   * pour la même raison : l'écran montre « rien de choisi » plutôt qu'une
+   * valeur inventée ici. L'impression thermique ne s'offre alors pas
+   * (SPEC § 2.6), ce qui vaut mieux qu'un ticket imprimé de travers.
+   */
+  printerWidth: PrinterWidth | ''
 }
 
 interface SettingRow {
@@ -69,11 +79,13 @@ export async function loadSettings(): Promise<Settings> {
 
   const rows = new Map((data as SettingRow[]).map((row) => [row.key, row.value]))
   const language = rows.get('default_language')
+  const width = rows.get('printer_width')
 
   return {
     printHeader: asPrintHeader(rows.get('print_header')),
     language: isLanguage(language) ? language : '',
     printerAddress: asText(rows.get('printer_address')),
+    printerWidth: isPrinterWidth(width) ? width : '',
   }
 }
 
@@ -113,6 +125,10 @@ export async function saveSettings(previous: Settings, next: Settings): Promise<
 
   if (next.language !== previous.language && next.language !== '') {
     await writeSetting('default_language', next.language)
+  }
+
+  if (next.printerWidth !== previous.printerWidth && next.printerWidth !== '') {
+    await writeSetting('printer_width', next.printerWidth)
   }
 
   const header = next.printHeader

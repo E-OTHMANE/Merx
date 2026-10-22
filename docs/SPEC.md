@@ -140,8 +140,8 @@ Un vendeur à qui l'outil réclame des informations retourne au carnet.
 | Base serveur | PostgreSQL via Supabase |
 | Base locale | SQLite via PowerSync |
 | Auth | Supabase Auth |
-| Livraison | PWA installable |
-| Impression | ESC/POS 80 mm en réseau Wi-Fi, plus PDF A4 |
+| Livraison | PWA installable, **enveloppée en Capacitor** pour Android |
+| Impression | ESC/POS 80 mm en réseau Wi-Fi, **ticket rendu en image**, plus PDF A4 |
 
 **Pas de Next.js.** Le rendu serveur n'apporte rien ici : tous les écrans sont derrière une authentification et les données sont lues depuis la base **locale**, pas depuis le serveur. Une SPA Vite livrée en PWA est plus simple et hors-ligne par défaut.
 
@@ -149,7 +149,33 @@ Un vendeur à qui l'outil réclame des informations retourne au carnet.
 
 **RÈGLE — tests.** Tout critère d'acceptation vérifiable par machine devient un test automatisé. En particulier l'isolation entre commerces (E0-03) et les 7 jours hors-ligne (E9-02). Ces deux-là ne se vérifient pas à l'œil.
 
-Le Bluetooth depuis une PWA n'est pas fiable. La V1 cible les imprimantes thermiques **réseau**. Si un pilote impose le Bluetooth, cela déclenche un wrapper Capacitor, pas une réécriture.
+Le Bluetooth depuis une PWA n'est pas fiable. La V1 cible les imprimantes thermiques **réseau**. Le Bluetooth reste hors périmètre V1.
+
+#### L'enveloppe Android
+
+**RÈGLE — l'application livrée au commerçant est la SPA enveloppée en Capacitor, Android seulement. Un seul code, aucune réécriture : Capacitor ajoute une coquille native et des plugins, pas une seconde application.** Décidé le 2026-10-20, avant E5-01.
+
+La raison est le transport de l'impression, et elle n'a pas de contournement : **un navigateur n'ouvre pas de socket TCP** vers le port 9100 d'une imprimante réseau. Ni `fetch`, ni WebSocket, ni service worker ne parlent ESC/POS brut. La ligne « ESC/POS 80 mm en réseau Wi-Fi » du tableau supposait depuis le début un chemin que le navigateur n'a pas (`docs/research/E5-02-arabe-thermique.md` § 6).
+
+Les quatre autres voies ont été écartées, chacune pour une raison qui tient :
+
+| Voie écartée | Pourquoi |
+|---|---|
+| Relais HTTP/WebSocket sur le réseau local | Une seconde machine à installer et à maintenir dans chaque commerce. Et une PWA servie en HTTPS appelant un `http://` du LAN se heurte au contenu mixte et à la règle d'accès au réseau local de Chrome. |
+| Agent sortant sur un PC du commerce | Même machine de trop, plus une dépendance au cloud : l'impression cesserait hors ligne, ce que la § 2.5 interdit. |
+| Serveur web intégré de l'imprimante (ePOS-Print, WebPRNT) | Existe chez Epson et Star, **absent de l'entrée de gamme** — exactement le parc visé (recherche § 7). À vérifier modèle par modèle, donc invérifiable à l'achat. |
+| WebUSB / Web Bluetooth | Réels sur Chrome Android, mais hors périmètre réseau V1, et le Bluetooth n'est pas fiable. |
+
+Capacitor est la seule voie qui n'ajoute **aucun matériel** chez le commerçant : la tablette qui vend est la tablette qui imprime.
+
+**RÈGLE — le ticket thermique est rendu en image, jamais en texte natif.** Le ticket est dessiné dans un `canvas` à la largeur de la tête, seuillé en 1 bit — seuil fixe, pas de tramage — et envoyé en `GS v 0`.
+
+Les jeux de caractères ESC/POS ne règlent pas l'arabe : pas de liaison des lettres, pas de sens droite-à-gauche, et le résultat dépend du modèle, dont la documentation se révèle fausse (recherche §§ 2 et 5). Le moteur de texte du navigateur fait déjà la liaison, le bidi et le mélange avec les chiffres latins ; l'imprimante ne voit que des points. Une seule voie de rendu pour le français et pour l'arabe : il n'y a pas un chemin de secours arabe à maintenir, et E5-02 est tenue par construction.
+
+Conséquence assumée : une image est plus lourde qu'une ligne de texte — quelques dizaines de kilo-octets par ticket. C'est le prix d'un ticket lisible sur un parc d'imprimantes mal documenté.
+
+**RÈGLE — dans un navigateur, l'impression thermique est absente, le PDF A4 présent.** L'application reste entièrement utilisable dans Chrome : c'est la cible du développement, des tests et du dépannage. Seul le bouton d'impression thermique s'y tait — une fonctionnalité privée de sa donnée se désactive silencieusement (§ 2.6), et ici la donnée manquante est le socket. Le PDF A4 (E5-03) est engendré localement et marche partout, enveloppe comprise : c'est le repli quand l'imprimante est absente, en panne, ou quand l'utilisateur est au navigateur.
+
 
 ### 2.8 Langues
 
@@ -695,7 +721,7 @@ Lecture seule, aucune entité. Doit fonctionner **hors-ligne**, calculé depuis 
 `tenant_setting`
 `id, tenant_id, key, value jsonb`
 
-- `key` est l'enum `public.setting_key`. Clés V1 : `print_header` (nom, téléphone et adresse imprimés en tête du bon, un seul objet), `default_language` (`fr` par défaut), `printer_address` (vide par défaut : pas d'imprimante, l'impression thermique ne s'offre pas).
+- `key` est l'enum `public.setting_key`. Clés V1 : `print_header` (nom, téléphone et adresse imprimés en tête du bon, un seul objet), `default_language` (`fr` par défaut), `printer_address` (vide par défaut : pas d'imprimante, l'impression thermique ne s'offre pas), `printer_width` (largeur de la tête en points, 576 par défaut — un 80 mm ordinaire ; 512 et 384 existent, et seule une vraie imprimante le dit). C'est un **réglage** et non une constante parce que les assets sont empaquetés dans l'APK (§ 2.7) : une constante fausse se corrigerait par un APK à réinstaller chez chaque commerçant.
 - **Les défauts vivent à un seul endroit : `merx.setting_default`.** Le code applicatif n'en porte aucun. `merx.seed_tenant_settings()` matérialise les lignes manquantes ; `create_tenant()` l'appelle, donc tout commerce a une ligne par clé dès sa création. Toute migration qui ajoute une clé ajoute son défaut et rappelle la fonction sur tous les commerces.
 - Lecture ouverte à tout le commerce — l'employé imprime le bon et travaille dans la langue du commerce. Écriture réservée à `manage_settings`, par `merx.apply_write_capability_restriction()`.
 

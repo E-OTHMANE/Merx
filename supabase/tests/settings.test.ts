@@ -327,6 +327,18 @@ describe('un commerce créé par create_tenant()', () => {
     expect(settings.get('printer_address')).toBe('')
   })
 
+  /*
+   * La largeur de la tête, elle, a un défaut plausible — 576 points pour un
+   * 80 mm —, et c'est ce qui permet au premier ticket de sortir juste sans que
+   * personne n'ouvre l'écran (E5-01, SPEC § 2.6 et § 2.7). Un nombre, pas une
+   * chaîne : la mise en page du ticket calcule avec.
+   */
+  it('imprime sur 576 points par défaut, en nombre', async () => {
+    const width = (await settingsOfTenant()).get('printer_width')
+    expect(width).toBe(576)
+    expect(typeof width).toBe('number')
+  })
+
   /* Un défaut vide partout passerait les assertions de présence ci-dessus. */
   it('n’a aucune valeur nulle', async () => {
     for (const [key, value] of await settingsOfTenant()) {

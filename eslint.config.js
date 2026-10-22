@@ -7,7 +7,20 @@ import tseslint from 'typescript-eslint'
 export default tseslint.config(
   // `supabase/tests` est du TypeScript à part entière et reste analysé ; le
   // reste de `supabase/` est du SQL et des dossiers de travail de la CLI.
-  { ignores: ['dist', 'dev-dist', 'node_modules', 'supabase/.branches', 'supabase/.temp'] },
+  //
+  // `android/` est le projet natif engendré par Capacitor (E5-01) : du Java, du
+  // Gradle, et une copie des assets web empaquetés que `cap sync` réécrit à
+  // chaque build. Rien de ce qui s'y trouve n'est écrit à la main.
+  {
+    ignores: [
+      'dist',
+      'dev-dist',
+      'node_modules',
+      'android',
+      'supabase/.branches',
+      'supabase/.temp',
+    ],
+  },
   {
     files: ['**/*.{ts,tsx}'],
     extends: [js.configs.recommended, ...tseslint.configs.recommended],

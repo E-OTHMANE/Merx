@@ -31,8 +31,11 @@ export { loadSettings, saveSettings, type Settings } from '@/modules/admin/setti
 export {
   SETTING_KEYS,
   LANGUAGES,
+  PRINTER_WIDTHS,
+  isPrinterWidth,
   type SettingKey,
   type Language,
+  type PrinterWidth,
   type PrintHeaderValue,
 } from '@/modules/admin/settingKeys'
 

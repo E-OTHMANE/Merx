@@ -26,11 +26,27 @@ import { BackLink } from '@/components/BackLink'
 import { Button } from '@/components/ui/button'
 import { Field } from '@/components/Field'
 import { loadSettings, saveSettings, type Settings } from '@/modules/admin/settings'
-import { LANGUAGES, type Language } from '@/modules/admin/settingKeys'
+import {
+  LANGUAGES,
+  PRINTER_WIDTHS,
+  type Language,
+  type PrinterWidth,
+} from '@/modules/admin/settingKeys'
 
 const LANGUAGE_LABELS: Record<Language, string> = {
   fr: 'Français',
   ar: 'العربية',
+}
+
+/*
+ * La largeur se dit en millimètres de papier, parce que c'est ce que le
+ * commerçant voit, et en points parce que c'est ce qui distingue deux 80 mm
+ * (E5-01, docs/research/E5-02-arabe-thermique.md § 3).
+ */
+const PRINTER_WIDTH_LABELS: Record<PrinterWidth, string> = {
+  576: '80 mm — 576 points',
+  512: '80 mm — 512 points',
+  384: '58 mm — 384 points',
 }
 
 type State =
@@ -213,6 +229,45 @@ export function SettingsScreen() {
               className="tabular"
               hint="Adresse de l’imprimante sur le Wi-Fi du magasin. Exemple : 192.168.1.50:9100. Laissée vide, l’impression thermique ne s’offre pas."
             />
+
+            {/*
+             * La largeur de la tête d'impression. Trois valeurs de matériel, pas
+             * un nombre à saisir : un ticket rendu en image à la mauvaise
+             * largeur sort décalé ou coupé, et aucune autre valeur n'existe
+             * (BRAND-UI § 7 — une cible pleine hauteur plutôt qu'un clavier).
+             *
+             * Réglée à 576 à l'ouverture du commerce : le patron n'a rien à
+             * faire ici tant que son ticket sort juste (SPEC § 2.6).
+             */}
+            <fieldset className="flex flex-col gap-2">
+              <legend className="text-label text-paper-700">Largeur du ticket</legend>
+              <div className="flex flex-col gap-2">
+                {PRINTER_WIDTHS.map((width) => (
+                  <label
+                    key={width}
+                    className={`flex h-touch items-center justify-center gap-2 rounded-button border text-body has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-ink-600 ${
+                      state.draft.printerWidth === width
+                        ? 'border-ink-600 bg-ink-100 text-ink-700'
+                        : 'border-paper-300 bg-white text-paper-700'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="printerWidth"
+                      value={width}
+                      checked={state.draft.printerWidth === width}
+                      onChange={() => edit((draft) => ({ ...draft, printerWidth: width }))}
+                      className="sr-only"
+                    />
+                    {PRINTER_WIDTH_LABELS[width]}
+                  </label>
+                ))}
+              </div>
+              <p className="text-note text-paper-600">
+                Presque toutes les 80 mm sont à 576 points. Si le ticket sort décalé ou coupé sur
+                un bord, essayez 512.
+              </p>
+            </fieldset>
 
             {failure !== null && (
               <p role="alert" className="text-body text-red-600">

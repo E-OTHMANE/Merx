@@ -41,6 +41,20 @@ import { AuthProvider } from '@/lib/auth'
 import { DEVICE_PREFIX_KEY, DEVICE_STORAGE_KEY } from '@/lib/device'
 import { createFakeAuthClient, fakeSession } from '@/test/fakeAuth'
 
+/*
+ * L'impression (E5-01). Deux fonctions remplacées, et deux seulement :
+ * « sommes-nous dans l'enveloppe Android » — faux partout ailleurs dans ce
+ * fichier, donc rien ne s'imprime et rien ne change — et l'envoi lui-même. Le
+ * ticket, lui, est construit par le vrai code.
+ */
+const printing = vi.hoisted(() => ({ native: false, printTicket: vi.fn() }))
+
+vi.mock('@/lib/printing', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/printing')>()),
+  thermalPrinting: () => printing.native,
+  printTicket: printing.printTicket,
+}))
+
 interface Call {
   table: string
   op: 'select' | 'insert' | 'update'
@@ -175,6 +189,9 @@ const GRID = [
   { min_qty: '48.000', unit_price: '9.50' },
 ]
 
+/* Les réglages du commerce — vides tant qu'aucun cas n'y met une imprimante. */
+let settings: Array<Record<string, unknown>>
+
 /* Ce que la grille rend, par variante — remplacé au cas par cas. */
 let grids: Map<string, Array<{ min_qty: string; unit_price: string | null }>>
 
@@ -234,6 +251,8 @@ function defaultResponse(call: Call): Response {
       error: null,
     }
   }
+
+  if (call.table === 'tenant_setting') return { data: settings, error: null }
 
   if (call.table === 'document_sequence') return { data: { last_number: 0 }, error: null }
 
@@ -296,7 +315,11 @@ beforeEach(() => {
   grids = new Map()
   floors = new Map()
   stock = new Map()
+  settings = []
   sourceDocument = null
+  printing.native = false
+  printing.printTicket.mockReset()
+  printing.printTicket.mockResolvedValue(undefined)
   window.localStorage.clear()
   window.localStorage.setItem(DEVICE_STORAGE_KEY, '11111111-1111-4111-8111-111111111111')
   window.localStorage.setItem(DEVICE_PREFIX_KEY, 'A')
@@ -1101,5 +1124,111 @@ describe('la transformation d’un document', () => {
       /n’existe plus, ou ce compte n’a pas le droit de le lire/,
     )
     expect(searchField()).toBeInTheDocument()
+  })
+})
+
+/* ========================================================================== */
+/* E5-01 — le ticket part à l'imprimante                                       */
+/* ========================================================================== */
+
+describe('l’impression du ticket, au comptoir', () => {
+  /** Un commerce réglé avec une imprimante réseau sur le Wi-Fi du magasin. */
+  const WITH_PRINTER = [
+    {
+      key: 'print_header',
+      value: { business_name: 'Parfumerie Nour', phone: '+212612345678', address: 'Derb Omar' },
+    },
+    { key: 'default_language', value: 'fr' },
+    { key: 'printer_address', value: '192.168.1.50:9100' },
+    { key: 'printer_width', value: 576 },
+  ]
+
+  async function sellOne(): Promise<void> {
+    renderSale()
+    await screen.findByText('Crème hydratante 200 ml')
+    await userEvent.click(
+      screen.getByRole('button', { name: 'Ajouter au bon — Crème hydratante 200 ml' }),
+    )
+    await waitFor(() => expect(saveButton()).toBeEnabled())
+    await userEvent.click(saveButton())
+    await screen.findByText(/BL-A-\d\d-00001/)
+  }
+
+  /*
+   * **Sans un tap de plus.** Le ticket part à l'enregistrement : au comptoir,
+   * chaque geste superflu est payé mille fois par jour (point de rupture n° 2).
+   * Ce que le test lit est le ticket lui-même — l'en-tête du commerce, le
+   * numéro que l'appareil vient d'attribuer, la ligne et son prix, le total.
+   */
+  it('imprime le bon dès qu’il est enregistré, sans un geste de plus', async () => {
+    printing.native = true
+    settings = WITH_PRINTER
+    await sellOne()
+
+    await waitFor(() => expect(printing.printTicket).toHaveBeenCalledTimes(1))
+    const [ticket, setup] = printing.printTicket.mock.calls[0] as [
+      Record<string, unknown>,
+      Record<string, unknown>,
+    ]
+
+    expect(ticket).toMatchObject({
+      businessName: 'Parfumerie Nour',
+      phone: '+212612345678',
+      address: 'Derb Omar',
+      total: '12.00',
+      lines: [
+        { label: 'Crème hydratante 200 ml', quantity: '1.000', unitPrice: '12.00', lineTotal: '12.00' },
+      ],
+    })
+    expect(ticket['number']).toMatch(/^BL-A-\d\d-00001$/)
+    expect(setup).toEqual({ host: '192.168.1.50', port: 9100, width: 576 })
+  })
+
+  /*
+   * Critère 4 : « échec d'impression non bloquant — le bon reste enregistré,
+   * réimpression possible ». La vente est faite, le numéro est attribué, et
+   * l'écran propose de réessayer sans rien ressaisir.
+   */
+  it('garde le bon et propose de réimprimer quand l’impression échoue', async () => {
+    printing.native = true
+    settings = WITH_PRINTER
+    printing.printTicket.mockRejectedValue(new Error('L’imprimante ne répond pas.'))
+    await sellOne()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Impression échouée. Le bon est enregistré, vous pouvez réimprimer.',
+    )
+    expect(screen.getByText(/Bon BL-A-\d\d-00001 enregistré\./)).toBeInTheDocument()
+
+    printing.printTicket.mockResolvedValue(undefined)
+    await userEvent.click(screen.getByRole('button', { name: 'Imprimer de nouveau' }))
+
+    await waitFor(() => expect(printing.printTicket).toHaveBeenCalledTimes(2))
+  })
+
+  /*
+   * SPEC § 2.7 : hors de l'enveloppe Android il n'y a pas de socket. La vente
+   * se fait exactement pareil, et rien ne s'imprime — pas de bouton, pas de
+   * message, et pas même une lecture des réglages.
+   */
+  it('vend sans rien imprimer hors de l’enveloppe Android', async () => {
+    settings = WITH_PRINTER
+    await sellOne()
+
+    expect(printing.printTicket).not.toHaveBeenCalled()
+    expect(calls.some((call) => call.table === 'tenant_setting')).toBe(false)
+    expect(screen.queryByRole('button', { name: 'Imprimer de nouveau' })).not.toBeInTheDocument()
+  })
+
+  /* Un commerce sans imprimante : l'adresse est vide, et rien ne s'offre. */
+  it('vend sans rien imprimer quand aucune imprimante n’est réglée', async () => {
+    printing.native = true
+    settings = WITH_PRINTER.map((row) =>
+      row.key === 'printer_address' ? { ...row, value: '' } : row,
+    )
+    await sellOne()
+
+    expect(printing.printTicket).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: 'Imprimer de nouveau' })).not.toBeInTheDocument()
   })
 })

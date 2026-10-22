@@ -9,6 +9,14 @@
  * Écran de détail (BRAND-UI § 13) : retour vers Documents, aucune barre. Les
  * actions sont dans le tiers bas (§ 7), dans l'ordre où on les cherche :
  *
+ *   — « Imprimer le ticket » (E5-01), la réimpression : en tête, parce que
+ *     c'est l'action pour laquelle on rouvre un document au comptoir. Elle
+ *     n'apparaît que s'il y a une imprimante joignable — hors de l'enveloppe
+ *     Android il n'y a pas de socket, et un commerce sans imprimante n'a pas
+ *     d'adresse (SPEC § 2.6 et § 2.7). Elle n'apparaît pas non plus sur un
+ *     brouillon (pas de numéro) ni sur un document annulé : un ticket d'allure
+ *     valable pour une vente annulée est une preuve fausse ;
+ *
  *   — « Transformer » → `/sale/from/:documentId` (E4-05), seulement quand la
  *     chaîne le permet ;
  *   — « Retour » → `/sale/return/:documentId` (E4-06), seulement sur un bon de
@@ -48,6 +56,14 @@ import {
   type DocumentDetail,
 } from '@/modules/sales/documents'
 import { documentLineage, type DocumentLineage, type LinkedDocument } from '@/modules/sales/lineage'
+import {
+  TICKET_MESSAGES,
+  canPrint,
+  documentTicket,
+  loadTicketPrinter,
+  printTicketOn,
+  type TicketPrinter,
+} from '@/modules/sales/printing'
 
 type State =
   | { status: 'loading' }
@@ -91,6 +107,26 @@ export function DocumentDetailScreen() {
   const [reason, setReason] = useState('')
   const [saving, setSaving] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
+  const [printer, setPrinter] = useState<TicketPrinter | null>(null)
+  const [printing, setPrinting] = useState(false)
+  const [printed, setPrinted] = useState<string | null>(null)
+
+  /*
+   * L'imprimante est cherchée une fois, en arrière-plan. Un échec de lecture
+   * des réglages ne dit rien à l'écran : il n'y a alors pas d'imprimante, donc
+   * pas de bouton — c'est le même rendu qu'un commerce qui n'en a pas.
+   */
+  useEffect(() => {
+    let current = true
+    loadTicketPrinter()
+      .then((found) => {
+        if (current) setPrinter(found)
+      })
+      .catch(() => undefined)
+    return () => {
+      current = false
+    }
+  }, [])
 
   const load = useCallback((): (() => void) => {
     let current = true
@@ -153,6 +189,26 @@ export function DocumentDetailScreen() {
     }
   }
 
+  const print = async (detail: DocumentDetail): Promise<void> => {
+    if (printing || printer === null) return
+    setFailure(null)
+    setPrinted(null)
+    setPrinting(true)
+    try {
+      await printTicketOn(documentTicket(detail, printer), printer)
+      setPrinted(TICKET_MESSAGES.printed)
+    } catch {
+      /*
+       * La phrase est celle de la story : l'échec d'impression ne défait rien,
+       * le document est là, le bouton aussi. Le message de la cause — socket
+       * refusé, imprimante muette — n'apprendrait rien au vendeur.
+       */
+      setFailure(TICKET_MESSAGES.failed)
+    } finally {
+      setPrinting(false)
+    }
+  }
+
   return (
     <main className="min-h-dvh px-4 py-6">
       <div className="mx-auto flex w-full max-w-2xl flex-col gap-6">
@@ -211,6 +267,10 @@ export function DocumentDetailScreen() {
             saving={saving}
             failure={failure}
             onConfirm={() => void confirmCancellation()}
+            printer={printer}
+            printing={printing}
+            printed={printed}
+            onPrint={() => void print(state.detail)}
           />
         )}
       </div>
@@ -230,6 +290,10 @@ interface ContentProps {
   saving: boolean
   failure: string | null
   onConfirm: () => void
+  printer: TicketPrinter | null
+  printing: boolean
+  printed: string | null
+  onPrint: () => void
 }
 
 function Content({
@@ -244,6 +308,10 @@ function Content({
   saving,
   failure,
   onConfirm,
+  printer,
+  printing,
+  printed,
+  onPrint,
 }: ContentProps) {
   const { document, lines } = detail
   const cancelled = document.status === 'cancelled'
@@ -252,6 +320,7 @@ function Content({
   const transform = canTransform(document)
   const giveBack = canReturn(document)
   const mayCancel = canCancelRight && canCancel(document)
+  const mayPrint = printer !== null && canPrint(document)
 
   return (
     <>
@@ -382,8 +451,24 @@ function Content({
         </p>
       )}
 
-      {(transform || giveBack || mayCancel) && (
+      {printed !== null && (
+        <p role="status" className="text-body text-paper-700">
+          {printed}
+        </p>
+      )}
+
+      {(mayPrint || transform || giveBack || mayCancel) && (
         <div className="flex flex-col gap-2">
+          {mayPrint && (
+            <Button
+              type="button"
+              disabled={printing}
+              onClick={onPrint}
+              className="h-button w-full rounded-button bg-ink-600 text-body text-white hover:bg-ink-700 active:bg-ink-800"
+            >
+              {printing ? TICKET_MESSAGES.printing : 'Imprimer le ticket'}
+            </Button>
+          )}
           {transform && (
             <Link
               to={`/sale/from/${document.id}`}

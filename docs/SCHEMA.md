@@ -43,7 +43,7 @@ porteur d'un motif.
 - `public.price_source` — `auto`, `manual`
 - `public.sale_doc_status` — `draft`, `confirmed`, `delivered`, `cancelled`
 - `public.sale_doc_type` — `quote`, `order`, `delivery_note`, `return`
-- `public.setting_key` — `print_header`, `default_language`, `printer_address`
+- `public.setting_key` — `print_header`, `default_language`, `printer_address`, `printer_width`
 - `public.stock_movement_type` — `sale`, `return`, `receipt`, `adjustment`, `inventory`, `sale_cancellation`
 - `public.stock_source_type` — `sale_document`, `goods_receipt`, `inventory_session`
 - `public.user_role` — `super_admin`, `owner`, `worker`
@@ -1322,3 +1322,4 @@ Les registres clés par table, eux, se lisent dans le bloc de leur table.
 | `print_header` | `{"phone":"","address":"","business_name":""}` |
 | `default_language` | `fr` |
 | `printer_address` | `(vide)` |
+| `printer_width` | `576` |

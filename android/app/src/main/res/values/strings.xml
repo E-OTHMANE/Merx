@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Merx</string>
+    <string name="title_activity_main">Merx</string>
+    <string name="package_name">ma.merx.app</string>
+    <string name="custom_url_scheme">ma.merx.app</string>
+</resources>

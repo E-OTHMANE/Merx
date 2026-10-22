@@ -11,12 +11,17 @@
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "schema:doc": "node scripts/schema-doc.mjs"
+    "schema:doc": "node scripts/schema-doc.mjs",
+    "android:sync": "npm run build && cap sync android",
+    "android:run": "cap run android",
+    "printer:fake": "node scripts/fake-printer.mjs"
   },
   "dependencies": {
+    "@capacitor/core": "^8.5.3",
     "@fontsource/ibm-plex-sans": "^5.3.0",
     "@fontsource/ibm-plex-sans-arabic": "^5.3.0",
     "@supabase/supabase-js": "^2.115.0",
+    "capacitor-tcp-socket": "^7.1.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "cn": "^0.2.5",
@@ -29,6 +34,8 @@
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.5.3",
+    "@capacitor/cli": "^8.5.3",
     "@eslint/js": "^10.0.1",
     "@tailwindcss/postcss": "^4.3.3",
     "@tailwindcss/vite": "^4.3.3",

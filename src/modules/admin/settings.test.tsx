@@ -63,6 +63,7 @@ const SEEDED = [
   },
   { key: 'default_language', value: 'fr' },
   { key: 'printer_address', value: '' },
+  { key: 'printer_width', value: 576 },
 ]
 
 const homeScreen = () => screen.queryByRole('button', { name: 'Se déconnecter' })
@@ -138,6 +139,7 @@ describe('l’écran des réglages', () => {
     expect(screen.getByLabelText('Adresse')).toHaveValue('Casablanca')
     expect(screen.getByRole('radio', { name: 'Français' })).toBeChecked()
     expect(screen.getByLabelText('Imprimante réseau')).toHaveValue('')
+    expect(screen.getByRole('radio', { name: '80 mm — 576 points' })).toBeChecked()
   })
 
   /* SPEC § 2.6, E11-03 : aucun champ ne réclame sa donnée. */
@@ -160,6 +162,7 @@ describe('l’écran des réglages', () => {
       data: [
         { key: 'print_header', value: {} },
         { key: 'default_language', value: 'klingon' },
+        { key: 'printer_width', value: 600 },
       ],
       error: null,
     })
@@ -169,6 +172,12 @@ describe('l’écran des réglages', () => {
     expect(screen.getByRole('radio', { name: 'Français' })).not.toBeChecked()
     expect(screen.getByRole('radio', { name: 'العربية' })).not.toBeChecked()
     expect(screen.getByLabelText('Imprimante réseau')).toHaveValue('')
+
+    // 600 points n'existe sur aucune tête : aucun choix n'est coché, et
+    // l'écran n'a pas ramené la valeur à 576 de son propre chef (E5-01).
+    for (const width of ['80 mm — 576 points', '80 mm — 512 points', '58 mm — 384 points']) {
+      expect(screen.getByRole('radio', { name: width })).not.toBeChecked()
+    }
   })
 
   it('annonce l’échec de lecture et propose de réessayer', async () => {
@@ -236,6 +245,21 @@ describe('l’enregistrement', () => {
 
     await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
     expect(update).toHaveBeenCalledWith('tenant_setting', { value: 'ar' }, 'key', 'default_language')
+  })
+
+  /*
+   * La largeur part en **nombre**, pas en chaîne : c'est un compte de points
+   * avec lequel la mise en page du ticket calcule (E5-01).
+   */
+  it('change la largeur du ticket, en nombre', async () => {
+    const user = userEvent.setup()
+    renderAt('/settings', 'owner')
+
+    await user.click(await screen.findByRole('radio', { name: '80 mm — 512 points' }))
+    await user.click(screen.getByRole('button', { name: 'Enregistrer les réglages' }))
+
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
+    expect(update).toHaveBeenCalledWith('tenant_setting', { value: 512 }, 'key', 'printer_width')
   })
 
   /*

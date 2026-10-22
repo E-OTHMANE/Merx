@@ -26,6 +26,20 @@ import { AppRoutes } from '@/app/routes'
 import { AuthProvider } from '@/lib/auth'
 import { createFakeAuthClient, fakeSession } from '@/test/fakeAuth'
 
+/*
+ * L'impression (E5-01). Seules deux fonctions sont remplacées : « sommes-nous
+ * dans l'enveloppe Android » — faux en jsdom, donc jamais de bouton sans le
+ * dire ici — et l'envoi lui-même. Tout le reste est le vrai code : c'est lui
+ * qui construit le ticket, et c'est le ticket qu'on veut voir.
+ */
+const printing = vi.hoisted(() => ({ native: false, printTicket: vi.fn() }))
+
+vi.mock('@/lib/printing', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/printing')>()),
+  thermalPrinting: () => printing.native,
+  printTicket: printing.printTicket,
+}))
+
 interface Call {
   table: string
   columns: string
@@ -122,6 +136,9 @@ beforeEach(() => {
   respond.mockReset()
   respondRpc.mockReset()
   respond.mockReturnValue({ data: [], error: null })
+  printing.native = false
+  printing.printTicket.mockReset()
+  printing.printTicket.mockResolvedValue(undefined)
 })
 
 /* ========================================================================== */
@@ -368,18 +385,38 @@ const LINE = {
   variant: { sku: 'SAV-1', product: { name_fr: 'Savon 500 g', code: 'SAV' } },
 }
 
+/** Les réglages d'un commerce qui a une imprimante (E1-05, E5-01). */
+const SETTINGS = [
+  {
+    key: 'print_header',
+    value: { business_name: 'Parfumerie Nour', phone: '+212612345678', address: 'Derb Omar' },
+  },
+  { key: 'default_language', value: 'fr' },
+  { key: 'printer_address', value: '192.168.1.50:9100' },
+  { key: 'printer_width', value: 576 },
+]
+
 interface Scenario {
   document?: Record<string, unknown> | null
   source?: Record<string, unknown> | null
   children?: Array<Record<string, unknown>>
   updateAnswer?: Response
+  /** Les réglages que la base rend ; par défaut, un commerce sans imprimante. */
+  settings?: Array<Record<string, unknown>>
 }
 
 /** Répond comme la base à chacune des quatre lectures du détail, et à l'annulation. */
-function scenario({ document = summaryRow(7), source = null, children = [], updateAnswer }: Scenario = {}) {
+function scenario({
+  document = summaryRow(7),
+  source = null,
+  children = [],
+  updateAnswer,
+  settings = [],
+}: Scenario = {}) {
   respondRpc.mockReturnValue({ data: document === null ? [] : [document], error: null })
   respond.mockImplementation((call) => {
     if (call.payload !== undefined) return updateAnswer ?? { data: [{ id: 'd-7' }], error: null }
+    if (call.table === 'tenant_setting') return { data: settings, error: null }
     if (call.table === 'sale_line') return { data: [LINE], error: null }
     if (call.columns === 'source_document_id') {
       return { data: { source_document_id: source === null ? null : source['id'] }, error: null }
@@ -594,5 +631,121 @@ describe('le détail d’un document', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Confirmer l’annulation' }))
 
     expect(await screen.findByRole('alert')).toHaveTextContent('annulez d’abord RT-A-26-00002')
+  })
+})
+
+/* ========================================================================== */
+/* La réimpression du ticket — E5-01                                           */
+/* ========================================================================== */
+
+describe('l’impression du ticket, depuis le détail', () => {
+  /*
+   * SPEC § 2.7 : au navigateur, il n'y a pas de socket TCP. Le bouton n'est pas
+   * grisé, il n'existe pas — et aucune lecture de réglages n'est faite pour
+   * rien. C'est le cas par défaut de tout ce fichier.
+   */
+  it('n’offre pas l’impression hors de l’enveloppe Android', async () => {
+    scenario({ settings: SETTINGS })
+    renderAt('/documents/d-7', 'worker')
+
+    await screen.findByRole('heading', { level: 1, name: 'BL-A-26-00007' })
+    expect(screen.queryByRole('button', { name: 'Imprimer le ticket' })).not.toBeInTheDocument()
+    expect(calls.some((call) => call.table === 'tenant_setting')).toBe(false)
+  })
+
+  /* Un commerce qui n'a pas d'imprimante : réglage vide, donc pas de bouton. */
+  it('n’offre pas l’impression quand aucune imprimante n’est réglée', async () => {
+    printing.native = true
+    scenario({
+      settings: SETTINGS.map((row) =>
+        row.key === 'printer_address' ? { ...row, value: '' } : row,
+      ),
+    })
+    renderAt('/documents/d-7', 'worker')
+
+    await screen.findByRole('heading', { level: 1, name: 'BL-A-26-00007' })
+    await waitFor(() => expect(calls.some((call) => call.table === 'tenant_setting')).toBe(true))
+    expect(screen.queryByRole('button', { name: 'Imprimer le ticket' })).not.toBeInTheDocument()
+  })
+
+  /*
+   * Le critère 5 de la story : « réimpression depuis le détail du document ».
+   * Ce que le test lit est le **ticket** passé à l'impression : l'en-tête du
+   * commerce, le numéro, la date, les lignes avec quantité et prix, le total —
+   * c'est-à-dire le critère 3, sur le papier.
+   */
+  it('réimprime le ticket du document, avec tout ce que le critère exige', async () => {
+    printing.native = true
+    scenario({ settings: SETTINGS })
+    renderAt('/documents/d-7', 'worker')
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Imprimer le ticket' }))
+
+    await waitFor(() => expect(printing.printTicket).toHaveBeenCalledTimes(1))
+    const [ticket, setup] = printing.printTicket.mock.calls[0] as [
+      Record<string, unknown>,
+      Record<string, unknown>,
+    ]
+
+    expect(ticket).toMatchObject({
+      businessName: 'Parfumerie Nour',
+      phone: '+212612345678',
+      address: 'Derb Omar',
+      number: 'BL-A-26-00007',
+      issuedAt: '2026-10-06T08:00:00Z',
+      total: '228.00',
+      lines: [{ label: 'Savon 500 g', quantity: '24.000', unitPrice: '9.50', lineTotal: '228.00' }],
+    })
+    expect(setup).toEqual({ host: '192.168.1.50', port: 9100, width: 576 })
+    // `role="status"` est déjà porté par le total de l'écran : on lit la phrase.
+    expect(await screen.findByText('Ticket imprimé.')).toBeInTheDocument()
+  })
+
+  /*
+   * Critère 4 : « échec d'impression non bloquant ». Le document reste affiché,
+   * la phrase dit que le bon est enregistré, et le bouton reste là.
+   */
+  it('ne défait rien quand l’impression échoue, et laisse réimprimer', async () => {
+    printing.native = true
+    printing.printTicket.mockRejectedValue(new Error('L’imprimante ne répond pas.'))
+    scenario({ settings: SETTINGS })
+    renderAt('/documents/d-7', 'worker')
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Imprimer le ticket' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Impression échouée. Le bon est enregistré, vous pouvez réimprimer.',
+    )
+    expect(screen.getByRole('heading', { level: 1, name: 'BL-A-26-00007' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Imprimer le ticket' })).toBeEnabled()
+  })
+
+  /*
+   * Un ticket d'allure valable pour une vente annulée est une preuve fausse
+   * entre les mains du client. Un brouillon, lui, n'a pas de numéro : il n'y a
+   * rien à remettre.
+   */
+  it('n’imprime ni un document annulé ni un brouillon', async () => {
+    printing.native = true
+    scenario({
+      document: summaryRow(7, { status: 'cancelled', cancellation_reason: 'Erreur' }),
+      settings: SETTINGS,
+    })
+    renderAt('/documents/d-7', 'owner')
+
+    await screen.findByText('Document annulé')
+    expect(screen.queryByRole('button', { name: 'Imprimer le ticket' })).not.toBeInTheDocument()
+  })
+
+  it('n’imprime pas un brouillon, qui n’a pas de numéro', async () => {
+    printing.native = true
+    scenario({
+      document: summaryRow(7, { doc_number: null, status: 'draft', issued_at: null }),
+      settings: SETTINGS,
+    })
+    renderAt('/documents/d-7', 'owner')
+
+    await screen.findByRole('heading', { level: 1, name: 'Sans numéro' })
+    expect(screen.queryByRole('button', { name: 'Imprimer le ticket' })).not.toBeInTheDocument()
   })
 })

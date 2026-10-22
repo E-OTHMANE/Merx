@@ -829,13 +829,64 @@ Le jumeau conforme de chaque témoin — qui lit la même table en se bornant co
 **En tant que** vendeur, **je veux** remettre un papier au client, **afin qu'**il ait sa preuve.
 
 **Critères d'acceptation**
-- [ ] Impression ESC/POS sur imprimante **réseau Wi-Fi**
-- [ ] Adresse configurée dans les paramètres du commerce
-- [ ] Contient : nom et coordonnées du commerce, numéro du bon, date et heure, client, lignes avec quantité et prix, total
-- [ ] Échec d'impression non bloquant : le bon reste enregistré, réimpression possible
-- [ ] Réimpression depuis le détail du document
+- [ ] Impression ESC/POS sur imprimante **réseau Wi-Fi** — *le flux est mesuré de bout en bout sur un vrai socket, mais aucune imprimante ne l'a reçu : voir `docs/PENDING-CHECKS.md`*
+- [x] Adresse configurée dans les paramètres du commerce
+- [x] Contient : nom et coordonnées du commerce, numéro du bon, date et heure, client, lignes avec quantité et prix, total — *le client est M4 (étape 6) : le champ existe, vide, et sa ligne ne s'imprime pas*
+- [x] Échec d'impression non bloquant : le bon reste enregistré, réimpression possible
+- [x] Réimpression depuis le détail du document
 
 **Notes** — `SPEC.md` § 2.7. Bluetooth exclu en V1.
+
+---
+
+**La décision d'architecture a précédé la story, et elle est à SPEC § 2.7.** Une
+PWA n'ouvre pas de socket TCP vers le port 9100 : l'application est enveloppée
+en **Capacitor** pour Android, et le ticket est **rendu en image** (canvas,
+1 bit, `GS v 0`), ce qui règle l'arabe d'E5-02 par construction plutôt que par
+un second chemin. Les quatre voies écartées — relais LAN, agent sortant,
+ePOS-Print/WebPRNT, WebUSB/BLE — sont dans la SPEC avec leur raison.
+
+**Le plugin est `capacitor-tcp-socket` (7.1.1, MIT, publié le 2026-06-17)**, un
+transport nu : connecter, envoyer en base64, fermer. Les plugins « thermal
+printer » du marché embarquent l'encodeur, donc la mise en page, donc l'arabe —
+qu'aucun ne sait faire. L'ESC/POS, la mise en page et le seuillage restent en
+TypeScript, où ils se testent. Repli prévu si le plugin se tient mal : quatre
+méthodes à réécrire en Kotlin.
+
+**`printer_width` est un réglage, pas une constante** (migrations
+`20261022090000` et `20261022100000`, défaut 576, écran à trois choix). Les
+assets étant empaquetés dans l'APK, une constante fausse se corrigerait par un
+APK à réinstaller chez chaque commerçant ; un réglage se corrige depuis
+l'écran. Le patron n'a rien à régler : un commerce naît à 576.
+
+**Quatre niveaux de test, parce qu'aucun n'a d'imprimante.** (1) l'encodeur
+octet par octet — en-tête `GS v 0`, bandes de 200 lignes, aucune commande
+coupée entre deux lots ; (2) la mise en page lue comme une **liste de tracés**,
+sans canvas : chaque donnée du critère, les colonnes, ce qui disparaît quand une
+donnée manque ; (3) **l'imprimante de laboratoire** — un serveur TCP qui reçoit
+le ticket et le **redécode** (`loopback.test.ts`), et `npm run printer:fake` qui
+en écrit le PNG ; (4) l'APK sur une tablette contre ce même serveur, qui reste à
+faire. Le décodeur du niveau 3 est réécrit, jamais repris de l'encodeur : bâti
+dessus, il annulerait ses propres erreurs.
+
+**Ce que jsdom ne peut pas atteindre** : le contexte 2D. `canvas.ts` est donc le
+seul fichier du module sans test — la liaison des glyphes appartient au moteur
+de texte et se juge sur du papier (E5-02).
+
+**Sabotages (3 gardes retirés, un par un) :** aucun n'est resté vert.
+
+- **montant du ticket passé par un flottant** (`Number(x).toFixed(2)` au lieu de
+  `moneyText()`) — **5 tombent** dans `ticket.test.ts`, dont celui qui vise la
+  règle : `imprime les montants en dirhams groupés, depuis le texte stocké` ;
+- **transport rendu au navigateur** (`nativeTransport()` sans le test de
+  plateforme) — **2 tombent** : `ne rend aucun transport au navigateur` et
+  `n'annonce aucune impression thermique`. Les quatre fichiers d'écran sont
+  restés verts, et c'est attendu : ils **remplacent** `thermalPrinting()` pour
+  pouvoir montrer le bouton. La RÈGLE de SPEC § 2.7 n'est donc tenue que par ces
+  deux cas-là — à ne pas supprimer en croyant les écrans couverts ;
+- **transparent non composé sur le papier** (`rasterize()`) — **1 tombe** :
+  `traite le transparent comme du papier`. Le cas vaut un rouleau : un canvas
+  jamais rempli sortirait entièrement noir.
 
 ---
 
