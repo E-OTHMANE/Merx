@@ -1,0 +1,159 @@
+# ============================================================================
+# Merx — l'APK de debug, construit à chaque poussée sur `main`.
+#
+# Raison d'être : il n'y a pas d'Android Studio sur la machine de
+# développement, ni JDK ni SDK (docs/PENDING-CHECKS.md, « Depuis E5-01 »). Ce
+# workflow est donc le seul endroit où l'enveloppe Capacitor est réellement
+# compilée — et le seul qui dira si `capacitor-tcp-socket` (pair
+# `@capacitor/core >= 7`) tient sur Capacitor 8.5.3.
+#
+# L'APK produit est **de debug** : signé par la clé de debug d'Android, bon
+# pour une tablette de test, jamais pour une distribution. La signature de
+# publication et la distribution se tranchent ailleurs (PENDING-CHECKS).
+#
+# **Tout est épinglé** — image du runner, actions par leur empreinte de commit,
+# Node, JDK, SDK. Gradle, lui, est déjà épinglé par le wrapper du dépôt
+# (8.14.3, `validateDistributionUrl=true`) ; le relancer ici serait une seconde
+# source de vérité.
+# ============================================================================
+
+name: APK de debug
+
+on:
+  push:
+    branches: [main]
+  # Pour relancer à la main depuis l'onglet Actions sans pousser un commit.
+  workflow_dispatch:
+
+# Une poussée annule la construction précédente de la même branche : l'APK qui
+# compte est celui du dernier commit.
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Le paquet qui ne vient pas du registre npm — voir l'étape « xlsx » plus bas.
+  XLSX_TARBALL: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Récupérer le dépôt
+        # actions/checkout v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+
+      - name: Node
+        # actions/setup-node v7.1.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          # La version de la machine de développement, à l'identique.
+          node-version: 24.12.0
+
+      - name: JDK 21
+        # actions/setup-java v6.1.0
+        uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: SDK Android
+        # android-actions/setup-android v4.0.4
+        uses: android-actions/setup-android@be39fa834029ff78f1a44aa3bb0819b8fc2bd8fd
+        with:
+          # `android/variables.gradle` : compileSdk 36, minSdk 24.
+          packages: platform-tools platforms;android-36 build-tools;36.0.0
+
+      # ----------------------------------------------------------------------
+      # Le cache npm, et pourquoi il est ici plutôt que dans `setup-node`
+      #
+      # `setup-node` sait le faire, mais il le fait **avant** l'étape qui
+      # réchauffe le cache avec le tarball de SheetJS : il faut pouvoir écrire
+      # dans `~/.npm` entre la restauration et `npm ci`. D'où le cache explicite.
+      # ----------------------------------------------------------------------
+      - name: Cache npm
+        id: npm-cache
+        # actions/cache v6.1.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ~/.npm
+          key: npm-ubuntu-24.04-node-24.12.0-${{ hashFiles('package-lock.json') }}
+
+      # ----------------------------------------------------------------------
+      # `xlsx` ne vient pas du registre npm
+      #
+      # `package.json` l'installe depuis `https://cdn.sheetjs.com/...` — SheetJS
+      # a quitté npm en 2023, et c'est le `package-lock.json` qui porte l'URL et
+      # l'empreinte. Ce CDN a déjà été injoignable depuis une machine distante.
+      # S'il tombe pendant `npm ci`, l'échec sort au milieu de l'installation et
+      # se lit comme une dépendance cassée.
+      #
+      # On le prend donc **en premier, seul, et avec des reprises** :
+      #
+      #   — `npm cache add <url>` range le tarball dans `~/.npm` sous la clé de
+      #     son URL, exactement celle que `npm ci` ira chercher ensuite ;
+      #   — `--prefer-offline` à l'étape suivante lui fait servir le cache plutôt
+      #     que le réseau ;
+      #   — si le CDN est tombé **et** que le cache de la clé a été restauré, le
+      #     tarball y est déjà : on continue, et c'est le but du cache ;
+      #   — sinon le travail s'arrête ici, avec une phrase qui nomme le CDN
+      #     plutôt qu'un paquet.
+      #
+      # L'empreinte du lock est vérifiée par npm de toute façon : un tarball
+      # substitué par un intermédiaire ferait échouer `npm ci`, pas passer.
+      # ----------------------------------------------------------------------
+      - name: Prendre xlsx chez SheetJS, avant tout le reste
+        run: |
+          set -u
+          for try in 1 2 3 4 5; do
+            if npm cache add "$XLSX_TARBALL"; then
+              echo "xlsx : pris au CDN SheetJS (tentative $try)."
+              exit 0
+            fi
+            echo "xlsx : échec de la tentative $try."
+            sleep $((try * 5))
+          done
+
+          if [ "${{ steps.npm-cache.outputs.cache-hit }}" = "true" ]; then
+            echo "::warning::cdn.sheetjs.com injoignable ; le cache npm restauré devrait contenir xlsx. On continue."
+            exit 0
+          fi
+
+          echo "::error::cdn.sheetjs.com injoignable et aucun cache npm à restaurer : xlsx ne peut pas être installé (package.json l'installe depuis ce CDN, pas depuis le registre npm)."
+          exit 1
+
+      - name: Installer les dépendances
+        run: npm ci --prefer-offline --no-audit --fund=false
+
+      # L'installation est la seule chose qui dépende du CDN : on le dit dans le
+      # journal, pour que la version installée soit lisible sans fouiller.
+      - name: Vérifier que xlsx est bien là
+        run: node -p "'xlsx ' + require('xlsx/package.json').version + ' installé'"
+
+      - name: Construire l'application web
+        run: npm run build
+
+      - name: Porter les assets dans le projet Android
+        run: npx cap sync android
+
+      # `android/gradlew` arrive exécutable (mode 100755) et en LF : corrigé à
+      # la source, par `.gitattributes` et le bit d'exécution de l'index. Le
+      # workflow n'a donc rien à rattraper — si Gradle répondait un jour
+      # « bad interpreter », c'est que la normalisation a été perdue.
+      - name: Construire l'APK de debug
+        working-directory: android
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Publier l'APK
+        # actions/upload-artifact v7.0.2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: merx-debug-${{ github.sha }}
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
