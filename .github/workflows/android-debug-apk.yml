@@ -130,10 +130,21 @@ jobs:
       - name: Installer les dépendances
         run: npm ci --prefer-offline --no-audit --fund=false
 
-      # L'installation est la seule chose qui dépende du CDN : on le dit dans le
-      # journal, pour que la version installée soit lisible sans fouiller.
-      - name: Vérifier que xlsx est bien là
-        run: node -p "'xlsx ' + require('xlsx/package.json').version + ' installé'"
+      # L'installation est la seule chose qui dépende du CDN : on dit dans le
+      # journal quelle version en est sortie, pour la lire sans fouiller.
+      #
+      # `require('xlsx/package.json')` était refusé par le champ `exports` du
+      # paquet (ERR_PACKAGE_PATH_NOT_EXPORTED) et **faisait échouer la
+      # construction** : une ligne de journal ne doit jamais pouvoir faire ça.
+      # D'où la lecture du fichier par `fs`, qui ne traverse aucune résolution
+      # de module, et `continue-on-error` par-dessus. Ce qui atteste vraiment
+      # que le paquet est installé, c'est `npm ci` lui-même — et, en dernier
+      # ressort, la construction web qui l'importe.
+      - name: Dire quelle version de xlsx est installée
+        continue-on-error: true
+        run: |
+          npm ls xlsx || true
+          node -e "const p=require('node:fs').readFileSync('node_modules/xlsx/package.json','utf8'); console.log('xlsx ' + JSON.parse(p).version + ' installé')" || true
 
       - name: Construire l'application web
         run: npm run build
