@@ -136,6 +136,136 @@ Schéma, isolation, authentification. Rien de visible pour l'utilisateur, tout l
 
 ---
 
+### E0-06 — Fuseau horaire du Maroc
+**Étape 5** · dépend de E4-02 · **passe avant toute autre story**
+
+**En tant que** commerçant, **je veux** que l'heure et la date de mes bons soient
+les miennes, **afin de** ne pas remettre un papier faux et de ne pas voir une
+vente refusée le 31 décembre au soir.
+
+**Ce qui a été mesuré, et qui ouvre la story.** Le 2026-10-23, même machine,
+même instant : Node 24 et Postgres 17.6 rendent 13:00 pour `2026-10-20 12:00Z`
+en `Africa/Casablanca`, **Chrome rend 12:00**. Les trois moteurs s'accordent
+jusqu'au Ramadan 2026 puis divergent — l'ICU de ce Chrome laisse le Maroc à
+UTC+0 après le 2026-02-15 et ne le ramène jamais à UTC+1. Le Maroc est à UTC+1
+en permanence depuis 2018, sauf pendant le Ramadan : **c'est Postgres qui a
+raison, et le navigateur qui est en retard.**
+
+**Pourquoi ce n'est pas une curiosité d'affichage.** Quatre endroits calculent
+l'heure locale, depuis **trois** tables de fuseaux différentes :
+
+| | d'où vient le décalage | ce qui casse |
+|---|---|---|
+| `src/lib/dates.ts` | ICU du navigateur | l'heure de **chaque** bon, ticket et PDF |
+| `src/lib/day.ts` | ICU du navigateur | les bornes de journée des filtres |
+| `src/modules/sales/documentNumber.ts` | ICU du navigateur | **l'année du numéro** (RÈGLE M3-2) |
+| `20261015120000_document_numbering.sql` | tzdata de Postgres | le garde serveur, qui refuse en `22023` |
+
+C'est le croisement des deux dernières lignes qui coûte une vente : l'appareil
+et la base appliquent la **même** règle depuis deux tables qui ne disent pas la
+même chose. Un bon émis le 31 décembre à 23 h 30 sur un appareil à UTC+0 porte
+une année que le serveur refuse. Et la table le dit elle-même : **en 2029 et en
+2030, le 31 décembre tombe pendant le Ramadan**, donc sur une bascule. Le cas
+n'est pas un bord théorique, il revient deux fois en cinq ans.
+
+**Critères d'acceptation**
+- [ ] Une **seule** fonction porte le décalage du Maroc, dans `src/lib/dates.ts`,
+      et elle ne lit **jamais** la table de fuseaux du moteur
+- [ ] `dates.ts`, `day.ts` et `documentNumber.ts` en dérivent tous les trois :
+      aucun `timeZone: 'Africa/Casablanca'` ne subsiste pour **décider** d'un
+      décalage (`Intl` garde la mise en forme, il ne décide plus)
+- [ ] **L'année du numéro est calculée par la même fonction des deux côtés**, et
+      un test l'éprouve sur le 31 décembre 23 h 30 local, de 2026 à 2030
+- [ ] La table est mesurée **jour par jour contre Postgres**, de 2019 à 2031 —
+      pas sur un échantillon de dates choisies
+- [ ] Les douze instants de bascule exacts sont éprouvés à une seconde avant et
+      une seconde après
+- [ ] Le défaut de `day.ts` est corrigé : `startOfDay()` prend le décalage de
+      **minuit local**, pas celui de midi UTC
+- [ ] Un test d'**horizon** rougit quand la table ne couvre plus deux ans devant
+- [ ] Une ligne de diagnostic dans les paramètres montre, pour trois instants
+      fixes, ce que rend le **moteur** et ce que rend **Merx**, côte à côte
+- [ ] Le serveur n'est pas modifié : Postgres est la référence
+
+**La table, telle que Postgres la donne** (transitions à 02:00 UTC ; hors de ces
+fenêtres, UTC+1) :
+
+| retour à UTC+0 | retour à UTC+1 | | retour à UTC+0 | retour à UTC+1 |
+|---|---|---|---|---|
+| 2019-05-05 | 2019-06-09 | | 2026-02-15 | 2026-03-22 |
+| 2020-04-19 | 2020-05-31 | | 2027-02-07 | 2027-03-14 |
+| 2021-04-11 | 2021-05-16 | | 2028-01-23 | 2028-03-05 |
+| 2022-03-27 | 2022-05-08 | | 2029-01-14 | 2029-02-18 |
+| 2023-03-19 | 2023-04-23 | | **2029-12-30** | **2030-02-10** |
+| 2024-03-10 | 2024-04-14 | | **2030-12-22** | **2031-01-26** |
+| 2025-02-23 | 2025-04-06 | | | |
+
+**Fichiers**
+
+| Fichier | Ce qui y change |
+|---|---|
+| `src/lib/dates.ts` | la table `RAMADAN_UTC_WINDOWS`, `MOROCCO_STANDARD_OFFSET`, et `casablancaOffsetMinutes()` ; `formatDate()`, `formatDateTime()` et `fileDate()` décalent l'instant puis formatent **en UTC** |
+| `src/lib/day.ts` | `offsetAt()` lit la fonction ; `startOfDay()` prend le décalage de minuit local |
+| `src/modules/sales/documentNumber.ts` | `documentYear()` lit la fonction ; le fichier ne dépend toujours que de `dates.ts`, qui n'importe rien — l'invariant qui permet à un test de base d'importer les deux |
+| `src/lib/dates.test.ts` | **neuf** |
+| `src/lib/day.test.ts` | les deux jours de bascule de l'année |
+| `src/modules/sales/numbering.test.ts` | le 31 décembre 23 h 30 |
+| `supabase/tests/timezone.test.ts` | **neuf** — le balayage contre Postgres |
+| `src/modules/admin/SettingsScreen.tsx` | la ligne de diagnostic |
+| `docs/SPEC.md` § 4 | la RÈGLE ci-dessous |
+| `docs/PENDING-CHECKS.md` | la procédure annuelle, et la lecture sur l'appareil |
+
+**Aucune migration** : le serveur ne bouge pas.
+
+**Tests**
+
+- `supabase/tests/timezone.test.ts` — **le test qui compte, et il ne choisit pas
+  ses dates** : un balayage jour par jour de 2019 à 2031 à 12 h UTC,
+  `casablancaOffsetMinutes()` contre `timezone('Africa/Casablanca', …)`, en une
+  requête ; les douze bascules à ± 1 s ; et l'accord sur l'année pour le
+  31 décembre 23 h 30 local de 2026 à 2030, côté appareil contre le calcul même
+  du garde `merx.require_document_number_shape()`.
+- `src/lib/dates.test.ts` — les bords de Ramadan, le 31 décembre 23 h 30, et le
+  **test d'horizon** : il rougit quand la table ne couvre plus deux ans devant,
+  avec la requête de régénération dans son commentaire. Une table écrite à la
+  main a une fin ; autant que ce soit la suite qui le dise, et non un
+  commerçant en 2032.
+- `src/lib/day.test.ts` — les bornes des deux jours de bascule, là où le défaut
+  actuel décale la journée d'une heure.
+
+**Sabotages (2 cas)** — le garde qui tient une ligne ici est **l'accord entre
+l'appareil et la base sur l'année du numéro** : c'est lui qui, cassé, refuse un
+bon au comptoir.
+
+- `casablancaOffsetMinutes()` rendue à `0` en toute saison ;
+- `documentYear()` remise sur `Intl` — et ce cas doit rougir **sans** que le
+  balayage de la table bouge, sinon le test d'accord ne mesure pas ce qu'il
+  prétend mesurer.
+
+**RÈGLE à poser en SPEC § 4** — *Le décalage du Maroc est une donnée de
+l'application, jamais une lecture du moteur. La table se mesure contre Postgres,
+elle ne se recopie pas.*
+
+**Et ce que la RÈGLE doit dire de ses propres limites, parce qu'une table gelée
+en a deux.**
+
+1. **Les dates de Ramadan de `tzdata` sont des prévisions.** Le Maroc fixe la
+   bascule à l'observation de la lune, parfois à un jour près, et l'annonce peu
+   avant. La table peut donc se tromper d'un jour une année donnée — et comme
+   les assets sont empaquetés dans l'APK (§ 2.7), **elle ne se corrige que par un
+   APK**. C'est le prix de l'indépendance vis-à-vis du moteur, et il est payé en
+   connaissance de cause : une table à un jour près une année sur cinq vaut
+   mieux qu'un moteur à une heure près toute l'année.
+2. **La procédure annuelle va dans `PENDING-CHECKS.md`** : dès l'annonce
+   officielle de la bascule, régénérer la table, la comparer à Postgres par le
+   balayage, publier un APK si elle a bougé.
+3. **Le serveur hébergé n'aura pas forcément la même `tzdata` que le stack
+   local.** Le même balayage entre donc dans la vérification de mise en ligne,
+   joué contre la base hébergée — même famille que la table de correspondance
+   de PostgREST, qui se mesure et ne se recopie jamais.
+
+---
+
 # E1 — Administration
 
 ### E1-01 — Création d'un commerce
@@ -1039,9 +1169,14 @@ visiblement et ne coûtent rien quand ils cassent.
 conteneur disent mot pour mot (`mkdir /run/desktop/mnt/host/d: file exists`,
 puis `Error reading config file 'file:///Merx/supabase/functions/create-tenant/deno.json'.:
 No such device (os error 19)`). C'est la panne décrite dans CLAUDE.md, diagnostiquée
-et non supposée ; aucun de ces 26 ne touche un fichier d'E5-03, et `docker restart`
-ne la répare pas — il a laissé le conteneur arrêté. **La suite entièrement verte
-reste donc à obtenir** : `docs/PENDING-CHECKS.md`. `typecheck` et `lint` propres,
+et non supposée ; aucun de ces 26 ne touche un fichier d'E5-03.
+
+**Docker Desktop redémarré, le conteneur Edge relancé à la main — il ne revient
+pas tout seul — et `pg_isready` attendu, les deux fichiers rejoués rendent
+`2 fichiers, 46 tests, 0 rouge`, 22,7 s. La suite est donc entièrement verte,
+mesurée en deux temps parce que l'environnement a cédé au milieu.**
+
+`typecheck` et `lint` propres,
 lus sur la sortie des commandes, après la dernière édition ; les 21 fichiers de
 `src/lib/printing` et `src/modules/sales`, 345 tests, verts au même moment.
 

@@ -33,28 +33,6 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
       poppler ni visionneuse sur cette machine. À ouvrir dans Acrobat, dans
       Chrome, et dans ce que WhatsApp propose sur Android.
 
-### Depuis E5-03 — l'état du stack, à refaire avant toute mesure
-
-- [ ] **Docker Desktop a perdu son montage du disque `D:`, et le conteneur
-      `supabase_edge_runtime_Merx` est resté arrêté.** Constaté le 2026-10-23,
-      après que le disque externe a été débranché puis rebranché en cours de
-      session. Signature exacte, lue dans les logs :
-
-          mkdir /run/desktop/mnt/host/d: file exists
-          Error reading config file 'file:///Merx/supabase/functions/.../deno.json'.:
-          No such device (os error 19)
-
-      Conséquence : **26 rouges** dans `tenant-creation.test.ts` et
-      `user-management.test.ts`, tous `expected 503 to be 201`, sur la suite
-      complète du 2026-10-23 (88 fichiers, 2 081 tests, 2 055 verts, 656 s).
-      Aucun ne touche un fichier d'E5-03.
-
-      `npx supabase stop && start` ne répare pas cela, et `docker restart` non
-      plus — il a laissé le conteneur arrêté. **Seul un redémarrage de Docker
-      Desktop le répare, et c'est la main de l'utilisateur.** Ensuite :
-      redémarrer le conteneur Edge, attendre `pg_isready`, puis rejouer la suite
-      complète — c'est elle qui clora vraiment E5-03.
-
 ### Depuis E5-03, et qui ne lui appartient pas — le fuseau horaire
 
 - [ ] **Chrome et Node ne sont pas d'accord sur `Africa/Casablanca` à partir
@@ -238,6 +216,27 @@ plus bas. Ne reste que ce qu'aucune commande ne mesure.
       le même harnais, noté en E9-03.**
 
 ## Faites
+
+### Le montage du disque `D:` perdu par Docker, réparé le 2026-10-23
+
+- [x] **26 rouges d'environnement, puis 46 verts.** Le disque externe débranché
+      puis rebranché en cours de session a fait perdre à Docker Desktop son
+      montage de `D:` ; le conteneur Edge ne pouvait plus lire ses fonctions,
+      et `tenant-creation.test.ts` et `user-management.test.ts` rendaient
+      `expected 503 to be 201` — 26 cas, sur la suite complète du jour
+      (88 fichiers, 2 081 tests, 2 055 verts, 656 s). Signature lue dans les
+      logs, non supposée : `mkdir /run/desktop/mnt/host/d: file exists`, puis
+      `No such device (os error 19)`.
+
+      Ni `docker restart` ni `npx supabase stop && start` ne réparent : seul un
+      redémarrage de Docker Desktop le fait, et il faut ensuite **relancer
+      `supabase_edge_runtime_Merx` à la main** — il ne revient pas tout seul,
+      exactement comme CLAUDE.md le décrit. Fait, puis `pg_isready` attendu,
+      puis les deux fichiers rejoués : **46 verts, 0 rouge**, 22,7 s.
+
+      La suite d'E5-03 est donc entièrement verte, mesurée en deux temps parce
+      que l'environnement a cédé au milieu : 2 055 verts sur la passe complète,
+      et les 26 restants verts après réparation.
 
 ### E5-01, le chemin natif, vérifié le 2026-10-22 sur un téléphone
 
