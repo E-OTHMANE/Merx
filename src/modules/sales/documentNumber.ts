@@ -5,8 +5,8 @@
  * livraison, `RT` retour), la lettre de l'appareil (E1-03, unique par commerce
  * et jamais recyclée), l'année sur deux chiffres, la séquence sur cinq.
  *
- * **Ce fichier ne dépend de rien.** C'est délibéré : `merx.doc_type_code()`
- * tient l'autre copie des codes en base, et
+ * **Ce fichier ne dépend que de `src/lib/dates.ts`, qui n'importe rien.** C'est
+ * délibéré : `merx.doc_type_code()` tient l'autre copie des codes en base, et
  * `supabase/tests/document-numbering.test.ts` compare les deux étiquette par
  * étiquette. Une comparaison n'a de valeur que si les deux copies sont les
  * vraies, donc le test de base importe ce module-ci — et il ne peut le faire
@@ -15,6 +15,8 @@
  *
  * Ce qui parle au réseau est dans `numbering.ts`.
  */
+
+import { casablancaOffsetMinutes } from '@/lib/dates'
 
 /** Les quatre types de document du § 8 — `return` ajouté en E4-06. */
 export type SaleDocType = 'quote' | 'order' | 'delivery_note' | 'return'
@@ -42,10 +44,6 @@ const SEQUENCE_DIGITS = 5
 /** Le plus grand numéro qu'un appareil peut porter dans une année. */
 export const MAX_SEQUENCE = 10 ** SEQUENCE_DIGITS - 1
 
-const TIME_ZONE = 'Africa/Casablanca'
-
-const YEAR = new Intl.DateTimeFormat('fr-MA', { timeZone: TIME_ZONE, year: 'numeric' })
-
 const NUMBER_PATTERN = new RegExp(
   `^(DV|CM|BL|RT)-([A-Z])-([0-9]{2})-([0-9]{${SEQUENCE_DIGITS}})$`,
 )
@@ -53,14 +51,17 @@ const NUMBER_PATTERN = new RegExp(
 /**
  * L'année que porte le numéro, telle que le commerçant l'a vécue.
  *
- * `Africa/Casablanca` est écrit, jamais déduit du navigateur (même raison que
- * `src/lib/dates.ts`) : un bon émis le 31 décembre à 23 h 30 porte l'année du
- * comptoir, et c'est aussi l'année que le garde de la base recalcule depuis
- * `issued_at`. Les deux lectures doivent tomber d'accord, sans quoi le serveur
- * refuserait un numéro pourtant juste.
+ * Le décalage vient de `casablancaOffsetMinutes()`, jamais de la table de
+ * fuseaux du moteur (E0-06) : un bon émis le 31 décembre à 23 h 30 porte
+ * l'année du comptoir, et c'est aussi l'année que le garde de la base
+ * recalcule depuis `issued_at`. Les deux lectures doivent tomber d'accord,
+ * sans quoi le serveur refuserait un numéro pourtant juste — et l'ICU de ce
+ * Chrome, qui laisse le Maroc à UTC+0 après février 2026, les faisait
+ * précisément diverger. `supabase/tests/timezone.test.ts` mesure l'accord
+ * contre le calcul même du garde.
  */
 export function documentYear(at: Date): number {
-  return Number(YEAR.format(at))
+  return new Date(at.getTime() + casablancaOffsetMinutes(at) * 60_000).getUTCFullYear()
 }
 
 /** `BL-A-26-00001`. */

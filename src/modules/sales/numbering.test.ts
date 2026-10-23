@@ -46,6 +46,31 @@ interface Response {
 const calls: Call[] = []
 const respond = vi.fn<(call: Call) => Response>()
 
+/*
+ * Le décalage du Maroc, interceptable — E0-06.
+ *
+ * `documentYear()` doit dériver de `casablancaOffsetMinutes()`, et non de la
+ * table de fuseaux du moteur. Sur cette machine les deux s'accordent : l'ICU de
+ * Node est juste, celle de ce Chrome ne l'est pas, et un test qui compare deux
+ * lectures justes ne mesure rien. Remettre `documentYear()` sur `Intl` y
+ * resterait vert.
+ *
+ * Donc on tient le décalage par la manche. `offset` nul laisse la vraie table
+ * répondre — tous les autres cas du fichier sont intacts ; posé, il impose une
+ * valeur qu'aucun moteur ne rendrait, et seule une fonction qui *lit* la table
+ * la suit.
+ */
+const table = vi.hoisted(() => ({ offset: null as number | null }))
+
+vi.mock('@/lib/dates', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/dates')>()
+  return {
+    ...actual,
+    casablancaOffsetMinutes: (at: Date) =>
+      table.offset ?? actual.casablancaOffsetMinutes(at),
+  }
+})
+
 vi.mock('@/lib/supabase', () => ({
   supabase: {
     from: (table: string) => {
@@ -160,6 +185,51 @@ describe('la forme', () => {
   it('prend l’année du comptoir, pas celle d’UTC', () => {
     expect(documentYear(new Date('2026-12-31T22:30:00.000Z'))).toBe(2026)
     expect(documentYear(new Date('2026-12-31T23:30:00.000Z'))).toBe(2027)
+  })
+
+  /*
+   * Le 31 décembre à 23 h 30 au comptoir, de 2026 à 2030 — E0-06.
+   *
+   * L'instant UTC qui correspond n'est pas le même d'une année à l'autre, et
+   * c'est tout l'intérêt du cas : **en 2029 et en 2030, le 31 décembre tombe
+   * pendant le Ramadan**, donc à UTC+0, et 23 h 30 au comptoir est 23:30Z.
+   * Les trois autres années, le Maroc est à UTC+1 et c'est 22:30Z. Un bord
+   * qui revient deux fois en cinq ans n'est pas un bord théorique.
+   *
+   * `supabase/tests/timezone.test.ts` rejoue ces mêmes instants contre le
+   * calcul du garde `merx.require_document_number_shape()` : ici on mesure ce
+   * que l'appareil décide, là-bas qu'il décide la même chose que la base.
+   */
+  const NEW_YEAR_EVE: ReadonlyArray<readonly [number, string]> = [
+    [2026, '2026-12-31T22:30:00.000Z'],
+    [2027, '2027-12-31T22:30:00.000Z'],
+    [2028, '2028-12-31T22:30:00.000Z'],
+    [2029, '2029-12-31T23:30:00.000Z'],
+    [2030, '2030-12-31T23:30:00.000Z'],
+  ]
+
+  it('lit le décalage de la table, et non celui du moteur', () => {
+    // Un décalage que ni Node, ni Chrome, ni Postgres ne rendraient pour le
+    // Maroc : seul ce qui lit la table peut le suivre.
+    table.offset = -3 * 60
+    try {
+      // 01:00 UTC le 1er janvier, moins trois heures : on est encore en 2026
+      // au comptoir imaginaire. `Intl` répondrait 2027.
+      expect(documentYear(new Date('2027-01-01T01:00:00.000Z'))).toBe(2026)
+    } finally {
+      table.offset = null
+    }
+  })
+
+  it('porte l’année du comptoir le 31 décembre à 23 h 30, de 2026 à 2030', () => {
+    for (const [year, instant] of NEW_YEAR_EVE) {
+      expect(documentYear(new Date(instant)), instant).toBe(year)
+      // Une heure plus tard, le comptoir a changé d'année lui aussi.
+      expect(
+        documentYear(new Date(Date.parse(instant) + 60 * 60 * 1_000)),
+        `${instant} + 1 h`,
+      ).toBe(year + 1)
+    }
   })
 })
 

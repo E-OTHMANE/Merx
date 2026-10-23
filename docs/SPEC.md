@@ -247,10 +247,25 @@ Sans cela, la protection de `variant_cost` ne vaut rien : un employé qui lit le
 - Clés primaires : `uuid`.
 - Montants : `numeric(12,2)`. **Jamais de flottant.**
 - Quantités : `numeric(12,3)`.
-- Dates : `timestamptz`, UTC en base, affichage `Africa/Casablanca`.
+- Dates : `timestamptz`, UTC en base, affichage `Africa/Casablanca` — dont le décalage est une donnée de l'application, voir la RÈGLE ci-dessous.
 - Suppression : `deleted_at` sur les tables de référence. Documents et mouvements jamais supprimés, seulement annulés. **Une seule exception, un brouillon** : un document sans numéro ni mouvement — au statut `draft` — peut se supprimer, avec ses lignes, et rien d'autre (§ 8, RÈGLE M3-3). C'est pour cela que le numéro n'est attribué qu'à la confirmation : un brouillon abandonné ne laisse aucun trou dans la séquence. Corrigé en E4-01.
 - Toute table porte `created_at`, `updated_at`, `created_by`, `device_id`.
 - `tenant_id` a pour défaut `merx.current_tenant_id()`, le commerce du jeton, sur toute table conventionnée. L'application n'écrit jamais `tenant_id` ; une valeur étrangère envoyée explicitement reste refusée par le `with check` de `tenant_isolation`. Hors session (migration, peuplement de test), le défaut vaut NULL et la valeur doit être donnée. Arbitré en E2-02 ; contrôlé par `conventions.test.ts`.
+
+**RÈGLE — le décalage du Maroc.** *Le décalage du Maroc est une donnée de l'application, jamais une lecture du moteur. La table se mesure contre Postgres, elle ne se recopie pas.*
+
+Une seule fonction le porte, `casablancaOffsetMinutes()` dans `src/lib/dates.ts`, et elle ne lit aucune table de fuseaux. `src/lib/day.ts` (les bornes de journée) et `src/modules/sales/documentNumber.ts` (l'année du numéro) en dérivent ; `Intl` ne sert plus qu'à mettre en forme, en UTC, un instant déjà décalé. Aucun `timeZone: 'Africa/Casablanca'` ne subsiste pour **décider** d'un décalage. Posée en E0-06.
+
+Écrire le fuseau en dur ne dépend plus de l'horloge de la tablette, mais dépend encore de **sa table de fuseaux**. Mesuré le 2026-10-23, même machine, même instant, pour `2026-10-20 12:00Z` : Node 24 et Postgres 17.6 rendent 13:00, ce Chrome rend 12:00 — son ICU laisse le Maroc à UTC+0 après le Ramadan 2026 et ne l'en ramène jamais. Le Maroc est à UTC+1 en permanence depuis 2018, sauf pendant le Ramadan : c'est Postgres qui a raison, et le navigateur qui est en retard. Une WebView Android bon marché peut l'être davantage, et rien à l'écran ne le dirait.
+
+Ce n'est pas une affaire d'affichage. L'appareil calcule l'année du numéro (§ 8, RÈGLE M3-2) et `merx.require_document_number_shape()` la recalcule depuis `issued_at` : deux tables qui ne disent pas la même chose, et un bon émis le 31 décembre à 23 h 30 porte une année que le serveur refuse en `22023`. En 2029 et en 2030, le 31 décembre tombe pendant le Ramadan, donc sur une bascule — le cas revient deux fois en cinq ans.
+
+**Le serveur est la référence et ne bouge pas.** `supabase/tests/timezone.test.ts` mesure la table contre lui jour par jour de 2019 à 2031, aux instants de bascule à ± 1 seconde, et sur l'accord des deux côtés quant à l'année du numéro. Comme la `tzdata` du serveur hébergé ne sera pas forcément celle du stack local, ce balayage entre aussi dans la vérification de mise en ligne — même famille que la table de correspondance de PostgREST, qui se mesure et ne se recopie jamais.
+
+*Et ce que la RÈGLE dit de ses propres limites, parce qu'une table gelée en a deux.*
+
+1. **Les dates de Ramadan de `tzdata` sont des prévisions.** Le Maroc fixe la bascule à l'observation de la lune, parfois à un jour près, et l'annonce peu avant. La table peut donc se tromper d'un jour une année donnée — et comme les assets sont empaquetés dans l'APK (§ 2.7), **elle ne se corrige que par un APK**. Le prix est payé en connaissance de cause : une table à un jour près une année sur cinq vaut mieux qu'un moteur à une heure près toute l'année.
+2. **Une table écrite à la main a une fin.** Celle-ci s'arrête au 2032-01-18, et un test d'horizon de `src/lib/dates.test.ts` rougit quand elle ne couvre plus deux ans devant, la requête de régénération dans son commentaire. La procédure annuelle — régénérer dès l'annonce officielle, remesurer contre Postgres, publier un APK si la table a bougé — est dans `docs/PENDING-CHECKS.md`. C'est la suite qui doit le dire, pas un commerçant en 2032.
 
 **RÈGLE — domaines nommés.** Tout montant se déclare `money_amount`, toute quantité se déclare `quantity`. Ces deux domaines sont définis dans `public` par la migration initiale. Un `numeric` nu dans une table métier est une infraction, au même titre qu'un flottant : la précision ne doit dépendre d'aucune recopie à la main.
 

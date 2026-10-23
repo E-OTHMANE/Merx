@@ -7,6 +7,27 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
 
 ## Ouvertes
 
+**Presque tout ce qui suit est désormais porté par une story.** `BACKLOG.md` E12
+— « Préparation de l'arrêt terrain » — reprend ces lignes, une story par
+chantier, avec ses critères :
+
+| Ligne ouverte | Story |
+|---|---|
+| Le PDF sur un vrai téléphone · un lecteur de PDF ordinaire | E12-10 |
+| Le sélecteur de partage natif, et WhatsApp au bout | E12-06 |
+| La ligne « Heure du Maroc » sur l'appareil | E12-11 |
+| Le balayage de fuseau contre la base hébergée | E12-01 |
+| Le ticket sur une vraie imprimante | E12-09 |
+| Les deux défauts du 2026-10-22 — photo, scan | E12-04, E12-05 (et E12-03 pour la console) |
+| Distribution et mise à jour de l'APK | E12-08 |
+| PowerSync dans la WebView | E12-13 |
+| Toutes les lignes « à regarder à l'œil » et le chronomètre d'E4-03 | E12-12 |
+
+Restent **hors** d'E12, et c'est voulu : la procédure annuelle de Ramadan, qu'une
+annonce officielle déclenche et non l'arrêt terrain ; et les trois lignes de
+concurrence plus le plancher hors ligne, portés par **E9-03**.
+
+
 ### Depuis E5-03 — le PDF A4
 
 - [ ] **Le PDF sur un vrai téléphone.** `npm run pdf:measure` écrit des PDF et
@@ -33,39 +54,38 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
       poppler ni visionneuse sur cette machine. À ouvrir dans Acrobat, dans
       Chrome, et dans ce que WhatsApp propose sur Android.
 
-### Depuis E5-03, et qui ne lui appartient pas — le fuseau horaire
+### Depuis E0-06 — le fuseau horaire du Maroc
 
-- [ ] **Chrome et Node ne sont pas d'accord sur `Africa/Casablanca` à partir
-      d'octobre 2026, et cela touche tous les écrans.** Mesuré le 2026-10-23,
-      même machine, même instant :
+La divergence relevée en E5-03 est **tranchée** : Merx ne lit plus la table de
+fuseaux du moteur (SPEC § 4, RÈGLE du décalage du Maroc). Ce qui reste n'est
+plus une décision, c'est une lecture et un entretien.
 
-      | instant UTC | Node 24 | Chrome (ICU embarquée) |
-      |---|---|---|
-      | 2024-06-15 12:00 | 13:00 | 13:00 |
-      | 2025-10-20 12:00 | 13:00 | 13:00 |
-      | 2026-03-01 12:00 | 12:00 | 12:00 |
-      | **2026-10-20 12:00** | **13:00** | **12:00** |
-
-      Les deux moteurs s'accordent jusqu'au Ramadan 2026 puis divergent : Chrome
-      laisse le Maroc à UTC+0 après cette date, Node le ramène à UTC+1. Le Maroc
-      est à UTC+1 en permanence depuis 2018, sauf pendant le Ramadan : **c'est
-      Node qui a raison**, et l'ICU de ce Chrome qui est en retard.
-
-      Ce que cela coûte, et pourquoi ce n'est pas une curiosité : `src/lib/dates.ts`
-      impose le fuseau à la main (§ 4) précisément pour ne pas dépendre de
-      l'horloge de la tablette — mais il dépend encore de **la table des fuseaux
-      du moteur**, qui sur un Android bon marché peut être plus vieille encore.
-      Trois conséquences possibles : toutes les dates affichées décalées d'une
-      heure, la date du nom de fichier du PDF décalée d'un jour à la frontière,
-      et surtout **l'année du numéro de document** (RÈGLE M3-2, calculée en
-      `Africa/Casablanca` par l'appareil **et** par le garde de la base) : un bon
-      émis le 31 décembre à 23 h 30 sur un appareil à UTC+0 porterait une année
-      que le serveur refuserait en `22023`.
-
-      **À faire** : mesurer la même table dans la WebView de l'APK (console
-      distante), puis décider — vivre avec, ou cesser de dépendre de la table du
-      moteur. C'est une décision d'architecture, pas une correction : elle ne se
-      prend pas dans une story d'impression. **Rien n'a été changé.**
+- [ ] **Lire la ligne « Heure du Maroc » des Paramètres sur l'appareil.** Elle
+      montre, pour trois instants fixes, ce que rend le **moteur** et ce que
+      rend **Merx**, côte à côte — c'est la mesure que la session n'a pas pu
+      faire dans la WebView de l'APK, faute de console distante. Attendu sur un
+      Android bon marché : les deux premières lignes d'accord, la troisième
+      (octobre 2026) en désaccord, le moteur barré à 12:00 et Merx à 13:00.
+      Si les trois sont d'accord, tant mieux — cela ne change rien, Merx ne
+      dépend plus de lui. Si la **première** est en désaccord, la WebView est
+      en retard d'un régime entier et il faut le savoir.
+- [ ] **La procédure annuelle, dès l'annonce officielle de la bascule de
+      Ramadan.** Les dates de `tzdata` sont des **prévisions** : le Maroc fixe
+      la bascule à l'observation de la lune, parfois à un jour près. Dans
+      l'ordre, et chaque année :
+      1. régénérer la table — la requête est dans le commentaire du test
+         d'horizon de `src/lib/dates.test.ts` ;
+      2. remplacer `RAMADAN_UTC_WINDOWS` dans `src/lib/dates.ts` si elle a
+         bougé ;
+      3. `npm run test -- supabase/tests/timezone.test.ts`, qui la remesure
+         jour par jour contre Postgres ;
+      4. **publier un APK** si la table a changé : les assets sont empaquetés
+         (§ 2.7), donc une table corrigée ne se diffuse pas autrement.
+- [ ] **Le même balayage contre la base hébergée, le jour de la mise en ligne.**
+      La `tzdata` du serveur hébergé n'est pas forcément celle du stack local, et
+      c'est Postgres qui est la référence : `supabase/tests/timezone.test.ts`
+      avec `SUPABASE_DB_URL` pointé sur elle. Même famille que la table de
+      correspondance de PostgREST, qui se mesure et ne se recopie jamais.
 
 ### Depuis E5-01 — l'enveloppe Capacitor et le ticket
 
@@ -216,6 +236,22 @@ plus bas. Ne reste que ce qu'aucune commande ne mesure.
       le même harnais, noté en E9-03.**
 
 ## Faites
+
+### Le fuseau du Maroc, tranché le 2026-10-23 par E0-06
+
+- [x] **La divergence Chrome / Node / Postgres, mesurée puis retirée du
+      chemin.** La ligne ouverte par E5-03 demandait de décider entre « vivre
+      avec » et « cesser de dépendre de la table du moteur ». E0-06 a tranché
+      pour la seconde : `casablancaOffsetMinutes()` porte le décalage, et
+      `dates.ts`, `day.ts` et `documentNumber.ts` en dérivent tous les trois.
+      Le serveur n'a pas été modifié — il est la référence.
+- [x] **La table mesurée contre Postgres, et corrigée par la mesure.** Le
+      balayage jour par jour de 2019 à 2031 a rougi sur dix-huit jours de
+      décembre 2031 : le tableau d'E0-06 s'arrêtait au 2031-01-26, et Postgres
+      donne une quatorzième fenêtre, `2031-12-14` → `2032-01-18`. Elle est
+      dans la table. C'est exactement ce que la RÈGLE prévoit — la table se
+      mesure, elle ne se recopie pas — et le cas valait d'être rencontré une
+      fois.
 
 ### Le montage du disque `D:` perdu par Docker, réparé le 2026-10-23
 

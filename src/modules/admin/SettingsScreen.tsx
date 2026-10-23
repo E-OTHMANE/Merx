@@ -24,6 +24,7 @@ import { useCallback, useEffect, useId, useState, type FormEvent } from 'react'
 
 import { BackLink } from '@/components/BackLink'
 import { Button } from '@/components/ui/button'
+import { casablancaOffsetMinutes } from '@/lib/dates'
 import { Field } from '@/components/Field'
 import { loadSettings, saveSettings, type Settings } from '@/modules/admin/settings'
 import {
@@ -47,6 +48,83 @@ const PRINTER_WIDTH_LABELS: Record<PrinterWidth, string> = {
   576: '80 mm — 576 points',
   512: '80 mm — 512 points',
   384: '58 mm — 384 points',
+}
+
+/*
+ * ----------------------------------------------------------------------------
+ * Le fuseau, montré — E0-06.
+ *
+ * Merx porte sa propre table des décalages du Maroc parce que celle du moteur
+ * peut être en retard : l'ICU de ce Chrome laisse le Maroc à UTC+0 après le
+ * Ramadan 2026, alors que le pays est à UTC+1 en permanence depuis 2018 hors
+ * Ramadan. On ne peut pas savoir à l'avance de combien la WebView d'une
+ * tablette bon marché est en retard, et rien à l'écran ne le dirait.
+ *
+ * D'où cette ligne : trois instants fixes, ce que rend le **moteur** et ce que
+ * rend **Merx**, côte à côte. Elle n'a pas de bouton et ne règle rien — c'est
+ * une lecture, à demander par téléphone le jour où un commerçant dit que ses
+ * heures sont fausses. Le troisième instant est celui qui a ouvert la story :
+ * là où les deux colonnes diffèrent, c'est le moteur qui est en retard, et
+ * Merx qui a raison.
+ *
+ * Les instants sont écrits en dur et ne bougent pas avec la date du jour : une
+ * ligne de diagnostic qui change toute seule ne se compare pas d'un appel à
+ * l'autre.
+ * ----------------------------------------------------------------------------
+ */
+const DIAGNOSTIC_INSTANTS: ReadonlyArray<{ label: string; iso: string }> = [
+  { label: 'Octobre 2025', iso: '2025-10-20T12:00:00Z' },
+  { label: 'Ramadan 2026', iso: '2026-03-01T12:00:00Z' },
+  { label: 'Octobre 2026', iso: '2026-10-20T12:00:00Z' },
+]
+
+/* Le moteur décide du décalage : c'est précisément ce qu'on vient regarder. */
+const ENGINE_CLOCK = new Intl.DateTimeFormat('fr-MA', {
+  timeZone: 'Africa/Casablanca',
+  hour: '2-digit',
+  minute: '2-digit',
+})
+
+/* Merx décale l'instant lui-même, puis fait mettre en forme en UTC. */
+const COUNTER_CLOCK = new Intl.DateTimeFormat('fr-MA', {
+  timeZone: 'UTC',
+  hour: '2-digit',
+  minute: '2-digit',
+})
+
+function TimeZoneDiagnostic() {
+  const readings = DIAGNOSTIC_INSTANTS.map(({ label, iso }) => {
+    const instant = new Date(iso)
+    const engine = ENGINE_CLOCK.format(instant)
+    const merx = COUNTER_CLOCK.format(
+      new Date(instant.getTime() + casablancaOffsetMinutes(instant) * 60_000),
+    )
+    return { label, iso, engine, merx, agrees: engine === merx }
+  })
+
+  return (
+    <section className="flex flex-col gap-2 rounded-card border border-paper-300 bg-paper-100 p-4">
+      <h2 className="text-label text-paper-700">Heure du Maroc</h2>
+      <p className="text-note text-paper-600">
+        Merx porte sa propre table des heures du Maroc. Quand les deux colonnes
+        diffèrent, c’est l’appareil qui est en retard, et Merx qui a raison.
+      </p>
+      <dl className="flex flex-col gap-1">
+        {readings.map((reading) => (
+          <div key={reading.iso} className="flex items-baseline justify-between gap-2">
+            <dt className="text-note text-paper-700">{reading.label}</dt>
+            <dd className="tabular text-note text-paper-900">
+              <span className={reading.agrees ? '' : 'text-paper-600 line-through'}>
+                {reading.engine}
+              </span>
+              {' → '}
+              <span>{reading.merx}</span>
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+  )
 }
 
 type State =
@@ -291,6 +369,10 @@ export function SettingsScreen() {
             </Button>
           </form>
         )}
+
+        {/* Une lecture, jamais un réglage : elle s'affiche quel que soit
+            l'état des réglages, qui ne la concernent pas. */}
+        <TimeZoneDiagnostic />
       </div>
     </main>
   )

@@ -9,7 +9,7 @@
 
 ## Comment lire ce document
 
-Douze épiques. Chaque story porte :
+Treize épiques. Chaque story porte :
 
 - **Un identifiant** `Exx-nn`, stable, à citer dans les commits et les branches.
 - **Une étape** correspondant à `SPEC.md` § 11. C'est l'ordre de construction.
@@ -40,8 +40,9 @@ Douze épiques. Chaque story porte :
 | E9 | Hors-ligne | 10 |
 | E10 | Rapports | 11 |
 | E11 | Langues et interface | continu |
+| E12 | Préparation de l'arrêt terrain | 5 bis |
 
-**Arrêt obligatoire après E5.** Aller voir trois commerçants avant de démarrer E6.
+**Arrêt obligatoire après E5.** Aller voir trois commerçants avant de démarrer E6. **E12 est ce qui se fait entre les deux** : mettre en ligne, sauvegarder, signer, diagnostiquer les deux défauts du 2026-10-22, et regarder l'application sur un vrai appareil.
 
 ---
 
@@ -169,23 +170,26 @@ une année que le serveur refuse. Et la table le dit elle-même : **en 2029 et e
 n'est pas un bord théorique, il revient deux fois en cinq ans.
 
 **Critères d'acceptation**
-- [ ] Une **seule** fonction porte le décalage du Maroc, dans `src/lib/dates.ts`,
+- [x] Une **seule** fonction porte le décalage du Maroc, dans `src/lib/dates.ts`,
       et elle ne lit **jamais** la table de fuseaux du moteur
-- [ ] `dates.ts`, `day.ts` et `documentNumber.ts` en dérivent tous les trois :
+- [x] `dates.ts`, `day.ts` et `documentNumber.ts` en dérivent tous les trois :
       aucun `timeZone: 'Africa/Casablanca'` ne subsiste pour **décider** d'un
-      décalage (`Intl` garde la mise en forme, il ne décide plus)
-- [ ] **L'année du numéro est calculée par la même fonction des deux côtés**, et
+      décalage (`Intl` garde la mise en forme, il ne décide plus) — *une seule
+      occurrence subsiste, dans la ligne de diagnostic, où lire le moteur est
+      précisément l'objet*
+- [x] **L'année du numéro est calculée par la même fonction des deux côtés**, et
       un test l'éprouve sur le 31 décembre 23 h 30 local, de 2026 à 2030
-- [ ] La table est mesurée **jour par jour contre Postgres**, de 2019 à 2031 —
+- [x] La table est mesurée **jour par jour contre Postgres**, de 2019 à 2031 —
       pas sur un échantillon de dates choisies
-- [ ] Les douze instants de bascule exacts sont éprouvés à une seconde avant et
-      une seconde après
-- [ ] Le défaut de `day.ts` est corrigé : `startOfDay()` prend le décalage de
+- [x] Les douze instants de bascule exacts sont éprouvés à une seconde avant et
+      une seconde après — *vingt-huit bords, les quatorze fenêtres aux deux
+      bouts, et le changement de décalage exigé à chacun*
+- [x] Le défaut de `day.ts` est corrigé : `startOfDay()` prend le décalage de
       **minuit local**, pas celui de midi UTC
-- [ ] Un test d'**horizon** rougit quand la table ne couvre plus deux ans devant
-- [ ] Une ligne de diagnostic dans les paramètres montre, pour trois instants
+- [x] Un test d'**horizon** rougit quand la table ne couvre plus deux ans devant
+- [x] Une ligne de diagnostic dans les paramètres montre, pour trois instants
       fixes, ce que rend le **moteur** et ce que rend **Merx**, côte à côte
-- [ ] Le serveur n'est pas modifié : Postgres est la référence
+- [x] Le serveur n'est pas modifié : Postgres est la référence
 
 **La table, telle que Postgres la donne** (transitions à 02:00 UTC ; hors de ces
 fenêtres, UTC+1) :
@@ -263,6 +267,40 @@ en a deux.**
    local.** Le même balayage entre donc dans la vérification de mise en ligne,
    joué contre la base hébergée — même famille que la table de correspondance
    de PostgREST, qui se mesure et ne se recopie jamais.
+
+**Ce que la mise en œuvre a appris**
+
+- **La table du tableau ci-dessus est juste, et incomplète pour le balayage
+  demandé.** Les treize fenêtres correspondent à Postgres au jour et à l'heure
+  près, mais le balayage va jusqu'à fin 2031 et Postgres donne une
+  **quatorzième** fenêtre à l'intérieur : `2031-12-14` → `2032-01-18`. Le
+  premier passage a rougi sur dix-huit jours de décembre 2031, la fenêtre est
+  entrée dans `RAMADAN_UTC_WINDOWS`, et l'horizon de la table passe au
+  2032-01-18. C'est exactement ce que la RÈGLE dit — la table se mesure, elle ne
+  se recopie pas — et le cas valait d'être rencontré une fois : une table
+  recopiée à la main *sans* le balayage serait partie en production avec un
+  trou de cinq semaines.
+- **Le second sabotage ne pouvait pas rougir tel quel, et c'est la story qui le
+  disait.** Remettre `documentYear()` sur `Intl` ne change rien sur cette
+  machine : l'ICU de Node est juste, et deux lectures justes s'accordent. Le
+  cas ne mesure donc pas une valeur mais une **dépendance** : `@/lib/dates` est
+  interceptée dans `numbering.test.ts` et `casablancaOffsetMinutes()` forcée à
+  un décalage qu'aucun moteur ne rendrait pour le Maroc (−03:00). Seule une
+  fonction qui lit la table le suit. Le décalage forcé est nul par défaut, donc
+  les dix-huit autres cas du fichier mesurent toujours la vraie table.
+- **Le défaut de `day.ts` tenait à dix heures.** Les bascules tombent à 02:00
+  UTC et le décalage était lu à **midi** UTC : les deux seuls jours de l'année
+  où cela compte, minuit local et midi UTC ne sont pas du même côté. Le
+  décalage se prend désormais en deux passes — une approximation, puis la
+  lecture à l'instant de minuit local. Les fenêtres durant des semaines, la
+  seconde passe est toujours la bonne.
+
+**Sabotages — 2 cas, 2 rouges**
+
+| Garde retiré | Fichiers joués | Rouges |
+|---|---|---|
+| `casablancaOffsetMinutes()` rendue à `0` en toute saison | `dates.test.ts`, `day.test.ts`, `numbering.test.ts`, `timezone.test.ts` | **17** — 7 + 5 + 2 côté appareil, et 3 côté base : le balayage jour par jour, les instants de bascule, et l'accord sur l'année du numéro |
+| `documentYear()` remise sur `Intl` | `numbering.test.ts`, `dates.test.ts`, `day.test.ts`, `timezone.test.ts` | **1** — « lit le décalage de la table, et non celui du moteur ». Et le balayage **n'a pas bougé** : 6 verts côté base, comme exigé. Le cas isole bien la dépendance, et rien d'autre |
 
 ---
 
@@ -1591,6 +1629,454 @@ Trois constats d'un essai sur un vrai Android : aucun retour, aucun accueil, auc
 | Route `/stock` ajoutée sans classement | « classe chaque route déclarée dans routes.tsx » |
 
 Les deux gardes de `/products` se distinguent : l'onglet absent se lit à l'Accueil sans visiter la route, le garde de route par une redirection sur l'URL tapée. Le sabotage « `end` retiré de l'onglet Accueil », prévu au plan, a été abandonné : React Router n'active jamais un `NavLink` vers `/` sur un autre chemin, `end` ou non — il serait resté vert sans rien mesurer.
+
+---
+
+# E12 — Préparation de l'arrêt terrain
+
+L'étape 5 est close côté code. Cette épique est ce qui reste **avant** d'installer
+Merx chez trois commerçants : presque rien à construire, tout à mettre en ligne, à
+sauvegarder, à signer, à diagnostiquer et à regarder. Elle ramasse **toutes** les
+lignes que `docs/PENDING-CHECKS.md` attribue à ce moment-là ; une ligne de ce
+fichier ne se retire que lorsque la story qui la porte est close, et chaque story
+nomme les lignes qu'elle ferme.
+
+**Quatre stories seulement produisent du code** — E12-04 (photo), E12-05 (scan),
+E12-06 (partage) et le workflow d'E12-07. Les autres sont des mises en ligne, des
+décisions, ou des mesures faites à la main sur un appareil. Aucune ne se mesure par
+`npm run test` seul : c'est la nature de cette épique, et la raison pour laquelle
+chaque critère dit **sur quoi** il se lit.
+
+**Ce qui ne demande que vous et un téléphone** : E12-10, E12-11, E12-12 — et elles
+peuvent se faire **dès maintenant**, avec l'APK du 2026-10-22 déjà installé, avant
+tout hébergement. E12-08 et l'arbitrage d'E12-01 ne demandent que vous, sans
+téléphone. E12-09 demande en plus une imprimante, E12-03 en plus un câble USB et un
+PC.
+
+**Ordre.** E12-01 ouvre tout ce qui touche au serveur ; E12-07 est le goulot, il
+attend les trois correctifs. Les trois stories « téléphone seul » n'attendent rien.
+
+| # | Story | Attend | Nature |
+|---|---|---|---|
+| 1 | E12-01 Hébergement | — | décision + mise en ligne |
+| 2 | E12-02 Sauvegarde nocturne | E12-01 | mise en place + restauration |
+| 3 | E12-03 Console distante | — | outillage |
+| 4 | E12-04 La photo | E12-03 | diagnostic + code |
+| 5 | E12-05 Le scan | E12-03 | diagnostic + code |
+| 6 | E12-06 Partage du PDF | — | code |
+| 7 | E12-07 APK des pilotes | 01, 04, 05, 06 | construction + signature |
+| 8 | E12-08 Distribution | E12-07 | décision |
+| 9 | E12-09 L'imprimante réelle | — | matériel |
+| 10 | E12-10 Le PDF à l'œil | — | **téléphone seul** |
+| 11 | E12-11 Heure du Maroc | — | **téléphone seul** |
+| 12 | E12-12 Le carnet du comptoir | — | **téléphone seul** |
+| 13 | E12-13 PowerSync en WebView | E12-03 | essai jetable |
+
+**Ce que cette épique ne prend pas**, et pourquoi : la procédure annuelle de la
+bascule de Ramadan (`PENDING-CHECKS`, E0-06) est déclenchée par une annonce
+officielle, pas par l'arrêt terrain ; le harnais à deux connexions entrelacées et le
+plancher d'une vente faite hors ligne restent portés par **E9-03**, où ils sont déjà
+notés.
+
+---
+
+### E12-01 — Hébergement tranché, et base des pilotes en ligne
+**Étape 5 bis** · dépend de E5-03
+
+**En tant que** éditeur de Merx, **je veux** une base que les trois commerces
+atteignent sans mon PC, **afin que** l'arrêt terrain ne dépende pas d'une machine
+allumée chez moi.
+
+**La décision est à l'utilisateur, et elle n'est écrite nulle part aujourd'hui** —
+ni SPEC ni CAHIER-DES-CHARGES ne nomment d'hébergeur. Deux options, et les questions
+qui les séparent se lisent le jour de la décision, sur la page des offres et non de
+mémoire : ce que l'offre gratuite plafonne (taille de base, Storage, transfert), **ce
+qu'elle fait d'un projet inactif**, si elle sauvegarde quoi que ce soit, et quelle
+version de PostgREST et de `storage-api` elle déploie. Un auto-hébergement répond
+« vous » à chacune de ces questions, ce qui est un coût de temps, pas un coût
+d'argent.
+
+**Critères d'acceptation**
+- [ ] L'arbitrage est écrit dans `docs/SPEC.md` § 2, avec sa raison **et ses
+      limites** — un choix d'hébergement est une décision d'architecture, pas un
+      détail d'exploitation
+- [ ] Les 34 migrations appliquées **depuis zéro** sur la base hébergée, la sortie lue
+- [ ] `npm run schema:doc` exécuté contre la base hébergée : **diff vide** — le
+      catalogue en ligne est celui des migrations, et c'est la seule façon de le
+      savoir
+- [ ] `supabase/tests/timezone.test.ts` avec `SUPABASE_DB_URL` sur la base hébergée :
+      la `tzdata` du serveur n'est pas forcément celle du stack local, et c'est
+      Postgres qui est la référence (ferme la ligne E0-06 de `PENDING-CHECKS`)
+- [ ] `supabase/tests/refusal-status.test.ts` contre l'API hébergée : la table de
+      correspondance appartient à **la** version de PostgREST déployée là, pas à
+      celle que le CLI épingle. Un refus rendu en 5xx bloquerait la file d'E9
+- [ ] `create-tenant` et `create-user` déployées, et **appelées une fois chacune** sur
+      l'hébergé — une fonction déployée n'est pas une fonction qui répond
+- [ ] Le compartiment `product-photo` existe, **privé**, et la version de
+      `storage-api` est notée : c'est le piège `42P10` de `CLAUDE.md`, et il se
+      manifeste comme une policy cassée
+- [ ] Les trois commerces créés, un patron par commerce, et le préfixe du premier
+      appareil relu — `A` attendu
+- [ ] Aucune clé `service_role` hors du serveur : ni dans un workflow qui construit
+      l'APK, ni dans un `.env` versionné
+- [ ] L'URL et la clé `anon` de l'hébergé notées là où le workflow d'E12-07 les lira
+
+**Notes** — Le stack local reste la machine de développement ; l'hébergé n'est que
+pour les pilotes. Garder les deux `.env` distincts, et remettre `.env.local` sur
+`http://127.0.0.1:54521` après tout essai (`CLAUDE.md`).
+
+---
+
+### E12-02 — Sauvegarde nocturne hors de l'hébergeur, et restauration éprouvée
+**Étape 5 bis** · dépend de E12-01
+
+**En tant que** éditeur, **je veux** une copie des données des trois commerces
+ailleurs que chez l'hébergeur, **afin qu'**un compte suspendu ou une erreur de ma
+main ne coûte pas le travail de trois commerçants.
+
+**La sauvegarde n'est pas la propriété recherchée ; la restauration l'est.** Une
+sauvegarde dont personne n'a jamais relu le contenu est une case cochée, pas une
+garantie.
+
+**Critères d'acceptation**
+- [ ] Un vidage complet — schéma **et** données, objets `product-photo` compris —
+      pris chaque nuit, par un mécanisme qui tourne **sans que mon PC soit allumé**
+- [ ] La destination est **hors de l'hébergeur** : un incident de compte ne doit pas
+      emporter la copie avec l'original
+- [ ] Le vidage est chiffré au repos, et la clé n'est pas rangée avec lui
+- [ ] Au moins sept nuits conservées : un dégât constaté le lundi peut dater du jeudi
+- [ ] **Une restauration réellement faite**, sur une base vierge, et jugée sur des
+      lignes relues — un commerce, ses produits, ses mouvements de stock, ses
+      documents et leurs lignes, comparés aux comptes de l'origine. Pas sur l'absence
+      d'erreur du restaurateur
+- [ ] `npm run schema:doc` contre la base restaurée : diff vide
+- [ ] **Un échec de sauvegarde est visible** — un job rouge, un courriel, quelque
+      chose. Une sauvegarde qui a cessé de tourner en silence n'existe pas, et c'est
+      le mode de panne normal de ce genre de tâche
+- [ ] La date de la restauration éprouvée est écrite dans cette story, avec les
+      comptes de lignes lus
+
+---
+
+### E12-03 — Console distante branchée sur la WebView
+**Étape 5 bis** · dépend de E5-01
+
+**En tant que** développeur, **je veux** lire la console de la WebView de l'APK sur
+un appareil réel, **afin de** diagnostiquer au lieu de deviner.
+
+**C'est l'outil des deux stories suivantes**, et de tout défaut constaté au comptoir
+chez un commerçant. `PENDING-CHECKS` le dit déjà pour la photo : « à faire avec la
+console distante branchée sur la WebView, sans quoi on devine ».
+
+**Critères d'acceptation**
+- [ ] `chrome://inspect` sur le PC voit la WebView de l'APK installé, par USB
+- [ ] **La prise est éprouvée avant de s'en servir** : un `console.error` volontaire
+      apparaît bien, et une requête réseau est lisible avec son statut
+- [ ] L'APK inspecté porte **le même code web** que celui des pilotes — si seule la
+      variante debug est inspectable, c'est écrit noir sur blanc, parce qu'un
+      diagnostic fait sur un autre bundle ne conclut sur rien
+- [ ] La procédure est notée en quatre lignes dans cette story : options
+      développeur, débogage USB, autorisation de l'empreinte, et l'adresse à ouvrir.
+      Elle sera refaite dans six mois, de mémoire, sans ces quatre lignes
+
+---
+
+### E12-04 — La photo d'un produit, diagnostiquée puis corrigée
+**Étape 5 bis** · dépend de E12-03, E12-01
+
+**En tant que** commerçant, **je veux** voir la photo du produit que je viens de
+prendre, **afin de** reconnaître une référence sans lire son nom.
+
+**Défaut constaté sur l'APK d'essai le 2026-10-22, jamais diagnostiqué.** Ce qui est
+déjà **établi** en regardant le stack, et qui épargne le faux départ : la photo a
+bien été **envoyée** (`product-photo`, `<id produit>/<uuid>.jpg`, 45 163 octets,
+`image/jpeg`, 17:39) ; et la piste « URL signée bâtie sur `127.0.0.1` » **ne tient
+pas** — l'API Storage rend un chemin relatif et `supabase-js` le préfixe par l'URL
+du client, donc par celle gravée au build. Le contenu mixte est douteux aussi : les
+appels XHR en clair passaient, et une image est du contenu mixte *passif*.
+
+**Critères d'acceptation**
+- [ ] **La cause est nommée en une phrase, avant toute correction** — lue dans la
+      console sur l'appareil, pas déduite du code
+- [ ] Ce que `signedPhotoUrls()` reçoit réellement sur l'appareil est lu : elle avale
+      ses erreurs par construction et rend la vignette de remplacement en silence
+      (SPEC § 2.6), ce qui est précisément ce qui a rendu ce défaut muet
+- [ ] Le `photo_url` de la ligne `product` est relu en base
+- [ ] Si le passage en HTTPS de l'hébergé (E12-01) suffit à faire disparaître le
+      défaut, **c'est dit, et le diagnostic est quand même terminé** : un défaut qui
+      s'en va sans qu'on sache pourquoi revient
+- [ ] La correction porte un test qui tombe si elle part — ou, si la cause n'est pas
+      atteignable en jsdom, une ligne dans `PENDING-CHECKS` qui dit sur quoi elle se
+      lit
+- [ ] L'échec, s'il se reproduit, **laisse une trace** : la vignette reste muette à
+      l'écran (SPEC § 2.6), mais plus dans la console
+- [ ] Vérifié sur le téléphone, contre la base hébergée : photo prise, vignette
+      affichée, puis réaffichée après redémarrage de l'application
+
+---
+
+### E12-05 — Le scan de code-barres, diagnostiqué puis corrigé
+**Étape 5 bis** · dépend de E12-03
+
+**En tant que** vendeur, **je veux** scanner un code-barres pour trouver un produit,
+**afin de** ne pas le chercher au clavier avec une main occupée.
+
+**Second défaut du 2026-10-22 : le bouton disparaît au toucher, sans ouvrir la
+caméra.** Le comportement est cohérent avec le code — le bouton ne s'affiche que si
+`BarcodeDetector` existe, et `getUserMedia` n'est appelé qu'à l'appui
+(`src/lib/barcode/`). Donc le détecteur est là et c'est la caméra qui est refusée.
+Trois choses à vérifier **dans cet ordre**, sans décider d'avance laquelle est la
+cause : le manifeste principal ne déclare que `INTERNET`, donc **aucune permission
+caméra** ; la permission à l'exécution n'est peut-être jamais demandée ; et la
+WebView empaquetée doit encore accorder la demande de permission que la page émet.
+
+**Critères d'acceptation**
+- [ ] La cause est nommée, lue dans la console et dans `logcat`, avant correction
+- [ ] `android.permission.CAMERA` déclarée dans le manifeste principal si c'est bien
+      elle qui manque — et le manifeste **fusionné de l'APK** relu, pas seulement le
+      fichier du dépôt
+- [ ] La permission à l'exécution est demandée, et un **refus** de l'utilisateur
+      donne un message, pas un bouton qui disparaît
+- [ ] La présence de `BarcodeDetector` dans la WebView empaquetée est **confirmée
+      dans la console**, et non déduite de l'affichage du bouton : rien ne la garantit
+      hors de Chrome
+- [ ] S'il est absent sur une WebView de tablette bon marché, le repli est **décidé
+      et noté** — plugin natif, ou saisie du code au clavier — et non codé en douce :
+      c'est une dépendance de plus dans l'enveloppe
+- [ ] Un vrai code-barres d'un produit du catalogue est lu sur l'appareil, et ouvre
+      la bonne fiche
+- [ ] Un test tombe si le bouton se montre sans que le chemin caméra existe
+
+---
+
+### E12-06 — Partage natif du PDF, et WhatsApp au bout
+**Étape 5 bis** · dépend de E5-03
+
+**En tant que** commerçant, **je veux** envoyer le bon en PDF par WhatsApp,
+**afin que** le client l'ait sans papier.
+
+**Rien de ce chemin n'est mesuré autrement que sur des doublons**
+(`PENDING-CHECKS`, E5-03), et deux plugins s'ajoutent à l'enveloppe —
+`@capacitor/share` et `@capacitor/filesystem` — donc un APK à reconstruire.
+
+**Critères d'acceptation**
+- [ ] Les deux plugins ajoutés et **épinglés**, leur pair `@capacitor/core` vérifié
+      compatible avec Capacitor 8.5.3 — même question que pour
+      `capacitor-tcp-socket`, dont le pair annonçait `>= 7` et qui tenait
+- [ ] L'écriture du PDF dans le cache de l'application, mesurée sur l'appareil
+- [ ] Le sélecteur natif s'ouvre
+- [ ] **WhatsApp accepte le fichier et l'envoie**, sous le nom du document
+      (`BL-A-26-00001.pdf`), lisible chez le destinataire
+- [ ] Une **annulation** du sélecteur dit bien « Share canceled » sur cette version
+      du plugin : c'est la seule prise qui distingue un geste volontaire d'un échec,
+      et l'écran ne doit pas annoncer un partage qui n'a pas eu lieu
+- [ ] Un test tient le nom de fichier et le traitement de l'annulation, doublures
+      comprises — le reste se lit sur l'appareil
+
+---
+
+### E12-07 — APK des pilotes, signé, sans clair ni contenu mixte
+**Étape 5 bis** · dépend de E12-01, E12-04, E12-05, E12-06
+
+**En tant que** éditeur, **je veux** un APK que je peux laisser sur la tablette d'un
+commerçant, **afin de** ne pas lui installer une variante de debug dirigée sur mon
+PC.
+
+**L'APK du 2026-10-22 est un APK d'essai, et il l'est par trois fois** : variante
+debug (`android/app/src/debug/AndroidManifest.xml` autorise le trafic en clair),
+`MERX_TEST_CLEARTEXT=1` posant `allowMixedContent`, et une `VITE_SUPABASE_URL` en
+`http://` sur l'IP d'un PC. Aucune des trois n'a sa place chez un commerçant.
+
+**Critères d'acceptation**
+- [ ] Un workflow distinct construit un `assembleRelease` : la variante debug n'est
+      pas emportée, et `MERX_TEST_CLEARTEXT` n'est pas posée
+- [ ] `allowMixedContent` **faux ou absent** — vérifié dans le
+      `capacitor.config.json` **extrait de l'APK produit**, pas dans le dépôt
+- [ ] `usesCleartextTraffic` absent du **manifeste fusionné de l'APK**
+- [ ] `VITE_SUPABASE_URL` en `https://` ; le workflow **refuse** une adresse en
+      `http://`, comme celui d'essai refuse déjà `127.0.0.1`
+- [ ] Clé de signature de publication engendrée une fois, hors du dépôt, avec **une
+      copie de secours hors ligne** : une clé perdue, c'est l'impossibilité de mettre
+      à jour les tablettes des pilotes — il faut désinstaller, donc effacer
+- [ ] `versionCode` et `versionName` montent à chaque APK distribué, sinon Android
+      refuse l'installation par-dessus le précédent
+- [ ] Clé `anon` seulement dans le bundle, vérifié en cherchant `service_role` dans
+      l'APK décompressé
+- [ ] L'APK installé sur un appareil **neuf**, **mon PC éteint** : connexion,
+      création d'un produit, vente, impression, PDF. C'est le seul test qui dit que
+      l'APK ne dépend plus de la machine de développement
+
+---
+
+### E12-08 — Distribution et mise à jour de l'APK, tranchées
+**Étape 5 bis** · dépend de E12-07
+
+**En tant que** éditeur, **je veux** savoir comment un correctif arrive sur les trois
+tablettes, **afin de** ne pas découvrir pendant la visite que chaque correctif est un
+déplacement.
+
+**À trancher avant l'arrêt terrain, pas à l'étape 10** (`PENDING-CHECKS`). Les assets
+sont empaquetés dans l'APK : la mise à jour automatique de la PWA ne joue plus.
+
+**Critères d'acceptation**
+- [ ] L'arbitrage est écrit dans `docs/SPEC.md` § 2.7 : installation manuelle (APK
+      transmis, « sources inconnues » à autoriser sur chaque tablette) ou Play Store
+      (compte éditeur, revue, délai) — avec ce que chacune coûte le jour d'un
+      correctif urgent
+- [ ] Décidé aussi : si une mise à jour des **seuls assets web** mérite un mécanisme
+      (Capgo et consorts), ou si l'APK suffit pour trois commerces. Trois tablettes
+      ne justifient pas forcément une infrastructure
+- [ ] Une procédure d'installation d'**une page**, en français, qu'un commerçant suit
+      seul au téléphone
+- [ ] **Le chemin de mise à jour est éprouvé une fois** : APK n+1 posé par-dessus n,
+      sans perte des données locales ni déconnexion. Une signature différente entre
+      les deux fait échouer l'installation, et c'est le moment de le découvrir
+- [ ] Le temps réel d'un correctif pendant la visite est estimé, et dit : c'est lui
+      qui décide de ce qu'on corrige sur place et de ce qu'on note
+
+---
+
+### E12-09 — L'imprimante réelle
+**Étape 5 bis** · dépend de E5-01, E5-02
+
+**En tant que** commerçant, **je veux** que le ticket sorte sur l'imprimante que
+j'achète au souk, **afin de** remettre un papier au client.
+
+**Le plan est au § 8 de `docs/research/E5-02-arabe-thermique.md`, et il se fait en
+une fois** : l'imprimante est louée ou empruntée, et on ne la rend pas avant d'avoir
+tout mesuré. C'est la seule story de cette épique qui demande du matériel qu'on n'a
+pas. Elle ferme les critères non cochés d'E5-01 et **toute** E5-02.
+
+**Critères d'acceptation**
+- [ ] La **largeur de tête réelle** — 576 ou 512 ? — et le réglage `printer_width`
+      posé en conséquence pour chaque pilote
+- [ ] **`GS v 0` accepté**, et sinon `ESC *` puis `ESC b` essayés avant de renoncer à
+      l'image
+- [ ] La **netteté** au corps retenu (24 points de corps courant, seuil fixe à 160) :
+      aucun écran ne permet de régler cela, et la valeur retenue est notée
+- [ ] Le **débit** d'un ticket de 60 lignes sur Wi-Fi, et ce qui se passe au-delà
+      (troncature ?)
+- [ ] **Au moins deux marques**, dont la moins chère trouvée sur place : c'est celle
+      que les commerçants achèteront
+- [ ] E5-02 : **liaison** des lettres arabes, **sens** droite-à-gauche, et arabe +
+      chiffres latins sur la même ligne sans casse — sur papier, pas en émulation
+- [ ] Les critères d'E5-01 et d'E5-02 sont cochés, ou un défaut est ouvert et nommé
+
+---
+
+### E12-10 — Le PDF à l'œil, et dans un lecteur ordinaire
+**Étape 5 bis** · dépend de E5-03
+
+**En tant que** commerçant, **je veux** un PDF lisible sur un téléphone et ouvrable
+partout, **afin que** le client n'ait rien à faire pour le lire.
+
+**Ne demande qu'un téléphone**, et peut se faire tout de suite : `npm run pdf:measure`
+écrit déjà les PDF et leurs PNG d'aperçu dans `.pdf-measure/`. La suite tient le
+plancher de corps (24 points, soit 16 px page ajustée à la largeur) ; elle ne tient
+pas ce que l'œil voit à bout de bras, en plein soleil. Et le fichier est **écrit à
+la main, sans bibliothèque** : `pdf.test.ts` relit la table `xref` offset par
+offset, mais **aucun lecteur tiers ne l'a ouvert** — il n'y a ni poppler ni
+visionneuse sur la machine de développement.
+
+**Critères d'acceptation**
+- [ ] Les PDF de `.pdf-measure/` ouverts **sur un écran de téléphone**, et le critère
+      « lisible sans zoomer » tranché là, pas en jsdom
+- [ ] Le **facteur de rendu** retenu (2, soit 71 Ko la page) jugé : assez net, ou à
+      monter — et le poids accepté
+- [ ] Le **total à 60 points** jugé lisible ; sinon la valeur est changée dans
+      `BRAND-UI.md` et le rendu refait
+- [ ] **Cinq lignes par page** : bon compromis, ou place à rendre en descendant le
+      total — un bon de dix lignes qui sort sur trois pages n'est pas acceptable
+- [ ] Le fichier ouvert dans **Acrobat**, dans **Chrome**, et dans ce que **WhatsApp
+      propose sur Android** : trois lecteurs, aucune indulgence attendue pour un
+      `xref` écrit à la main
+- [ ] Tout écart de rendu est noté avec le lecteur qui le montre ; toute valeur
+      changée part dans `BRAND-UI.md`, jamais dans le code seul
+
+---
+
+### E12-11 — La ligne « Heure du Maroc » lue sur l'appareil
+**Étape 5 bis** · dépend de E0-06
+
+**En tant que** développeur, **je veux** savoir ce que la WebView de la tablette
+croit de l'heure du Maroc, **afin de** ne pas découvrir un décalage d'une heure sur
+un numéro de bon.
+
+**Ne demande qu'un téléphone**, et l'APK du 2026-10-22 suffit : la ligne existe déjà
+dans les Paramètres. C'est la mesure que la session d'E0-06 n'a pas pu faire, faute
+de console distante — mais celle-ci **se lit à l'écran**, pas dans la console. Merx
+ne dépend plus de la table du moteur (SPEC § 4, RÈGLE du décalage du Maroc) : cette
+lecture ne décide plus rien, elle renseigne.
+
+**Critères d'acceptation**
+- [ ] La ligne lue sur un **Android bon marché**, et les trois instants recopiés tels
+      qu'affichés
+- [ ] **Attendu** : les deux premières lignes d'accord, la troisième (octobre 2026) en
+      désaccord — le moteur à 12:00 et Merx à 13:00
+- [ ] Si les trois sont d'accord : noté, et rien ne change
+- [ ] **Si la première est en désaccord**, la WebView est en retard d'un régime
+      entier : écrit dans `PENDING-CHECKS`, et à regarder avant l'étape 10, où les
+      numéros de documents sont engendrés hors ligne pendant sept jours
+
+---
+
+### E12-12 — Le carnet du comptoir : l'œil, la main, le chronomètre
+**Étape 5 bis** · dépend de E4-03, E4-07, E5-01, E11-04
+
+**En tant que** éditeur, **je veux** avoir jugé l'application debout, une main
+occupée, avant de la montrer à un commerçant, **afin de** ne pas apprendre devant
+lui ce que j'aurais pu voir seul.
+
+**Ne demande qu'un téléphone**, et rassemble toutes les lignes « à regarder à l'œil »
+de `PENDING-CHECKS`, qui viennent de quatre stories différentes. jsdom ne les atteint
+pas : ce que la suite tient est le **budget de gestes** — 31 taps pour dix lignes à
+quantités réelles, asserté dans `SaleScreen.test.tsx` — pas le temps, qui dépend du
+clavier, du réseau et de la main.
+
+**Critères d'acceptation**
+- [ ] **Un bon de 10 lignes en moins de 90 secondes**, debout, au comptoir, d'une
+      seule main, sur un vrai Android d'entrée de gamme — chronométré, le chiffre
+      écrit, le modèle de tablette noté. C'est le point de rupture n° 2 de SPEC § 10
+- [ ] Le bouton **« Imprimer le ticket »** sous le pouce en bas du détail, et le temps
+      réellement ajouté à une vente
+- [ ] Les deux écrans d'E4-07 sur une tablette réelle, **en arabe** (`dir="rtl"`) :
+      la ligne de liste sans chevron, et le marquage d'un document annulé — le mot, le
+      cadre, le montant barré — **en plein soleil**
+- [ ] La cible de « Documents » sur l'Accueil, au pouce
+- [ ] La barre d'onglets et les retours parcourus route par route, en LTR **et** en
+      RTL, dont le retournement du chevron (E11-04)
+- [ ] **Chaque observation est écrite le jour même**, avec le modèle d'appareil. Un
+      carnet rempli de mémoire une semaine plus tard ne vaut rien, et c'est ce qui
+      arrive par défaut
+- [ ] Les critères correspondants d'E4-03, E4-07, E5-01 et E11-04 sont cochés, ou
+      ouverts avec leur défaut nommé
+
+---
+
+### E12-13 — PowerSync dans la WebView : essai court et jetable
+**Étape 5 bis** · dépend de E12-03
+
+**En tant que** éditeur, **je veux** savoir si le SDK web de PowerSync tient dans une
+WebView Android, **afin de** ne pas découvrir une décision d'architecture le jour où
+E9 ouvre.
+
+**Hors du chemin critique de l'arrêt terrain**, et dans cette épique pour une seule
+raison : c'est le moment où un APK est sur le banc et où la console distante est
+branchée. `PENDING-CHECKS` l'appelle « le risque le plus grave de ce fichier » — tout
+le hors-ligne en dépend (SPEC § 2.5, E9), et le SDK s'appuie sur OPFS et `wa-sqlite`,
+dont la prise en charge dans la WebView empaquetée n'est pas celle de Chrome.
+
+**Critères d'acceptation**
+- [ ] OPFS et `wa-sqlite` disponibles — **lu dans la console sur l'appareil**, pas
+      déduit de la version de la WebView
+- [ ] Une base locale ouverte, **une écriture, et une relecture après redémarrage
+      complet de l'application** : c'est la seule des trois qui dit que le stockage
+      est persistant et non un cache que le système reprend
+- [ ] **Si ça ne tient pas** : les deux options — SDK React Native de PowerSync, ou
+      plugin SQLite natif — écrites avec leur coût, et la décision **portée en
+      E9-01**. Elle ne se prend pas ici, et surtout pas le jour d'E9
+- [ ] **L'essai est jetable** : rien n'en reste dans `src/`. E9 n'est pas commencée,
+      et une story de l'étape 10 ne se construit pas par anticipation
 
 ---
 
