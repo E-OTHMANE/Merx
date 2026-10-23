@@ -7,6 +7,88 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
 
 ## Ouvertes
 
+### Depuis E5-03 — le PDF A4
+
+- [ ] **Le PDF sur un vrai téléphone.** `npm run pdf:measure` écrit des PDF et
+      des PNG d'aperçu dans `.pdf-measure/` — c'est ce qu'il faut **ouvrir sur
+      un écran de téléphone**, puisque c'est là que le critère « lisible sans
+      zoomer » se tranche. La suite tient le plancher de corps (24 points, soit
+      16 px une fois la page ajustée à la largeur) ; elle ne tient pas ce que
+      l'œil voit à bout de bras, en plein soleil. À juger : le facteur de rendu
+      retenu (2, soit 71 Ko pour une page), la lisibilité du total à 60 points,
+      et si cinq lignes par page est le bon compromis ou s'il faut rendre de la
+      place en descendant le total.
+- [ ] **Le sélecteur de partage natif, et WhatsApp au bout.** Deux plugins
+      s'ajoutent à l'enveloppe — `@capacitor/share` et `@capacitor/filesystem` —
+      donc **un APK à reconstruire**. Rien de ce chemin n'est mesuré autrement
+      que sur des doublons : l'écriture dans le cache de l'application,
+      l'ouverture du sélecteur, et le fait que WhatsApp accepte le fichier et
+      l'envoie sous son nom. À vérifier aussi : qu'une annulation du sélecteur
+      dit bien « Share canceled » sur cette version du plugin — c'est la seule
+      prise qu'il donne pour distinguer un geste volontaire d'un échec.
+- [ ] **Qu'un lecteur de PDF ordinaire ouvre le fichier.** Il est écrit à la
+      main, sans bibliothèque ; `pdf.test.ts` relit la table `xref` offset par
+      offset, et les fichiers de `.pdf-measure/` ont été produits par le vrai
+      chemin — mais **aucun lecteur tiers ne les a ouverts** : il n'y a ni
+      poppler ni visionneuse sur cette machine. À ouvrir dans Acrobat, dans
+      Chrome, et dans ce que WhatsApp propose sur Android.
+
+### Depuis E5-03 — l'état du stack, à refaire avant toute mesure
+
+- [ ] **Docker Desktop a perdu son montage du disque `D:`, et le conteneur
+      `supabase_edge_runtime_Merx` est resté arrêté.** Constaté le 2026-10-23,
+      après que le disque externe a été débranché puis rebranché en cours de
+      session. Signature exacte, lue dans les logs :
+
+          mkdir /run/desktop/mnt/host/d: file exists
+          Error reading config file 'file:///Merx/supabase/functions/.../deno.json'.:
+          No such device (os error 19)
+
+      Conséquence : **26 rouges** dans `tenant-creation.test.ts` et
+      `user-management.test.ts`, tous `expected 503 to be 201`, sur la suite
+      complète du 2026-10-23 (88 fichiers, 2 081 tests, 2 055 verts, 656 s).
+      Aucun ne touche un fichier d'E5-03.
+
+      `npx supabase stop && start` ne répare pas cela, et `docker restart` non
+      plus — il a laissé le conteneur arrêté. **Seul un redémarrage de Docker
+      Desktop le répare, et c'est la main de l'utilisateur.** Ensuite :
+      redémarrer le conteneur Edge, attendre `pg_isready`, puis rejouer la suite
+      complète — c'est elle qui clora vraiment E5-03.
+
+### Depuis E5-03, et qui ne lui appartient pas — le fuseau horaire
+
+- [ ] **Chrome et Node ne sont pas d'accord sur `Africa/Casablanca` à partir
+      d'octobre 2026, et cela touche tous les écrans.** Mesuré le 2026-10-23,
+      même machine, même instant :
+
+      | instant UTC | Node 24 | Chrome (ICU embarquée) |
+      |---|---|---|
+      | 2024-06-15 12:00 | 13:00 | 13:00 |
+      | 2025-10-20 12:00 | 13:00 | 13:00 |
+      | 2026-03-01 12:00 | 12:00 | 12:00 |
+      | **2026-10-20 12:00** | **13:00** | **12:00** |
+
+      Les deux moteurs s'accordent jusqu'au Ramadan 2026 puis divergent : Chrome
+      laisse le Maroc à UTC+0 après cette date, Node le ramène à UTC+1. Le Maroc
+      est à UTC+1 en permanence depuis 2018, sauf pendant le Ramadan : **c'est
+      Node qui a raison**, et l'ICU de ce Chrome qui est en retard.
+
+      Ce que cela coûte, et pourquoi ce n'est pas une curiosité : `src/lib/dates.ts`
+      impose le fuseau à la main (§ 4) précisément pour ne pas dépendre de
+      l'horloge de la tablette — mais il dépend encore de **la table des fuseaux
+      du moteur**, qui sur un Android bon marché peut être plus vieille encore.
+      Trois conséquences possibles : toutes les dates affichées décalées d'une
+      heure, la date du nom de fichier du PDF décalée d'un jour à la frontière,
+      et surtout **l'année du numéro de document** (RÈGLE M3-2, calculée en
+      `Africa/Casablanca` par l'appareil **et** par le garde de la base) : un bon
+      émis le 31 décembre à 23 h 30 sur un appareil à UTC+0 porterait une année
+      que le serveur refuserait en `22023`.
+
+      **À faire** : mesurer la même table dans la WebView de l'APK (console
+      distante), puis décider — vivre avec, ou cesser de dépendre de la table du
+      moteur. C'est une décision d'architecture, pas une correction : elle ne se
+      prend pas dans une story d'impression. **Rien n'a été changé.**
+
 ### Depuis E5-01 — l'enveloppe Capacitor et le ticket
 
 Rien de ce qui suit n'est mesurable par la suite : il y faut une vraie

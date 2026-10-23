@@ -17,15 +17,44 @@
  */
 
 import { encodeTicket } from '@/lib/printing/escpos'
-import { renderTicket } from '@/lib/printing/canvas'
+import { renderDocumentPages, renderTicket, type RenderPagesOptions } from '@/lib/printing/canvas'
+import { PAGE_HEIGHT, PAGE_WIDTH, type PageDocument } from '@/lib/printing/page'
+import { buildPdf, type Compressor } from '@/lib/printing/pdf'
+import type { Gray } from '@/lib/printing/raster'
 import { nativeTransport, type PrinterTransport } from '@/lib/printing/transport'
 import type { Raster } from '@/lib/printing/escpos'
 import type { Ticket } from '@/lib/printing/ticket'
 
 export { encodeTicket, feedAndCut, rasterBand, ticketCommands, toBase64 } from '@/lib/printing/escpos'
-export { BLACK_THRESHOLD, rasterize } from '@/lib/printing/raster'
+export { BLACK_THRESHOLD, grayscale, rasterize } from '@/lib/printing/raster'
 export { TICKET_FONT_FAMILY, layoutTicket, wrapText } from '@/lib/printing/ticket'
-export { TICKET_FONT_SPECS, loadTicketFonts, paint, renderTicket } from '@/lib/printing/canvas'
+export {
+  PAGE_SCALE,
+  TICKET_FONT_SPECS,
+  loadFonts,
+  loadTicketFonts,
+  paint,
+  renderDocumentPages,
+  renderTicket,
+} from '@/lib/printing/canvas'
+export {
+  MIN_PAGE_SIZE,
+  PAGE_BODY_SIZE,
+  PAGE_FONT_SPECS,
+  PAGE_HEIGHT,
+  PAGE_WIDTH,
+  layoutDocumentPages,
+  pageFont,
+} from '@/lib/printing/page'
+export { browserCompressor, buildPdf } from '@/lib/printing/pdf'
+export {
+  SHARE_MESSAGES,
+  downloadSharing,
+  nativeSharing,
+  pdfFileName,
+  pdfSharing,
+  webSharing,
+} from '@/lib/printing/share'
 export {
   BATCH_PAUSE_MS,
   CONNECT_TIMEOUT_MS,
@@ -34,7 +63,25 @@ export {
   socketTransport,
 } from '@/lib/printing/transport'
 export type { Raster } from '@/lib/printing/escpos'
-export type { Pixels } from '@/lib/printing/raster'
+export type { Gray, Pixels } from '@/lib/printing/raster'
+export type { RenderPagesOptions } from '@/lib/printing/canvas'
+export type {
+  PageAlign,
+  PageDocument,
+  PageLine,
+  PageOp,
+  PageOptions,
+  PdfPages,
+} from '@/lib/printing/page'
+export type { Compressor, PdfOptions } from '@/lib/printing/pdf'
+export type {
+  FilesystemLike,
+  NavigatorShareLike,
+  PdfFile,
+  PdfSharing,
+  ShareLike,
+  ShareOutcome,
+} from '@/lib/printing/share'
 export type {
   Measure,
   Ticket,
@@ -122,4 +169,33 @@ export async function printTicket(
   const raster = await render(ticket, setup.width)
 
   await transport.send(setup.host, setup.port, encodeTicket(raster))
+}
+
+/** De quoi remplacer le rendu et la compression dans un test ou une mesure. */
+export interface PdfDeps {
+  render?: (doc: PageDocument, options?: RenderPagesOptions) => Promise<Gray[]>
+  compress?: Compressor | null
+  scale?: number
+}
+
+/**
+ * Le PDF d'un document, engendré **sur l'appareil**.
+ *
+ * Aucun appel réseau : les octets sortent du canvas et de `buildPdf()`. C'est
+ * le critère « généré localement, sans appel serveur » de la story, et c'est
+ * aussi ce qui le rend utilisable quand l'imprimante est absente ou en panne
+ * (SPEC § 2.7).
+ */
+export async function buildDocumentPdf(
+  doc: PageDocument,
+  deps: PdfDeps = {},
+): Promise<Uint8Array<ArrayBuffer>> {
+  const render = deps.render ?? renderDocumentPages
+  const pages = await render(doc, deps.scale === undefined ? {} : { scale: deps.scale })
+
+  return buildPdf(pages, {
+    width: PAGE_WIDTH,
+    height: PAGE_HEIGHT,
+    ...(deps.compress === undefined ? {} : { compress: deps.compress }),
+  })
 }

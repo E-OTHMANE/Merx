@@ -75,3 +75,52 @@ export function rasterize(pixels: Pixels, threshold = BLACK_THRESHOLD): Raster {
 
   return { width, height, dots }
 }
+
+/**
+ * Une page en niveaux de gris : un octet par point, ligne par ligne.
+ *
+ * `Uint8Array<ArrayBuffer>` et non `Uint8Array` : un tableau adosse a un
+ * `SharedArrayBuffer` n'est pas acceptable par un flux de compression, et le
+ * type generique est ce qui le dit a la compilation plutot qu'a l'execution.
+ */
+export interface Gray {
+  width: number
+  height: number
+  /** 0 = noir, 255 = blanc. */
+  levels: Uint8Array<ArrayBuffer>
+}
+
+/**
+ * La même image, mais en gris 8 bits — ce que le PDF A4 incorpore (E5-03).
+ *
+ * Pourquoi pas `rasterize()` : une tête thermique n'a pas de gris, un écran si.
+ * Un corps de 24 points seuillé en 1 bit sort crénelé sur un téléphone, là où
+ * l'anticrénelage du navigateur est précisément ce qui rend le texte lisible
+ * sans zoomer. Le seuil est le bon outil pour le rouleau, pas pour le PDF.
+ *
+ * Le transparent est du papier, **et c'est le même garde que `rasterize()`** :
+ * un canvas jamais rempli sortirait une page entièrement noire. Sur le rouleau
+ * cela coûte du papier ; dans un PDF cela part chez le client.
+ */
+export function grayscale(pixels: Pixels): Gray {
+  const { width, height, data } = pixels
+
+  if (data.length < width * height * 4) {
+    throw new Error("L'image reçue est plus petite que ses dimensions.")
+  }
+
+  const levels = new Uint8Array(width * height)
+
+  for (let i = 0; i < width * height; i += 1) {
+    const at = i * 4
+    const red = data[at] ?? 0
+    const green = data[at + 1] ?? 0
+    const blue = data[at + 2] ?? 0
+    const alpha = (data[at + 3] ?? 0) / 255
+
+    const ink = 0.299 * red + 0.587 * green + 0.114 * blue
+    levels[i] = Math.round(ink * alpha + 255 * (1 - alpha))
+  }
+
+  return { width, height, levels }
+}

@@ -1,14 +1,18 @@
 /*
- * Le seuillage en 1 bit. E5-01.
+ * Le seuillage en 1 bit (E5-01) et les niveaux de gris (E5-03).
  *
  * Deux choses s'y jouent, et chacune coûte un rouleau de papier quand elle est
  * fausse : l'ordre des bits — un bit inversé imprime le négatif de la ligne —
  * et le sort des points transparents, qui sont du papier et non de l'encre.
+ *
+ * Le second vaut pour les deux chemins, et c'est le pire des deux qu'il tient :
+ * un canvas jamais rempli sortirait une page **entièrement noire**. Sur le
+ * rouleau cela gâche du papier ; dans un PDF cela part chez le client.
  */
 
 import { describe, expect, it } from 'vitest'
 
-import { BLACK_THRESHOLD, rasterize, type Pixels } from '@/lib/printing/raster'
+import { BLACK_THRESHOLD, grayscale, rasterize, type Pixels } from '@/lib/printing/raster'
 
 /** Une image RGBA uniforme, puis retouchée point par point par le test. */
 function pixels(width: number, height: number, fill: [number, number, number, number]): Pixels {
@@ -115,5 +119,65 @@ describe('le seuillage', () => {
     expect(image.width).toBe(576)
     expect(image.height).toBe(32)
     expect(image.dots.length).toBe(72 * 32)
+  })
+})
+
+describe('les niveaux de gris du PDF', () => {
+  /*
+   * Pourquoi un second chemin plutôt que `rasterize()` : un écran a des gris,
+   * une tête thermique non. Un corps de 24 points seuillé en 1 bit sort crénelé
+   * sur un téléphone, là où l'anticrénelage est précisément ce qui le rend
+   * lisible sans zoomer.
+   */
+  it('garde les demi-teintes que le seuil écraserait', () => {
+    const image = pixels(4, 1, WHITE)
+    set(image, 0, 0, 0)
+    set(image, 1, 0, 100)
+    set(image, 2, 0, 200)
+
+    expect([...grayscale(image).levels]).toEqual([0, 100, 200, 255])
+    /* Le seuil, lui, ne connaît que deux états : 100 et 200 tombent de part et d'autre. */
+    expect([...rasterize(pixels(8, 1, WHITE)).dots]).toEqual([0])
+  })
+
+  it('pèse la luminance comme l’œil, non comme la moyenne', () => {
+    const image = pixels(1, 1, [0, 255, 0, 255])
+    /* 0,587 × 255 = 149,7 : le vert est clair, le bleu presque noir. */
+    expect(grayscale(image).levels[0]).toBe(150)
+
+    expect(grayscale(pixels(1, 1, [0, 0, 255, 255])).levels[0]).toBe(29)
+  })
+
+  /*
+   * **Le garde qui compte.** Un canvas neuf est transparent, et un point
+   * transparent n'a pas de luminance : sans composition sur blanc, toute la
+   * page basculerait à 0 — un A4 noir envoyé à un client, et un fichier
+   * beaucoup plus lourd par-dessus.
+   */
+  it('traite le transparent comme du papier', () => {
+    const empty = pixels(8, 4, [0, 0, 0, 0])
+    expect([...grayscale(empty).levels]).toEqual(Array.from({ length: 32 }, () => 255))
+  })
+
+  it('compose un noir à moitié transparent sur le blanc', () => {
+    /* 255 × (1 − 128/255) = 127 : l'opacité se lit sur 255, pas sur 256. */
+    const image = pixels(1, 1, [0, 0, 0, 128])
+    expect(grayscale(image).levels[0]).toBe(127)
+  })
+
+  it('rend un octet par point, aux dimensions reçues', () => {
+    const grey = grayscale(pixels(32, 8, WHITE))
+    expect([grey.width, grey.height, grey.levels.length]).toEqual([32, 8, 256])
+  })
+
+  /* Pas de contrainte de multiple de 8 ici : ce n'est pas une tête d'imprimante. */
+  it('accepte une largeur quelconque', () => {
+    expect(grayscale(pixels(595, 2, WHITE)).levels.length).toBe(1190)
+  })
+
+  it('refuse une image plus petite que ses dimensions', () => {
+    expect(() => grayscale({ width: 16, height: 4, data: new Uint8ClampedArray(16) })).toThrow(
+      /plus petite/,
+    )
   })
 })

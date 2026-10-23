@@ -15,10 +15,13 @@
     "android:sync": "npm run build && cap sync android",
     "android:run": "cap run android",
     "printer:fake": "node scripts/fake-printer.mjs",
+    "pdf:measure": "node scripts/pdf-measure.mjs",
     "dev:account": "node scripts/dev-account.mjs"
   },
   "dependencies": {
     "@capacitor/core": "^8.5.3",
+    "@capacitor/filesystem": "^8.1.5",
+    "@capacitor/share": "^8.0.3",
     "@fontsource/ibm-plex-sans": "^5.3.0",
     "@fontsource/ibm-plex-sans-arabic": "^5.3.0",
     "@supabase/supabase-js": "^2.115.0",

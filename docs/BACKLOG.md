@@ -911,11 +911,144 @@ de texte et se juge sur du papier (E5-02).
 **En tant que** patron, **je veux** envoyer un bon par WhatsApp, **afin de** livrer un client d'une autre ville.
 
 **Critères d'acceptation**
-- [ ] Génération PDF d'un bon, d'un devis, d'un relevé
-- [ ] **Lisible sur un écran de téléphone sans zoomer**
-- [ ] Partage via l'API native de partage de l'appareil
-- [ ] Nom de fichier explicite : `BL-A-0042-2026-09-04.pdf`
-- [ ] Généré localement, sans appel serveur
+- [x] Génération PDF d'un bon, d'un devis — *les quatre types sortent du même générateur, un `sale_document` étant un `sale_document` (§ 8)*
+- [ ] Génération PDF d'un **relevé** — *dépend d'E6-02 : à l'étape 5 il n'existe aucun solde à relever. Voir les notes*
+- [x] **Lisible sur un écran de téléphone sans zoomer**
+- [x] Partage via l'API native de partage de l'appareil — *mesuré sur doublons ; le sélecteur réel demande un APK (`docs/PENDING-CHECKS.md`)*
+- [x] Nom de fichier explicite : `BL-A-26-00042-2026-09-04.pdf` — *critère corrigé, voir les notes*
+- [x] Généré localement, sans appel serveur
+
+**Notes** — `SPEC.md` § 2.7 (RÈGLE du PDF présent partout), § 2.6, § 4, § 8 ; `BRAND-UI.md` § 6 et § 7.
+
+**Le PDF est une image, comme le ticket, et pour la même raison.** Dans un PDF,
+un texte est une suite de codes de glyphes **déjà choisis** : le format n'a pas
+de moteur de mise en forme. Un PDF texte en arabe demanderait de réordonner le
+bidi, de choisir les formes contextuelles, d'appliquer la ligature lam-alef,
+puis d'incorporer et sous-ensembler la police en CID — c'est-à-dire de
+réécrire un moteur de façonnage. Aucune bibliothèque de l'arbre ne le fait
+(`pdf-lib` et `jspdf` incorporent des polices, elles ne façonnent pas), et
+c'est exactement le piège qu'écarte la RÈGLE de § 2.7. Le navigateur façonne,
+le PDF ne transporte que des points : **une seule voie de rendu** pour le
+français et pour l'arabe, et E5-02 tenue par construction ici aussi.
+
+**Ni les octets ni la mise en page du ticket, pourtant.** Le ticket seuille en
+1 bit pour une tête thermique ; un écran a des gris, et un corps de 24 points
+seuillé sort crénelé — la page part donc en **gris 8 bits** (`/DeviceGray`,
+`/FlateDecode`). Et 72 mm en une colonne n'est pas 210 mm : `page.ts` est un
+second metteur en page, qui partage de l'autre `wrapText()`, le type `Measure`
+et le vocabulaire des tracés.
+
+**Aucune dépendance PDF.** Un PDF dont chaque page est une image tient en un
+catalogue, un nœud de pages et trois objets par page ; `jspdf` pèserait 150 ko
+dans l'APK **sans résoudre** ce qui a décidé de la forme. La seule difficulté
+du format est la table `xref` — une liste d'offsets en octets, dont un seul
+faux rend le fichier inouvrable sans message ; `pdf.test.ts` la relit et
+vérifie que chaque offset tombe sur « N 0 obj ».
+
+**L'échelle se dérive, elle ne s'invente pas.** A4 fait 595 points de large,
+un téléphone montre ~390 px de viewport : une page ajustée à la largeur se
+voit à 595/390 = 1,53. Pour qu'un corps paraisse au plancher de BRAND-UI § 6
+(16 px, « plancher absolu pour toute donnée ») il doit faire 24 points. L'échelle
+de BRAND-UI est donc reprise **× 1,5** : 60 / 33 / 27 / 24 / 21 / 20. Deux
+conséquences assumées : la page est **paginée** (cinq lignes par page), et il
+n'y a **pas de tableau à quatre colonnes** — à 24 points les colonnes de
+montants mangent 330 des 547 points utiles, et il resterait quinze caractères
+pour un nom de produit. L'A4 lisible au téléphone a le budget de colonnes d'un
+ticket, pas celui d'une facture de bureau. `page.test.ts` asserte le plancher
+plutôt que de s'en remettre à l'œil.
+
+**La marge est à 24 points (8,5 mm), et c'est la mesure qui l'a décidé.** À 36,
+une page ne tenait que **quatre** lignes : un bon de cinq sortait sur deux
+pages dont la seconde ne portait que le total, et pesait le double sur une
+liaison 3G. Le support premier est un écran ; ce qu'une marge étroite risque
+sur une vraie feuille est de rogner le pied de page, jamais une donnée.
+
+**La résolution, mesurée et non estimée.** La taille dépend des **pixels** que
+le navigateur dessine — l'anticrénelage est ce que `deflate` comprime — et
+jsdom n'a pas de contexte 2D : `npm run pdf:measure` sert donc la page à un
+Chrome sans fenêtre par le serveur Vite et lit le résultat par le protocole
+DevTools. Même famille que `npm run printer:fake`. Mesuré le 2026-10-23 :
+
+| facteur | une page (5 lignes) | deux pages (10 lignes) | arabe, une page |
+|---|---|---|---|
+| 1 | 27,6 Ko | 48,7 Ko | 27,1 Ko |
+| 1,5 | 47,8 Ko | 83,7 Ko | 44,3 Ko |
+| **2** | **70,7 Ko** | **125,0 Ko** | **66,4 Ko** |
+| 3 | 118,0 Ko | 207,9 Ko | 110,6 Ko |
+
+**Retenu : 2.** Un téléphone à 390 px de viewport et densité 3 montre ~1 170
+points physiques en travers, une tablette d'entrée de gamme 1 200 ; A4 rendu à
+2 fait 1 190 points, donc point pour point. À 1,5 l'image est agrandie d'un
+tiers et le corps de 24 perd son anticrénelage ; à 3 le fichier double sans
+que rien ne se voie. 71 Ko reste loin du plafond de 300 Ko que la story s'est
+donné. L'arabe ne coûte rien de plus — les glyphes liés portent moins d'encre
+que le français.
+
+**Le nom de fichier : le critère était faux, il a été corrigé.** Il écrivait
+`BL-A-0042-2026-09-04.pdf` ; ce numéro n'existe pas. E4-02 a arbitré
+`BL-A-26-00042` (RÈGLE M3-2 : code du type, lettre de l'appareil, année sur
+deux chiffres, séquence sur cinq), et le critère lui est antérieur. Inventer un
+second format de numéro pour un nom de fichier aurait été pire que corriger le
+critère. La date est celle d'`issued_at` lue en `Africa/Casablanca`, comme
+l'année du numéro, et en ISO parce qu'un dossier de téléchargements trie par
+nom.
+
+**Trois voies de partage, et le bouton ne disparaît jamais.** L'enveloppe
+Android écrit dans le cache (`@capacitor/filesystem`) et ouvre le sélecteur
+natif (`@capacitor/share`) — la WebView n'implémente pas la Web Share API,
+d'où le plugin ; un navigateur mobile passe par `navigator.share()` avec
+fichier ; partout ailleurs le fichier descend dans les téléchargements.
+Contrairement au ticket, rien à charger pour savoir si l'action s'offre : la
+RÈGLE de § 2.7 veut le PDF présent partout. Même porte que le ticket pour ce
+qui s'exporte — un numéro, et pas annulé : un papier se perd, un fichier se
+transmet encore des mois après.
+
+**Le relevé reste décoché, et c'est une forme, pas un oubli.** Un relevé
+demande `client` (E6-01) et `client_ledger_entry` (E6-02) : à l'étape 5 il n'y
+a aucun solde à relever, et le servir à moitié aurait été construire par
+avance. E6-04 dépend déjà d'E5-03 et porte « export PDF lisible sur téléphone »
+et « partageable en un geste » : **le relevé s'y sert**, par un
+`layoutStatement()` posé à côté de `layoutDocumentPages()`, sur le moteur de
+cette story. Même traitement que le critère de retour d'E4-06, renvoyé ici en
+E6-02.
+
+**Ce que `canvas.ts` reste** : le seul fichier du module sans test. jsdom n'a ni
+contexte 2D ni `ImageData` — vérifié, pas supposé. Ce qui s'y juge se juge sur
+un écran, et les PNG d'aperçu de `npm run pdf:measure` sont là pour ça.
+
+**Sabotages (2 gardes retirés, un par un) :** aucun n'est resté vert. Les
+détails d'interface — libellés, ordre des colonnes, pagination, nom de
+fichier — ont des tests ordinaires et pas de passe de sabotage : ils échouent
+visiblement et ne coûtent rien quand ils cassent.
+
+- **montant de la page passé par un flottant** (`Number(x).toFixed(2)` au lieu
+  de `moneyText()`, aux cinq endroits) — `page.test.ts`, `sales/pdf.test.ts`,
+  `DocumentScreens.test.tsx` : **6 tombent**, toutes dans `page.test.ts`, dont
+  celle qui vise la règle : `imprime les montants en dirhams groupés, depuis le
+  texte stocké` ;
+- **transparent non composé sur le papier** (`grayscale()`) —
+  `raster.test.ts`, `pdf.test.ts` : **2 tombent**, `traite le transparent comme
+  du papier` et `compose un noir à moitié transparent sur le blanc`. Le cas
+  vaut un client : un canvas jamais rempli enverrait une page entièrement
+  noire, et bien plus lourde par-dessus.
+
+**Suite complète, 2026-10-23 : 88 fichiers, 2 081 tests, 2 055 verts, 26 rouges,
+656 s — et les 26 sont l'environnement, pas la story.** Tous dans
+`tenant-creation.test.ts` et `user-management.test.ts`, tous `expected 503 to be
+201` : Docker Desktop avait perdu son montage du disque `D:`, ce que les logs du
+conteneur disent mot pour mot (`mkdir /run/desktop/mnt/host/d: file exists`,
+puis `Error reading config file 'file:///Merx/supabase/functions/create-tenant/deno.json'.:
+No such device (os error 19)`). C'est la panne décrite dans CLAUDE.md, diagnostiquée
+et non supposée ; aucun de ces 26 ne touche un fichier d'E5-03, et `docker restart`
+ne la répare pas — il a laissé le conteneur arrêté. **La suite entièrement verte
+reste donc à obtenir** : `docs/PENDING-CHECKS.md`. `typecheck` et `lint` propres,
+lus sur la sortie des commandes, après la dernière édition ; les 21 fichiers de
+`src/lib/printing` et `src/modules/sales`, 345 tests, verts au même moment.
+
+**Une trouvaille hors périmètre, à ne pas perdre :** Chrome et Node ne sont pas
+d'accord sur le fuseau marocain à partir d'octobre 2026. Voir
+`docs/PENDING-CHECKS.md` — cela touche `src/lib/dates.ts`, donc tous les
+écrans et l'année du numéro de document, pas seulement ce PDF.
 
 ---
 

@@ -17,6 +17,12 @@
  *     brouillon (pas de numéro) ni sur un document annulé : un ticket d'allure
  *     valable pour une vente annulée est une preuve fausse ;
  *
+ *   — « Envoyer en PDF » (E5-03), juste après : c'est le repli quand
+ *     l'imprimante est absente ou en panne, et la seule voie au navigateur
+ *     (SPEC § 2.7). Elle ne dépend d'aucun réglage, donc elle est là partout —
+ *     seule la voie de partage change, sélecteur natif ou téléchargement. Même
+ *     porte que le ticket pour ce qui s'exporte : un numéro, et pas annulé ;
+ *
  *   — « Transformer » → `/sale/from/:documentId` (E4-05), seulement quand la
  *     chaîne le permet ;
  *   — « Retour » → `/sale/return/:documentId` (E4-06), seulement sur un bon de
@@ -56,6 +62,11 @@ import {
   type DocumentDetail,
 } from '@/modules/sales/documents'
 import { documentLineage, type DocumentLineage, type LinkedDocument } from '@/modules/sales/lineage'
+import {
+  PDF_MESSAGES,
+  canExportPdf,
+  exportDocumentPdf,
+} from '@/modules/sales/pdf'
 import {
   TICKET_MESSAGES,
   canPrint,
@@ -109,7 +120,9 @@ export function DocumentDetailScreen() {
   const [failure, setFailure] = useState<string | null>(null)
   const [printer, setPrinter] = useState<TicketPrinter | null>(null)
   const [printing, setPrinting] = useState(false)
-  const [printed, setPrinted] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
+  /* Une seule zone d'état : imprimer puis partager ne cumule pas deux phrases. */
+  const [notice, setNotice] = useState<string | null>(null)
 
   /*
    * L'imprimante est cherchée une fois, en arrière-plan. Un échec de lecture
@@ -192,11 +205,11 @@ export function DocumentDetailScreen() {
   const print = async (detail: DocumentDetail): Promise<void> => {
     if (printing || printer === null) return
     setFailure(null)
-    setPrinted(null)
+    setNotice(null)
     setPrinting(true)
     try {
       await printTicketOn(documentTicket(detail, printer), printer)
-      setPrinted(TICKET_MESSAGES.printed)
+      setNotice(TICKET_MESSAGES.printed)
     } catch {
       /*
        * La phrase est celle de la story : l'échec d'impression ne défait rien,
@@ -206,6 +219,29 @@ export function DocumentDetailScreen() {
       setFailure(TICKET_MESSAGES.failed)
     } finally {
       setPrinting(false)
+    }
+  }
+
+  /*
+   * Le PDF. Il n'y a pas d'imprimante à trouver et rien à désactiver : la
+   * RÈGLE de SPEC § 2.7 veut le PDF présent partout, et c'est la voie de
+   * partage qui change — sélecteur natif dans l'enveloppe, téléchargement au
+   * navigateur. L'écran dit seulement laquelle a servi.
+   */
+  const sendPdf = async (detail: DocumentDetail): Promise<void> => {
+    if (exporting) return
+    setFailure(null)
+    setNotice(null)
+    setExporting(true)
+    try {
+      const outcome = await exportDocumentPdf(detail)
+      if (outcome === 'shared') setNotice(PDF_MESSAGES.shared)
+      if (outcome === 'downloaded') setNotice(PDF_MESSAGES.downloaded)
+      /* `cancelled` : refermer le sélecteur n'est pas un échec, et ne dit rien. */
+    } catch {
+      setFailure(PDF_MESSAGES.failed)
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -269,8 +305,10 @@ export function DocumentDetailScreen() {
             onConfirm={() => void confirmCancellation()}
             printer={printer}
             printing={printing}
-            printed={printed}
+            notice={notice}
             onPrint={() => void print(state.detail)}
+            exporting={exporting}
+            onSendPdf={() => void sendPdf(state.detail)}
           />
         )}
       </div>
@@ -292,8 +330,10 @@ interface ContentProps {
   onConfirm: () => void
   printer: TicketPrinter | null
   printing: boolean
-  printed: string | null
+  notice: string | null
   onPrint: () => void
+  exporting: boolean
+  onSendPdf: () => void
 }
 
 function Content({
@@ -310,8 +350,10 @@ function Content({
   onConfirm,
   printer,
   printing,
-  printed,
+  notice,
   onPrint,
+  exporting,
+  onSendPdf,
 }: ContentProps) {
   const { document, lines } = detail
   const cancelled = document.status === 'cancelled'
@@ -321,6 +363,7 @@ function Content({
   const giveBack = canReturn(document)
   const mayCancel = canCancelRight && canCancel(document)
   const mayPrint = printer !== null && canPrint(document)
+  const mayExport = canExportPdf(document)
 
   return (
     <>
@@ -451,13 +494,13 @@ function Content({
         </p>
       )}
 
-      {printed !== null && (
+      {notice !== null && (
         <p role="status" className="text-body text-paper-700">
-          {printed}
+          {notice}
         </p>
       )}
 
-      {(mayPrint || transform || giveBack || mayCancel) && (
+      {(mayPrint || mayExport || transform || giveBack || mayCancel) && (
         <div className="flex flex-col gap-2">
           {mayPrint && (
             <Button
@@ -467,6 +510,17 @@ function Content({
               className="h-button w-full rounded-button bg-ink-600 text-body text-white hover:bg-ink-700 active:bg-ink-800"
             >
               {printing ? TICKET_MESSAGES.printing : 'Imprimer le ticket'}
+            </Button>
+          )}
+          {mayExport && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={exporting}
+              onClick={onSendPdf}
+              className="h-button w-full rounded-button border border-paper-300 bg-white text-body text-ink-700"
+            >
+              {exporting ? PDF_MESSAGES.working : 'Envoyer en PDF'}
             </Button>
           )}
           {transform && (

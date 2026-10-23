@@ -32,12 +32,25 @@ import { createFakeAuthClient, fakeSession } from '@/test/fakeAuth'
  * dire ici — et l'envoi lui-même. Tout le reste est le vrai code : c'est lui
  * qui construit le ticket, et c'est le ticket qu'on veut voir.
  */
-const printing = vi.hoisted(() => ({ native: false, printTicket: vi.fn() }))
+const printing = vi.hoisted(() => ({
+  native: false,
+  printTicket: vi.fn(),
+  /*
+   * Le PDF (E5-03). Deux remplacements, et pour une raison de plateforme : le
+   * rendu demande un contexte 2D que jsdom n'a pas, et le partage n'irait nulle
+   * part. Ce qui reste du vrai code est ce qui se verifie — la mise en page, le
+   * nom du fichier, et la porte qui decide si l'action s'offre.
+   */
+  buildPdf: vi.fn(),
+  share: vi.fn(),
+}))
 
 vi.mock('@/lib/printing', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/printing')>()),
   thermalPrinting: () => printing.native,
   printTicket: printing.printTicket,
+  buildDocumentPdf: printing.buildPdf,
+  pdfSharing: () => ({ share: printing.share }),
 }))
 
 interface Call {
@@ -137,6 +150,10 @@ beforeEach(() => {
   respondRpc.mockReset()
   respond.mockReturnValue({ data: [], error: null })
   printing.native = false
+  printing.buildPdf.mockReset()
+  printing.buildPdf.mockResolvedValue(new Uint8Array([37, 80, 68, 70]))
+  printing.share.mockReset()
+  printing.share.mockResolvedValue('shared')
   printing.printTicket.mockReset()
   printing.printTicket.mockResolvedValue(undefined)
 })
@@ -747,5 +764,135 @@ describe('l’impression du ticket, depuis le détail', () => {
 
     await screen.findByRole('heading', { level: 1, name: 'Sans numéro' })
     expect(screen.queryByRole('button', { name: 'Imprimer le ticket' })).not.toBeInTheDocument()
+  })
+})
+
+/* ========================================================================== */
+/* Le PDF A4 — E5-03                                                          */
+/* ========================================================================== */
+
+describe('le PDF A4, depuis le détail', () => {
+  /*
+   * La RÈGLE de SPEC § 2.7 : « dans un navigateur, l'impression thermique est
+   * absente, le PDF A4 présent ». C'est toute la différence avec le bouton
+   * ci-dessus, et c'est le repli quand l'imprimante manque ou tombe en panne.
+   * `printing.native` est faux ici — le cas par défaut de tout ce fichier.
+   */
+  it('offre le PDF au navigateur, là où le ticket n’est pas offert', async () => {
+    scenario({ settings: SETTINGS })
+    renderAt('/documents/d-7', 'worker')
+
+    expect(await screen.findByRole('button', { name: 'Envoyer en PDF' })).toBeEnabled()
+    expect(screen.queryByRole('button', { name: 'Imprimer le ticket' })).not.toBeInTheDocument()
+  })
+
+  it('offre le PDF aussi dans l’enveloppe, à côté du ticket', async () => {
+    printing.native = true
+    scenario({ settings: SETTINGS })
+    renderAt('/documents/d-7', 'worker')
+
+    expect(await screen.findByRole('button', { name: 'Imprimer le ticket' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Envoyer en PDF' })).toBeEnabled()
+  })
+
+  /*
+   * Les critères 1 à 4 de la story en un geste : la page porte l'en-tête du
+   * commerce et le document, le fichier porte le numéro et la date, et c'est le
+   * système de partage qui le reçoit.
+   */
+  it('engendre la page du document et la remet au partage, sous un nom explicite', async () => {
+    scenario({ settings: SETTINGS })
+    renderAt('/documents/d-7', 'worker')
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Envoyer en PDF' }))
+
+    await waitFor(() => expect(printing.buildPdf).toHaveBeenCalledTimes(1))
+    const [page] = printing.buildPdf.mock.calls[0] as [Record<string, unknown>]
+
+    expect(page).toMatchObject({
+      businessName: 'Parfumerie Nour',
+      phone: '+212612345678',
+      address: 'Derb Omar',
+      title: 'Bon de livraison',
+      number: 'BL-A-26-00007',
+      issuedAt: '2026-10-06T08:00:00Z',
+      total: '228.00',
+      lines: [{ label: 'Savon 500 g', quantity: '24.000', unitPrice: '9.50', lineTotal: '228.00' }],
+    })
+
+    await waitFor(() => expect(printing.share).toHaveBeenCalledTimes(1))
+    const [file] = printing.share.mock.calls[0] as [{ name: string; bytes: Uint8Array }]
+    expect(file.name).toBe('BL-A-26-00007-2026-10-06.pdf')
+    expect([...file.bytes]).toEqual([37, 80, 68, 70])
+
+    expect(await screen.findByText('PDF envoyé.')).toBeInTheDocument()
+  })
+
+  /* Au navigateur de bureau, le fichier descend : la phrase le dit. */
+  it('dit où le fichier est allé quand il est téléchargé', async () => {
+    printing.share.mockResolvedValue('downloaded')
+    scenario({ settings: SETTINGS })
+    renderAt('/documents/d-7', 'worker')
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Envoyer en PDF' }))
+
+    expect(await screen.findByText('PDF enregistré dans vos téléchargements.')).toBeInTheDocument()
+  })
+
+  /*
+   * Refermer le sélecteur de partage est un geste ordinaire. Le signaler comme
+   * une erreur apprendrait au vendeur à ne plus lire les messages.
+   */
+  it('ne dit rien quand l’utilisateur referme le sélecteur', async () => {
+    printing.share.mockResolvedValue('cancelled')
+    scenario({ settings: SETTINGS })
+    renderAt('/documents/d-7', 'worker')
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Envoyer en PDF' }))
+
+    await waitFor(() => expect(printing.share).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(screen.queryByText('PDF envoyé.')).not.toBeInTheDocument()
+  })
+
+  it('ne défait rien quand le PDF échoue, et laisse réessayer', async () => {
+    printing.buildPdf.mockRejectedValue(new Error('canvas indisponible'))
+    scenario({ settings: SETTINGS })
+    renderAt('/documents/d-7', 'worker')
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Envoyer en PDF' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Le PDF n’a pas pu être partagé. Le document est enregistré, réessayez.',
+    )
+    expect(screen.getByRole('heading', { level: 1, name: 'BL-A-26-00007' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Envoyer en PDF' })).toBeEnabled()
+  })
+
+  /*
+   * Même porte que le ticket, et la raison est plus forte : un papier se perd,
+   * un fichier se transmet encore des mois après. Un PDF d'allure valable pour
+   * une vente annulée est une preuve fausse qui circule.
+   */
+  it('n’exporte pas un document annulé', async () => {
+    scenario({
+      document: summaryRow(7, { status: 'cancelled', cancellation_reason: 'Erreur' }),
+      settings: SETTINGS,
+    })
+    renderAt('/documents/d-7', 'owner')
+
+    await screen.findByText('Document annulé')
+    expect(screen.queryByRole('button', { name: 'Envoyer en PDF' })).not.toBeInTheDocument()
+  })
+
+  it('n’exporte pas un brouillon, qui n’a pas de numéro', async () => {
+    scenario({
+      document: summaryRow(7, { doc_number: null, status: 'draft', issued_at: null }),
+      settings: SETTINGS,
+    })
+    renderAt('/documents/d-7', 'owner')
+
+    await screen.findByRole('heading', { level: 1, name: 'Sans numéro' })
+    expect(screen.queryByRole('button', { name: 'Envoyer en PDF' })).not.toBeInTheDocument()
   })
 })

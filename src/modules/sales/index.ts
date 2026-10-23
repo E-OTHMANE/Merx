@@ -64,6 +64,13 @@ export {
   type SaleProgress,
 } from '@/modules/sales/saleWrite'
 export {
+  PDF_MESSAGES,
+  canExportPdf,
+  documentPage,
+  exportDocumentPdf,
+  type ExportDeps,
+} from '@/modules/sales/pdf'
+export {
   TRANSFORM_MESSAGES,
   TRANSFORM_TARGET,
   loadForTransformation,
