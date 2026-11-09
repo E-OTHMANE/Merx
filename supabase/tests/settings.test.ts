@@ -69,6 +69,21 @@ async function connect(): Promise<Client> {
  */
 const WRITE_RESTRICTED = await writeRestrictedUnderTest()
 
+/*
+ * Toutes les capacités inscrites jusqu'ici ne distinguaient pas seulement un
+ * commerce : elles distinguaient aussi `owner` de `worker` — réservées au
+ * patron. `manage_client` (E6-01) est la première qui restreint l'écriture
+ * sans restreindre le rôle : SPEC § 3.1 l'accorde aux deux. La policy reste
+ * utile — elle ferme la table à un jeton sans rôle reconnu, mesuré à part
+ * (`clients.test.ts`, « jeton sans rôle ») — mais le balayage ne peut plus
+ * prouver qu'elle refuse quelqu'un en comparant les deux rôles entre eux.
+ * Nommée ici, pas devinée : une capacité qui glisserait dans cette liste sans
+ * être vraiment partagée ferait tomber l'assertion `.toBe(0)` plus bas, et une
+ * capacité qui redeviendrait réservée au patron sans en sortir ferait tomber
+ * la même assertion dans l'autre sens.
+ */
+const SHARED_BY_BOTH_ROLES: readonly string[] = ['manage_client']
+
 async function writeRestrictedUnderTest(): Promise<Array<[string, string]>> {
   const client = await connect()
   try {
@@ -210,6 +225,13 @@ async function seedCatalogue(): Promise<void> {
     [tenant],
   )
   sweptRows.set('tenant_setting', settings[0]!.id)
+
+  // E6-01. `client` : aucun garde ne tient sa ligne, elle se désigne par sa clé.
+  const { rows: clients } = await client.query<{ id: string }>(
+    "insert into public.client (tenant_id, name) values ($1, 'Droguerie Centrale') returning id",
+    [tenant],
+  )
+  sweptRows.set('client', clients[0]!.id)
 }
 
 afterAll(async () => {
@@ -218,6 +240,7 @@ afterAll(async () => {
     // La cascade emporte variantes et paliers ; la catégorie part ensuite.
     await client.query('delete from public.product where tenant_id = $1', [tenant])
     await client.query('delete from public.category where tenant_id = $1', [tenant])
+    await client.query('delete from public.client where tenant_id = $1', [tenant])
     await client.query('delete from public.tenant_setting where tenant_id = $1', [tenant])
     await client.query('delete from public.device where tenant_id = $1', [tenant])
     await client.query('delete from public.warehouse where tenant_id = $1', [tenant])
@@ -533,11 +556,20 @@ describe.each(WRITE_RESTRICTED)('%s, écriture réservée à %s', (table, capabi
     row = designated
   })
 
-  it('la matrice donne bien la capacité à l’un et pas à l’autre', () => {
-    // Sans les deux populations, le balayage ne compare rien : un refus opposé
+  it('la matrice donne bien la capacité à l’un et pas à l’autre — sauf partage déclaré', () => {
+    // Sans la population qui l'a, le balayage ne compare rien : un refus opposé
     // à tout le monde ressemble à un droit bien posé.
     expect(allowed.length, `${capability} n’est accordée à personne`).toBeGreaterThan(0)
-    expect(denied.length, `${capability} est accordée à tout le monde`).toBeGreaterThan(0)
+
+    if (SHARED_BY_BOTH_ROLES.includes(capability)) {
+      expect(
+        denied.length,
+        `${capability} est dans SHARED_BY_BOTH_ROLES mais ne discrimine plus ` +
+          'les deux rôles de la même façon : la liste est à corriger.',
+      ).toBe(0)
+    } else {
+      expect(denied.length, `${capability} est accordée à tout le monde`).toBeGreaterThan(0)
+    }
   })
 
   /** L'état complet de la ligne : ce qui a bougé se voit, quelle que soit la table. */

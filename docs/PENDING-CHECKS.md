@@ -44,6 +44,16 @@ utilisateurs seront des proches, au lancement ; E12 est passée à la fin du bac
   de la console distante (E12-03).
 
 
+### Depuis E6-01
+
+- [ ] **Le panneau client à l'œil, sur tablette, en arabe.** `ClientPicker`,
+      ouvert depuis l'écran de vente et depuis le filtre de la liste des
+      documents : cible de 48 px, clavier qui s'ouvre sans geste de trop, RTL
+      (le bouton « Créer « … » » et le résultat choisi se lisent bien de
+      droite à gauche). jsdom ne juge pas un geste au pouce. À faire avec le
+      reste du carnet du comptoir — elle rejoint E12-12, déjà close ci-dessus
+      pour le PDF et l'heure du Maroc, pas encore pour celle-ci.
+
 ### Depuis E5-03 — le PDF A4
 
 - [ ] **Le PDF sur un vrai téléphone.** `npm run pdf:measure` écrit des PDF et

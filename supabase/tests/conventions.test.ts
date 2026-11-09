@@ -654,9 +654,11 @@ describe('les règles attrapent une table fautive', () => {
      * E4-06 — six gardes de trigger, deux fonctions bornées par leur argument,
      * deux qui précèdent le commerce, et le journal. La dix-neuvième est
      * `list_sale_documents()` (E4-07), une lecture qui rend à l'employé un
-     * nom que `app_user` ou `device` lui refuse.
+     * nom que `app_user` ou `device` lui refuse. La vingtième est
+     * `search_clients()` (E6-01), même obstacle et même forme que
+     * `search_products()`.
      */
-    it('inscrit exactement les dix-neuf fonctions connues, chacune justifiée', async () => {
+    it('inscrit exactement les vingt fonctions connues, chacune justifiée', async () => {
       const { rows } = await client.query<{
         schema_name: string
         function_name: string
@@ -692,6 +694,7 @@ describe('les règles attrapent une table fautive', () => {
         entry('public', 'list_sale_documents', 'current_tenant'),
         entry('public', 'list_stock_movements', 'current_tenant'),
         entry('public', 'register_device', 'current_tenant'),
+        entry('public', 'search_clients', 'current_tenant'),
         entry('public', 'search_products', 'current_tenant'),
         entry('public', 'set_user_active', 'current_tenant'),
       ])

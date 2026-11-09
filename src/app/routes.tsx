@@ -33,6 +33,7 @@ import {
   ProductFormScreen,
   ProductListScreen,
 } from '@/modules/catalogue'
+import { ClientFormScreen, ClientListScreen } from '@/modules/clients'
 import { DocumentDetailScreen, DocumentListScreen, ReturnScreen, SaleScreen } from '@/modules/sales'
 import { VariantStockScreen } from '@/modules/stock'
 
@@ -70,6 +71,13 @@ export function AppRoutes() {
           </Route>
           <Route element={<RequireCapability capability="view_catalogue" />}>
             <Route path="/products" element={<ProductListScreen />} />
+          </Route>
+          {/* La liste des clients. E6-01, BRAND-UI § 13, onglet 4.
+              `manage_client` est accordée aux deux rôles (§ 3.1). Le garde de
+              route masque l'écran ; ce qui protège l'écriture sont les
+              policies de `client`. */}
+          <Route element={<RequireCapability capability="manage_client" />}>
+            <Route path="/clients" element={<ClientListScreen />} />
           </Route>
         </Route>
 
@@ -131,6 +139,16 @@ export function AppRoutes() {
             travaille dans la langue du commerce. */}
         <Route element={<RequireCapability capability="manage_settings" />}>
           <Route path="/settings" element={<SettingsScreen />} />
+        </Route>
+
+        {/* La fiche client — création et modification. E6-01. Écran de
+            détail, comme la fiche produit : un retour, pas d'onglet
+            (BRAND-UI § 13). `manage_client` est accordée aux deux rôles
+            (§ 3.1) : rien ne se masque selon le rôle, à la différence du
+            catalogue. */}
+        <Route element={<RequireCapability capability="manage_client" />}>
+          <Route path="/clients/new" element={<ClientFormScreen />} />
+          <Route path="/clients/:id" element={<ClientFormScreen />} />
         </Route>
 
         {/* Le catalogue. E2-02. La liste se lit par tout le commerce

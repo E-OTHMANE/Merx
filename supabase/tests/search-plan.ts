@@ -64,11 +64,42 @@ export const BATTERY = [
 /* De quoi dépasser les cinq plans personnalisés du cache, avec des requêtes variées. */
 export const WARM_UP = ['savon', 'nivea', '4512', 'argan', 'x', 'huile', 'rose', 'كريم']
 
-/**
- * Le plan de la requête que `search_products()` exécute, sous le jeton d'un
- * employé du commerce donné, lu par `auto_explain` sur l'appel réel.
+/*
+ * La batterie et la chauffe de `search_clients()` — E6-01. Mêmes propriétés
+ * que celles du produit : le pire cas (nom courant), une faute, l'arabe, les
+ * trois écritures d'un numéro et un numéro partiel, la requête vide et ce qui
+ * ne trouve rien.
  */
-export async function planOf(client: Client, tenant: string, q: string): Promise<PlanNode[]> {
+export const CLIENT_BATTERY = [
+  '',
+  'mohamed',
+  'mohammed',
+  '0612345678',
+  '06 12 34 56 78',
+  '+212612345678',
+  '1234',
+  'كريم',
+  'zzqx',
+]
+
+export const CLIENT_WARM_UP = ['fatima', 'youssef', '0661', '+212 6', 'نور', 'rachid']
+
+/**
+ * Le plan d'un appel `security definer` en forme de recherche, sous le jeton
+ * d'un employé du commerce donné, lu par `auto_explain` sur l'appel réel.
+ * Généralisée en E6-01 : `search_products()` et `search_clients()` partagent
+ * la même mécanique (chauffe, session chaude, un seul plan attendu), et ne
+ * diffèrent que par l'appel SQL et le marqueur qui retrouve leur plan dans les
+ * notices.
+ */
+export async function planOfCall(
+  client: Client,
+  tenant: string,
+  sql: string,
+  warmUp: readonly string[],
+  q: string,
+  marker: string,
+): Promise<PlanNode[]> {
   const notices: string[] = []
   const listen = (notice: { message?: string | undefined }): void => {
     notices.push(notice.message ?? '')
@@ -78,8 +109,8 @@ export async function planOf(client: Client, tenant: string, q: string): Promise
   await client.query('begin')
   try {
     await actAs(client, tokenFor(tenant, 'worker'))
-    for (const warm of WARM_UP) {
-      await client.query('select count(*) from public.search_products($1)', [warm])
+    for (const warm of warmUp) {
+      await client.query(sql, [warm])
     }
     await client.query('reset role')
 
@@ -88,13 +119,13 @@ export async function planOf(client: Client, tenant: string, q: string): Promise
     await client.query('set local auto_explain.log_level = notice')
     await client.query('set local auto_explain.log_format = json')
     await actAs(client, tokenFor(tenant, 'worker'))
-    await client.query('select count(*) from public.search_products($1)', [q])
+    await client.query(sql, [q])
   } finally {
     await client.query('rollback')
     client.off('notice', listen)
   }
 
-  const plans = notices.filter((m) => m.includes('with catalogue as not materialized'))
+  const plans = notices.filter((m) => m.includes(marker))
   if (plans.length !== 1) {
     throw new Error(
       `auto_explain a rendu ${plans.length} plan(s) de la requête de recherche pour « ${q} », ` +
@@ -106,6 +137,36 @@ export async function planOf(client: Client, tenant: string, q: string): Promise
   return nodesOf(plan.Plan)
 }
 
+/**
+ * Le plan de la requête que `search_products()` exécute, sous le jeton d'un
+ * employé du commerce donné, lu par `auto_explain` sur l'appel réel.
+ */
+export async function planOf(client: Client, tenant: string, q: string): Promise<PlanNode[]> {
+  return planOfCall(
+    client,
+    tenant,
+    'select count(*) from public.search_products($1)',
+    WARM_UP,
+    q,
+    'with catalogue as not materialized',
+  )
+}
+
+/**
+ * Le plan de la requête que `search_clients()` exécute, sous le jeton d'un
+ * employé du commerce donné. E6-01.
+ */
+export async function planOfClients(client: Client, tenant: string, q: string): Promise<PlanNode[]> {
+  return planOfCall(
+    client,
+    tenant,
+    'select count(*) from public.search_clients($1)',
+    CLIENT_WARM_UP,
+    q,
+    'with catalogue as not materialized',
+  )
+}
+
 export interface IndexUsage {
   /** Parcours séquentiels du catalogue — il ne doit y en avoir aucun. */
   seqScans: string[]
@@ -115,15 +176,18 @@ export interface IndexUsage {
   tenantIndexes: number
 }
 
-/** Ce qu'un plan dit de l'usage des index. */
-export function indexUsage(nodes: readonly PlanNode[]): IndexUsage {
+/**
+ * Ce qu'un plan dit de l'usage des index. `tables` nomme les relations dont un
+ * Seq Scan serait une fuite d'index — `product` et `variant` par défaut ;
+ * `search_clients()` (E6-01) passe `['client']`.
+ */
+export function indexUsage(
+  nodes: readonly PlanNode[],
+  tables: readonly string[] = ['product', 'variant'],
+): IndexUsage {
   return {
     seqScans: nodes
-      .filter(
-        (n) =>
-          n['Node Type'] === 'Seq Scan' &&
-          (n['Relation Name'] === 'product' || n['Relation Name'] === 'variant'),
-      )
+      .filter((n) => n['Node Type'] === 'Seq Scan' && tables.includes(n['Relation Name'] ?? ''))
       .map((n) => n['Relation Name'] ?? ''),
     trigram: nodes
       .filter((n) => n['Node Type'] === 'Bitmap Index Scan')

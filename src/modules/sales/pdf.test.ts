@@ -55,6 +55,8 @@ function detail(overrides: Partial<DocumentDetail['document']> = {}): DocumentDe
       deviceLabel: 'Comptoir',
       devicePrefix: 'A',
       authorName: 'Fatima',
+      clientId: null,
+      clientName: null,
       ...overrides,
     },
     lines: [

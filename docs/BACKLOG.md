@@ -1235,14 +1235,34 @@ d'accord sur le fuseau marocain à partir d'octobre 2026. Voir
 **En tant que** vendeur, **je veux** créer un client en deux secondes, **afin de** ne pas bloquer la vente.
 
 **Critères d'acceptation**
-- [ ] **Le seul champ obligatoire est le nom**
-- [ ] Facultatifs : téléphone, ville, adresse, plafond de crédit, notes
-- [ ] Champ `ice` présent en base, masqué, inutilisé en V1
-- [ ] Création possible depuis l'écran de vente, sans le quitter
-- [ ] Recherche par nom et par téléphone, tolérante aux fautes
-- [ ] Suppression douce
+- [x] **Le seul champ obligatoire est le nom**
+- [x] Facultatifs : téléphone, ville, adresse, notes — *le plafond de crédit : tenu par E6-03, qui pose `credit_limit` avec son garde `owner` seul. Le poser ici, nullable, aurait laissé un `worker` l'écrire par simple appel API pendant tout l'intervalle entre les deux stories — même raisonnement que `client_id` en E4-01.*
+- [x] Champ `ice` présent en base, masqué, inutilisé en V1
+- [x] Création possible depuis l'écran de vente, sans le quitter — `ClientPicker`, un panneau en place (aucune route), ouvert d'un tap sur « Client : aucun »
+- [x] Recherche par nom et par téléphone, tolérante aux fautes — `public.search_clients()`, la forme de `search_products()` (E2-04)
+- [x] Suppression douce
 
-**À faire ici, relevé en E4-01 : `sale_document.client_id`.** Le spec (§ 8) liste `client_id` sur `sale_document`, mais la table `client` n'existe pas à l'étape 4. E4-01 **omet la colonne** plutôt que de la poser sans clé : un `client_id` sans clé composite laisserait passer l'identifiant d'un autre commerce, ce que la RÈGLE de § 4 existe pour empêcher. La migration de cette story crée `client` (avec `unique (tenant_id, id)`), **puis ajoute `sale_document.client_id uuid` nullable avec sa clé composite `(tenant_id, client_id) references client (tenant_id, id)`, dans le même geste** — jamais la colonne seule. Le garde « figé » de `sale_document` compare la ligne entière hors statut : la colonne neuve y entre d'office, un document confirmé ne change pas de client. Le balayage d'isolation et `conventions.ts` la prennent d'eux-mêmes.
+**Ce qui a été tranché :**
+
+- **Le téléphone se normalise côté front, jamais forcé en base.** `normalizePhone()` (E1-01) tente la forme canonique ; non reconnue, la saisie part telle quelle, bords retirés — un numéro étranger n'empêche jamais la création (SPEC § 2.6). La base ne fait que le ménage qu'une écriture directe (API, import) ne ferait pas elle-même (`merx.normalize_client_phone()` : trim, vide → NULL — même forme que `normalize_product_code`, E2-02). Elle ne valide ni ne reconstruit la forme nationale : ce serait une seconde règle, divergente de la première par construction.
+- **Deux clients peuvent partager un numéro.** Aucun index unique sur `phone` ni sur `phone_digits` — un numéro de boutique sert plusieurs fiches, et une unicité aurait bloqué une création (§ 2.6) et rejeté en 409 un client créé hors ligne (E9).
+- **`merx.phone_digits()`, une seconde copie délibérée** du cœur de `normalizePhone()` (extraction des chiffres, les trois préfixes), sans sa validation finale : elle rend ce qu'elle trouve, même pour un numéro étranger. Colonne engendrée, sert `search_text` et la recherche par téléphone en sous-chaîne. Mesurée contre `normalizePhone()` par `supabase/tests/phone-parity.test.ts`, sur chaque écriture valide de `src/lib/phone.test.ts` — même famille que la table du fuseau mesurée contre Postgres (SPEC § 4).
+- **`public.search_clients()` reprend la forme de `search_products()`** (exception nommée § 2.1, vingtième entrée du registre, `plan_cache_mode = force_custom_plan`, seuil 0,4), en réemployant ses cinq helpers (`search_fold`, `like_pattern`, `search_words`, `search_pivot`, `search_allows_typo`). Une requête « en forme de téléphone » (chiffres, espaces, `+`, `.`, `-`, parenthèses, au moins deux chiffres) est réduite à ses chiffres par `merx.phone_query_digits()` — les mêmes préfixes que `phone_digits()`, mais extraits par `merx.search_fold()`, donc chiffres arabes compris — et cherchée en sous-chaîne de `phone_digits`. Sinon, recherche par mots du nom, à une faute près. Mesuré : 2 000 clients × 5 commerces, plan en session chaude, aucun Seq Scan sur `client` (`client_search`, GIN, `fastupdate = off`).
+- **`sale_document.client_id`** arrive avec sa clé composite, dans le même geste que la table `client` — voir la note laissée par E4-01, close ci-dessous.
+- **`manage_client` ne discrimine pas `owner` de `worker`** (SPEC § 3.1, les deux l'ont depuis E0-05) : c'est la première capacité de ce genre à restreindre une écriture. La policy reste posée — elle ferme la table à un jeton sans rôle reconnu — mais le balayage générique de `settings.test.ts` supposait jusqu'ici qu'une capacité restreinte discrimine toujours les deux rôles entre eux ; il porte désormais `SHARED_BY_BOTH_ROLES`, une liste nommée, pour ne pas le supposer en silence.
+
+**La note laissée par E4-01, close.** Le spec (§ 8) liste `client_id` sur `sale_document`, mais la table `client` n'existait pas à l'étape 4. E4-01 avait **omis la colonne** plutôt que de la poser sans clé : un `client_id` sans clé composite aurait laissé passer l'identifiant d'un autre commerce, ce que la RÈGLE de § 4 existe pour empêcher. Cette story crée `client` (avec `unique (tenant_id, id)`), **puis ajoute `sale_document.client_id uuid` nullable avec sa clé composite `(tenant_id, client_id) references client (tenant_id, id)`, dans le même geste** — jamais la colonne seule. Le garde « figé » de `sale_document` compare la ligne entière hors statut : la colonne neuve y est entrée d'office, sans qu'une ligne de son registre bouge — un document confirmé ne change pas de client, mesuré dans `sale-document-client.test.ts`.
+
+**Le filtre par client d'E4-07, close.** `list_sale_documents()` reprise depuis sa dernière définition, `p_client_id` et `client_id`/`client_name` rendus — même raison que l'auteur et l'appareil : une seconde fonction dirait deux fois la même exception § 2.1. `client` reste lisible par tout le commerce (§ 3.1), sans policy restrictive comme `app_user`/`device`.
+
+**Sabotages (4 gardes retirés, un par un) :** aucun resté vert.
+
+- filtre `merx.current_tenant_id()` retiré de `search_clients` — 10 rouges (`clients.test.ts`, `conventions.test.ts`) ;
+- clé composite `sale_document_client_id_fkey` remplacée par `client_id → client (id)` — 2 rouges (`conventions.test.ts`, `sale-document-client.test.ts`) ;
+- les trois policies `write_capability_*` de `client` retirées — 2 rouges (`clients.test.ts` « jeton sans rôle », `settings.test.ts`) ;
+- `revoke execute … from anon` retiré de `search_clients` — 1 rouge (`clients.test.ts`, appel anonyme).
+
+**Vérifiée le 2026-11-09 sur le stack local** — `db reset` sur les 34 migrations ; `schema:doc` sans diff après coup ; les quatre sabotages rejoués un par un, chacun un rouge pour la raison attendue ; suite complète, machine libre : **93 fichiers, 2205 tests, tous verts**. `typecheck` et `lint` propres, lus après la dernière édition.
 
 ---
 

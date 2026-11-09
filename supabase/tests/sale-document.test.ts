@@ -498,13 +498,29 @@ describe('le modèle', () => {
     expect(names).not.toContain('product_id')
   })
 
-  it('n\'a pas encore de client_id : la colonne naît avec la table client, en E6-01', async () => {
+  /*
+   * `client_id` est arrivée avec la table `client`, dans le même geste que sa
+   * clé composite (E6-01, note laissée ici par E4-01) : `sale-document-client.test.ts`
+   * en porte les gardes (clé, figé). Ce test-ci ne vérifie que la forme — la
+   * colonne existe, et sa clé est composite sur `tenant_id`.
+   */
+  it('porte client_id, avec sa clé étrangère composite — E6-01', async () => {
     await client.query('reset role')
     const { rows } = await client.query<{ column_name: string }>(
       `select column_name from information_schema.columns
        where table_schema = 'public' and table_name = 'sale_document'`,
     )
-    expect(rows.map((r) => r.column_name)).not.toContain('client_id')
+    expect(rows.map((r) => r.column_name)).toContain('client_id')
+
+    const fk = await client.query<{ column_name: string }>(
+      `select kcu.column_name
+       from information_schema.table_constraints tc
+       join information_schema.key_column_usage kcu
+         on kcu.constraint_name = tc.constraint_name
+       where tc.constraint_name = 'sale_document_client_id_fkey'
+       order by kcu.ordinal_position`,
+    )
+    expect(fk.rows.map((r) => r.column_name)).toEqual(['tenant_id', 'client_id'])
   })
 
   it('déclare quatre transitions, et aucune ne part de cancelled', async () => {

@@ -52,7 +52,7 @@ porteur d'un motif.
 
 ## Tables de `public`
 
-16 tables : `app_user` · `audit_log` · `category` · `device` · `document_sequence` · `price_break` · `product` · `sale_document` · `sale_line` · `stock_level` · `stock_movement` · `tenant` · `tenant_setting` · `variant` · `variant_cost` · `warehouse`
+17 tables : `app_user` · `audit_log` · `category` · `client` · `device` · `document_sequence` · `price_break` · `product` · `sale_document` · `sale_line` · `stock_level` · `stock_movement` · `tenant` · `tenant_setting` · `variant` · `variant_cost` · `warehouse`
 
 ### `app_user`
 
@@ -235,6 +235,72 @@ RLS activée et **forcée**.
 
 | nom | moment | événements | portée | condition | fonction |
 | --- | --- | --- | --- | --- | --- |
+| `set_updated_at` | BEFORE | UPDATE | ligne | — | `merx.set_updated_at` |
+
+### `client`
+
+> Fiche client. Seul le nom est obligatoire (SPEC § 2.6). SPEC § 9 M4 ; E6-01.
+
+RLS activée et **forcée**.
+
+**Registres**
+
+- `merx.convention_registry` (kind = reference)
+- `merx.creation_form_registry` (name_column = name)
+- `merx.write_capability_registry` (capability = manage_client)
+
+**Colonnes**
+
+| colonne | type | non nul | défaut ou expression |
+| --- | --- | --- | --- |
+| `id` | `uuid` | oui | `gen_random_uuid()` |
+| `name` | `text` | oui | — |
+| `phone` | `text` | non | — |
+| `city` | `text` | non | — |
+| `address` | `text` | non | — |
+| `ice` | `text` | non | — |
+| `notes` | `text` | non | — |
+| `is_active` | `boolean` | oui | `true` |
+| `tenant_id` | `uuid` | oui | `merx.current_tenant_id()` |
+| `created_at` | `timestamp with time zone` | oui | `now()` |
+| `updated_at` | `timestamp with time zone` | oui | `now()` |
+| `created_by` | `uuid` | non | — |
+| `device_id` | `uuid` | non | — |
+| `deleted_at` | `timestamp with time zone` | non | — |
+| `phone_digits` | `text` | non | engendrée : `merx.phone_digits(phone)` |
+| `search_text` | `text` | non | engendrée : `((merx.search_fold(name) \|\| ' '::text) \|\| COALESCE(merx.phone_digits(phone), ''::text))` |
+
+**Contraintes**
+
+| nom | genre | définition |
+| --- | --- | --- |
+| `client_created_by_fkey` | clé étrangère | `FOREIGN KEY (tenant_id, created_by) REFERENCES app_user(tenant_id, id)` |
+| `client_pkey` | clé primaire | `PRIMARY KEY (id)` |
+| `client_tenant_id_fkey` | clé étrangère | `FOREIGN KEY (tenant_id) REFERENCES tenant(id)` |
+| `client_tenant_id_id_key` | unicité | `UNIQUE (tenant_id, id)` |
+
+**Index** (hors ceux qui servent une contrainte)
+
+| nom | définition |
+| --- | --- |
+| `client_search` | `CREATE INDEX client_search ON public.client USING gin (tenant_id, search_text gin_trgm_ops) WITH (fastupdate=off)` |
+| `client_tenant_id_idx` | `CREATE INDEX client_tenant_id_idx ON public.client USING btree (tenant_id)` |
+
+**Policies**
+
+| nom | genre | opérations | rôles | using | with check |
+| --- | --- | --- | --- | --- | --- |
+| `super_admin_all` | permissive | les quatre opérations | `authenticated` | `merx.is_super_admin()` | `merx.is_super_admin()` |
+| `tenant_isolation` | permissive | les quatre opérations | `authenticated` | `(tenant_id = merx.current_tenant_id())` | `(tenant_id = merx.current_tenant_id())` |
+| `write_capability_delete` | restrictive | delete | `authenticated` | `merx.can('manage_client'::text)` | — |
+| `write_capability_insert` | restrictive | insert | `authenticated` | — | `merx.can('manage_client'::text)` |
+| `write_capability_update` | restrictive | update | `authenticated` | `merx.can('manage_client'::text)` | `merx.can('manage_client'::text)` |
+
+**Triggers**
+
+| nom | moment | événements | portée | condition | fonction |
+| --- | --- | --- | --- | --- | --- |
+| `normalize_phone` | BEFORE | INSERT OR UPDATE | ligne | — | `merx.normalize_client_phone` |
 | `set_updated_at` | BEFORE | UPDATE | ligne | — | `merx.set_updated_at` |
 
 ### `device`
@@ -530,6 +596,7 @@ RLS activée et **forcée**.
 | `created_by` | `uuid` | non | `merx.current_app_user()` |
 | `device_id` | `uuid` | oui | — |
 | `source_document_id` | `uuid` | non | — |
+| `client_id` | `uuid` | non | — |
 
 **Contraintes**
 
@@ -537,6 +604,7 @@ RLS activée et **forcée**.
 | --- | --- | --- |
 | `sale_document_amounts_not_negative` | check | `CHECK ((((subtotal)::numeric >= (0)::numeric) AND ((discount_total)::numeric >= (0)::numeric) AND ((total)::numeric >= (0)::numeric)))` |
 | `sale_document_cancellation_reason` | check | `CHECK (((status <> 'cancelled'::sale_doc_status) OR (btrim(COALESCE(cancellation_reason, ''::text)) <> ''::text)))` |
+| `sale_document_client_id_fkey` | clé étrangère | `FOREIGN KEY (tenant_id, client_id) REFERENCES client(tenant_id, id)` |
 | `sale_document_created_by_fkey` | clé étrangère | `FOREIGN KEY (tenant_id, created_by) REFERENCES app_user(tenant_id, id)` |
 | `sale_document_device_id_fkey` | clé étrangère | `FOREIGN KEY (tenant_id, device_id) REFERENCES device(tenant_id, id)` |
 | `sale_document_issued_at_when_numbered` | check | `CHECK (((status = 'draft'::sale_doc_status) = (issued_at IS NULL)))` |
@@ -553,6 +621,7 @@ RLS activée et **forcée**.
 
 | nom | définition |
 | --- | --- |
+| `sale_document_client` | `CREATE INDEX sale_document_client ON public.sale_document USING btree (tenant_id, client_id)` |
 | `sale_document_number_per_tenant` | `CREATE UNIQUE INDEX sale_document_number_per_tenant ON public.sale_document USING btree (tenant_id, doc_number) WHERE (doc_number IS NOT NULL)` |
 | `sale_document_source` | `CREATE INDEX sale_document_source ON public.sale_document USING btree (tenant_id, source_document_id) WHERE (source_document_id IS NOT NULL)` |
 | `sale_document_tenant_id_idx` | `CREATE INDEX sale_document_tenant_id_idx ON public.sale_document USING btree (tenant_id)` |
@@ -1107,9 +1176,10 @@ infraction, pas une colonne vide.
 | `create_tenant(business_name text, owner_name text, phone text, city text, auth_user_id uuid)` | `uuid` | plpgsql | volatile | **definer** | {search_path=""} | `super_admin` |
 | `create_worker(full_name text, phone text, auth_user_id uuid)` | `uuid` | plpgsql | volatile | **definer** | {search_path=""} | `current_tenant` |
 | `import_products(rows jsonb)` | `jsonb` | plpgsql | volatile | invoker | {search_path=""} | — |
-| `list_sale_documents(p_from timestamp with time zone, p_to timestamp with time zone, p_status sale_doc_status, p_doc_type sale_doc_type, p_device_id uuid, p_search text, p_document_id uuid, p_limit integer)` | `TABLE(id uuid, doc_type sale_doc_type, doc_number text, status sale_doc_status, subtotal text, discount_total text, total text, notes text, cancellation_reason text, issued_at timestamp with time zone, created_at timestamp with time zone, sort_at timestamp with time zone, source_document_id uuid, device_id uuid, device_label text, device_prefix device_prefix, author_name text)` | plpgsql | stable | **definer** | {search_path="", plan_cache_mode=force_custom_plan} | `current_tenant` |
+| `list_sale_documents(p_from timestamp with time zone, p_to timestamp with time zone, p_status sale_doc_status, p_doc_type sale_doc_type, p_device_id uuid, p_search text, p_document_id uuid, p_client_id uuid, p_limit integer)` | `TABLE(id uuid, doc_type sale_doc_type, doc_number text, status sale_doc_status, subtotal text, discount_total text, total text, notes text, cancellation_reason text, issued_at timestamp with time zone, created_at timestamp with time zone, sort_at timestamp with time zone, source_document_id uuid, device_id uuid, device_label text, device_prefix device_prefix, author_name text, client_id uuid, client_name text)` | plpgsql | stable | **definer** | {search_path="", plan_cache_mode=force_custom_plan} | `current_tenant` |
 | `list_stock_movements(p_variant_id uuid, p_limit integer)` | `TABLE(id uuid, created_at timestamp with time zone, movement_type stock_movement_type, quantity quantity, source_type stock_source_type, source_id uuid, note text, author_name text)` | plpgsql | stable | **definer** | {search_path="", plan_cache_mode=force_custom_plan} | `current_tenant` |
 | `register_device(device_key uuid, device_label text)` | `TABLE(id uuid, label text, prefix device_prefix, last_sync_at timestamp with time zone)` | plpgsql | volatile | **definer** | {search_path=""} | `current_tenant` |
+| `search_clients(q text)` | `TABLE(id uuid, name text, phone text, city text)` | plpgsql | stable | **definer** | {search_path="", plan_cache_mode=force_custom_plan, pg_trgm.word_similarity_threshold=0.4} | `current_tenant` |
 | `search_products(q text)` | `TABLE(variant_id uuid, product_id uuid, name_fr text, name_ar text, code text, sku text, barcode text, photo_url text)` | plpgsql | stable | **definer** | {search_path="", plan_cache_mode=force_custom_plan, pg_trgm.word_similarity_threshold=0.4} | `current_tenant` |
 | `set_user_active(target_user uuid, active boolean)` | `void` | plpgsql | volatile | **definer** | {search_path=""} | `current_tenant` |
 
@@ -1151,9 +1221,12 @@ infraction, pas une colonne vide.
 | `log_audit(performed_action audit_action, target_entity_type text, target_entity_id uuid, state_before jsonb, state_after jsonb)` | `uuid` | plpgsql | volatile | **definer** | {search_path=""} | `current_tenant` |
 | `maintain_stock_level()` | `trigger` | plpgsql | volatile | invoker | {search_path=""} | — |
 | `next_device_prefix(target_tenant uuid)` | `device_prefix` | plpgsql | volatile | **definer** | {search_path=""} | `argument_tenant` |
+| `normalize_client_phone()` | `trigger` | plpgsql | volatile | invoker | {search_path=""} | — |
 | `normalize_product_code()` | `trigger` | plpgsql | volatile | invoker | {search_path=""} | — |
 | `normalize_variant_sku()` | `trigger` | plpgsql | volatile | invoker | {search_path=""} | — |
 | `open_default_warehouse()` | `trigger` | plpgsql | volatile | **definer** | {search_path=""} | `row_tenant` |
+| `phone_digits(value text)` | `text` | sql | immutable | invoker | — | — |
+| `phone_query_digits(q text)` | `text` | sql | immutable | invoker | — | — |
 | `photo_product_id(object_name text)` | `uuid` | sql | immutable | invoker | {search_path=""} | — |
 | `pin_base_price_break()` | `trigger` | plpgsql | volatile | invoker | {search_path=""} | — |
 | `pin_variant_product()` | `trigger` | plpgsql | volatile | invoker | {search_path=""} | — |
@@ -1198,7 +1271,7 @@ infraction, pas une colonne vide.
 
 ## Exceptions RLS inscrites — SPEC § 2.1
 
-19 entrées. Une exception n'est pas un précédent : chacune porte son
+20 entrées. Une exception n'est pas un précédent : chacune porte son
 garde et sa justification en texte, que la base refuse vide.
 
 - `merx.current_app_user` — garde `auth_identity`
@@ -1230,11 +1303,13 @@ garde et sa justification en texte, que la base refuse vide.
 - `public.create_worker` — garde `current_tenant`
   Écrit app_user hors RLS : le compte d'authentification est créé par la fonction Edge, qui rappelle la base avec le jeton de l'appelant (même raison qu'E1-01, dit sa migration). Le commerce vient du jeton, le rôle est écrit dans le corps, manage_users est exigé en première ligne. E1-02.
 - `public.list_sale_documents` — garde `current_tenant`
-  Rend le nom de l'auteur et le libellé de l'appareil de chaque document, que les policies restrictives d'app_user et de device réservent à manage_users et manage_devices — or l'acteur de la story est celui qui tient le comptoir. Et la policy OR merx.is_super_admin() de sale_document met toute liste en Seq Scan sur les documents de tous les commerces (BACKLOG E0-03). N'expose qu'un full_name et un libellé par document du commerce du jeton, jamais le registre des employés ni celui des appareils. Deux gardes : can(create_sale) en première ligne, et le filtre sur merx.current_tenant_id() — seul garde d'isolation de ce chemin. E4-07.
+  Rend le nom de l'auteur, le libellé de l'appareil et le nom du client de chaque document, que les policies restrictives d'app_user et de device réservent à manage_users et manage_devices — or l'acteur de la story est celui qui tient le comptoir. Et la policy OR merx.is_super_admin() de sale_document met toute liste en Seq Scan sur les documents de tous les commerces (BACKLOG E0-03). N'expose qu'un full_name, un libellé d'appareil et un nom de client par document du commerce du jeton, jamais les registres eux-mêmes. Deux gardes : can(create_sale) en première ligne, et le filtre sur merx.current_tenant_id() — seul garde d'isolation de ce chemin. E4-07 ; filtre client ajouté en E6-01.
 - `public.list_stock_movements` — garde `current_tenant`
   Rend le nom de l'auteur de chaque mouvement, que la policy restrictive d'app_user réserve à manage_users — or l'acteur de la story est le vendeur, et le critère exige l'auteur. N'expose qu'un full_name par mouvement d'une variante du commerce du jeton, jamais le registre des employés. Trois gardes : can(view_catalogue) en première ligne, l'appartenance de la variante au commerce (zéro ligne sinon), et le filtre sur merx.current_tenant_id() des mouvements rendus. E3-02.
 - `public.register_device` — garde `current_tenant`
   Un worker enregistre sa tablette, alors que la policy restrictive manage_devices lui ferme device en lecture comme en écriture. Le commerce vient du jeton ; un identifiant connu ailleurs répond « introuvable ». E1-03.
+- `public.search_clients` — garde `current_tenant`
+  Sous RLS, Postgres n'utilise comme condition d'index que des prédicats leakproof ; like, lower, unaccent et pg_trgm ne le sont pas, et postgres n'est pas superutilisateur — même mesure qu'en E2-04 (search_products). Le filtre merx.current_tenant_id() en tête du corps est le seul garde d'isolation. SPEC § 2.1, exception nommée. E6-01.
 - `public.search_products` — garde `current_tenant`
   Sous RLS, Postgres n'utilise comme condition d'index que des prédicats leakproof ; like, lower, unaccent et pg_trgm ne le sont pas, et postgres n'est pas superutilisateur. Mesuré en E2-04 (cinq commerces de 10 000 produits, mêmes 1 251 lignes rendues) : Seq Scan de 417 à 472 ms sous authenticated, 8,6 à 9,7 ms par l'index trigramme. Le filtre merx.current_tenant_id() en tête du corps est le seul garde d'isolation. SPEC § 2.1, exception nommée.
 - `public.set_user_active` — garde `current_tenant`

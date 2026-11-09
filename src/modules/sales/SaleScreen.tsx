@@ -39,10 +39,12 @@
  * **Un stock à zéro n'empêche rien** (RÈGLE M2-3) : la quantité en stock est un
  * repère affiché à côté de l'article, jamais une condition.
  *
- * **Le client n'est pas ici** : la table `client` et `sale_document.client_id`
- * naissent en E6-01, qui porte déjà le critère « création possible depuis
- * l'écran de vente, sans le quitter ». Un bouton qui ne mènerait à rien
- * apprendrait un geste faux.
+ * **Le client, choisi ou créé sans quitter l'écran** (E6-01) : un bouton
+ * « Client : aucun » au-dessus du total ouvre `ClientPicker` en place — aucune
+ * route, aucun geste de plus quand le vendeur ne l'ouvre pas. Un bon sans
+ * client reste valable (SPEC § 2.6) ; le critère est le même que
+ * `canSave`/`saleIsComplete` : l'absence de client n'empêche jamais
+ * d'enregistrer.
  *
  * **Trois types de document** (E4-05) : devis, commande, bon de livraison. Le
  * bon par défaut (RÈGLE M3-1), et le choix se fait avant d'enregistrer — c'est
@@ -71,6 +73,7 @@ import { useCan } from '@/lib/auth/useCan'
 import { ScanButton } from '@/lib/barcode'
 import { moneyText, quantityText } from '@/lib/decimal'
 import { cachedDevicePrefix, installationId } from '@/lib/device'
+import { ClientPicker } from '@/modules/clients'
 import {
   SEARCH_DELAY_MS,
   SEARCH_LIMIT,
@@ -498,6 +501,8 @@ export function SaleScreen() {
   const [lines, setLines] = useState<SaleLine[]>([])
   const [progress, setProgress] = useState<SaleProgress>({})
   const [docType, setDocType] = useState<SaleDocType>(SALE_DOC_TYPE)
+  /* Le client du bon — E6-01. Absent : un bon sans client reste valable. */
+  const [client, setClient] = useState<{ id: string; name: string } | null>(null)
   const [saving, setSaving] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
   const [issued, setIssued] = useState<string | null>(null)
@@ -702,6 +707,7 @@ export function SaleScreen() {
         lines,
         docType,
         ...(source === null ? {} : { sourceDocumentId: source.documentId }),
+        ...(client === null ? {} : { clientId: client.id }),
         deviceId: installationId(),
         prefix: cachedDevicePrefix(),
         progress: carried,
@@ -728,6 +734,7 @@ export function SaleScreen() {
       }
 
       setLines([])
+      setClient(null)
     } catch (error: unknown) {
       setFailure(error instanceof Error ? error.message : SALE_MESSAGES.notSaved)
     } finally {
@@ -741,6 +748,7 @@ export function SaleScreen() {
     setPrintFailure(null)
     setTicket(null)
     setQuery('')
+    setClient(null)
   }
 
   return (
@@ -966,6 +974,14 @@ export function SaleScreen() {
             </ul>
           )}
         </section>
+
+        {/* Le client — E6-01. Un bouton fermé par défaut : zéro geste de plus
+            quand le vendeur ne l'ouvre pas (SPEC § 2.6). */}
+        <ClientPicker
+          value={client}
+          onSelect={setClient}
+          onClear={() => setClient(null)}
+        />
 
         {/* Le tiers bas : le total, puis l'action (BRAND-UI § 7). */}
         <div className="flex flex-col gap-2">

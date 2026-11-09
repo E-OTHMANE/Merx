@@ -15,7 +15,9 @@
  * dans un cadre, et le montant barré ; pas par la seule teinte (BRAND-UI § 5), et
  * pas en rouge : le rouge ne dit que la dette et l'action destructrice.
  *
- * **Le filtre par client n'existe pas** : `client_id` naît en E6-01.
+ * **Le filtre par client** (E6-01) réutilise `ClientPicker` (`allowCreate={false}` —
+ * un filtre ne crée pas de fiche), posé à côté de l'appareil : même paramètre
+ * `p_client_id` que celui que la base lit déjà dans `list_sale_documents()`.
  *
  * **L'appareil se filtre pour tout le monde, et l'employé n'en voit que la
  * lettre.** Le patron choisit dans la liste des appareils (`manage_devices`),
@@ -43,6 +45,7 @@ import { useCan } from '@/lib/auth'
 import { formatDateTime } from '@/lib/dates'
 import { moneyText } from '@/lib/decimal'
 import { listDevices, type Device } from '@/modules/admin'
+import { ClientPicker } from '@/modules/clients'
 import type { SaleDocType } from '@/modules/sales/documentNumber'
 import {
   DOC_TYPE_LABELS,
@@ -129,6 +132,7 @@ export function DocumentListScreen() {
   const [deviceId, setDeviceId] = useState('')
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
+  const [client, setClient] = useState<{ id: string; name: string } | null>(null)
 
   useEffect(() => {
     const timer = setTimeout(() => setSearch(typed), SEARCH_DELAY_MS)
@@ -143,7 +147,7 @@ export function DocumentListScreen() {
       .catch(() => setDevices([]))
   }, [canSeeDevices])
 
-  const filtered = [search, docType, status, deviceId, from, to].some((value) => value !== '')
+  const filtered = [search, docType, status, deviceId, from, to].some((value) => value !== '') || client !== null
 
   const deviceOptions: ReadonlyArray<{ id: string; text: string }> = canSeeDevices
     ? devices.map((device) => ({ id: device.id, text: `${device.prefix} — ${device.label}` }))
@@ -151,7 +155,15 @@ export function DocumentListScreen() {
 
   const load = useCallback((): (() => void) => {
     let current = true
-    const filter: DocumentFilter = { search, docType, status, deviceId, from, to }
+    const filter: DocumentFilter = {
+      search,
+      docType,
+      status,
+      deviceId,
+      from,
+      to,
+      ...(client === null ? {} : { clientId: client.id }),
+    }
     listSaleDocuments(filter)
       .then((page) => {
         if (!current) return
@@ -180,7 +192,7 @@ export function DocumentListScreen() {
     return () => {
       current = false
     }
-  }, [search, docType, status, deviceId, from, to])
+  }, [search, docType, status, deviceId, from, to, client])
 
   const retry = useCallback(() => {
     setState({ status: 'loading' })
@@ -267,6 +279,14 @@ export function DocumentListScreen() {
               </select>
             </label>
           )}
+
+          <ClientPicker
+            value={client}
+            onSelect={setClient}
+            onClear={() => setClient(null)}
+            allowCreate={false}
+            noneLabel="Tous"
+          />
 
           <div className="flex gap-3">
             <label className="flex min-w-0 flex-1 flex-col gap-1">

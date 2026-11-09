@@ -11,11 +11,11 @@
  * Masquer n'est pas interdire : la route garde son `RequireCapability`.
  *
  * Un onglet n'entre dans `TABS` qu'avec son écran. Vente est arrivée avec
- * E4-03 ; Clients (E6-01) et Rapports (E10-01) viendront avec leur story, dans
+ * E4-03, Clients avec E6-01 ; Rapports (E10-01) viendra avec sa story, dans
  * l'ordre de BRAND-UI § 13 — cinq au plus.
  */
 
-import { House, Package, Receipt, type LucideIcon } from 'lucide-react'
+import { House, Package, Receipt, Users, type LucideIcon } from 'lucide-react'
 import { NavLink, Outlet } from 'react-router-dom'
 
 import { useCan, type Capability } from '@/lib/auth'
@@ -34,6 +34,7 @@ const TABS: readonly Tab[] = [
      caddie, et c'est un bon de livraison que le vendeur sort (RÈGLE M3-1). */
   { to: '/sale', label: 'Vente', icon: Receipt, capability: 'create_sale' },
   { to: '/products', label: 'Produits', icon: Package, capability: 'view_catalogue' },
+  { to: '/clients', label: 'Clients', icon: Users, capability: 'manage_client' },
 ]
 
 function TabLink({ tab }: { tab: Tab }) {

@@ -140,6 +140,8 @@ const summaryRow = (n: number, overrides: Record<string, unknown> = {}): Record<
   device_label: 'Comptoir',
   device_prefix: 'A',
   author_name: 'Fatima',
+  client_id: null,
+  client_name: null,
   ...overrides,
 })
 
@@ -380,12 +382,30 @@ describe('la liste des documents', () => {
     await waitFor(() => expect(rpcCalls.at(-1)?.args['p_device_id']).toBe('dev-a'))
   })
 
-  it('n’offre aucun filtre par client : la colonne naît en E6-01', async () => {
+  /*
+   * E6-01 : le filtre réutilise `ClientPicker`, fermé par défaut (« Tous »),
+   * sans bouton de création — un filtre ne crée pas de fiche.
+   */
+  it('offre le filtre par client, fermé, sans création', async () => {
     respondRpc.mockReturnValue({ data: [], error: null })
     renderAt('/documents', 'owner')
 
-    await screen.findByLabelText('Statut')
-    expect(screen.queryByLabelText(/client/i)).not.toBeInTheDocument()
+    const button = await screen.findByRole('button', { name: /^Client/ })
+    expect(button).toHaveTextContent('Tous')
+
+    await userEvent.click(button)
+    const search = await screen.findByLabelText('Rechercher un client')
+    await userEvent.type(search, 'Droguerie')
+    expect(screen.queryByRole('button', { name: /^Créer/ })).not.toBeInTheDocument()
+  })
+
+  it('sans client choisi, p_client_id n’est pas envoyé', async () => {
+    respondRpc.mockReturnValue({ data: [summaryRow(1)], error: null })
+    renderAt('/documents', 'worker')
+
+    await screen.findByText('BL-A-26-00001')
+    const listCall = rpcCalls.filter((call) => call.name === 'list_sale_documents').at(-1)
+    expect(listCall?.args['p_client_id']).toBeNull()
   })
 })
 

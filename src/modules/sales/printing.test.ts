@@ -110,6 +110,8 @@ describe('documentTicket()', () => {
         deviceLabel: 'Comptoir',
         devicePrefix: 'A',
         authorName: 'Fatima',
+        clientId: null,
+        clientName: null,
       },
       lines: [
         {

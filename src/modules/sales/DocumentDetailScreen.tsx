@@ -407,6 +407,12 @@ function Content({
               : `${document.devicePrefix ?? ''} — ${document.deviceLabel}`}
           </dd>
         </div>
+        {/* E6-01. Un bon sans client reste valable (SPEC § 2.6) : la ligne se
+            lit alors « — », comme l'appareil absent. */}
+        <div>
+          <dt className="text-label text-paper-600">Client</dt>
+          <dd className="text-body text-paper-900">{document.clientName ?? '—'}</dd>
+        </div>
         {document.notes !== null && document.notes !== '' && (
           <div>
             <dt className="text-label text-paper-600">

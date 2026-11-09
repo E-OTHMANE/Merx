@@ -26,7 +26,10 @@
  * des domaines nommés interdit (SPEC § 4). Ils sont affichés (`moneyText()`),
  * jamais additionnés ni comparés ici.
  *
- * **Pas de filtre par client** : `sale_document.client_id` naît en E6-01.
+ * **Le filtre par client** (E6-01) passe par la même fonction, pour la même
+ * raison que l'auteur et l'appareil : `client` est lisible par tout le
+ * commerce (§ 3.1), mais une seconde fonction dirait deux fois la même
+ * exception § 2.1 pour le même appel.
  */
 
 import { startOfDay, endOfDay } from '@/lib/day'
@@ -76,6 +79,8 @@ export interface DocumentFilter {
   deviceId?: string
   /** Un numéro entier, des chiffres, ou un fragment — la base distingue. */
   search?: string
+  /** E6-01. */
+  clientId?: string
 }
 
 /** Une ligne de la liste, et l'en-tête du détail. */
@@ -101,6 +106,10 @@ export interface SaleDocumentSummary {
   devicePrefix: string | null
   /** `null` si l'auteur n'est plus dans la fiche du commerce. */
   authorName: string | null
+  /** E6-01. `null` quand le document n'a pas de client. */
+  clientId: string | null
+  /** Le nom tel qu'il était à l'émission, même si la fiche a été supprimée depuis. */
+  clientName: string | null
 }
 
 interface SummaryRow {
@@ -121,6 +130,8 @@ interface SummaryRow {
   device_label: string | null
   device_prefix: string | null
   author_name: string | null
+  client_id: string | null
+  client_name: string | null
 }
 
 const summary = (row: SummaryRow): SaleDocumentSummary => ({
@@ -141,6 +152,8 @@ const summary = (row: SummaryRow): SaleDocumentSummary => ({
   deviceId: row.device_id,
   devicePrefix: row.device_prefix,
   authorName: row.author_name,
+  clientId: row.client_id,
+  clientName: row.client_name,
 })
 
 const orNull = (value: string | undefined): string | null =>
@@ -157,6 +170,7 @@ export function listArguments(filter: DocumentFilter, limit: number) {
     p_doc_type: orNull(filter.docType),
     p_device_id: orNull(filter.deviceId),
     p_search: orNull(filter.search),
+    p_client_id: orNull(filter.clientId),
     p_limit: limit,
   }
 }

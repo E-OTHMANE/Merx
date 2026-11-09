@@ -95,6 +95,9 @@ vi.mock('@/lib/supabase', () => ({
             error: null,
           }).then(resolve, reject)
         }
+        if (fn === 'search_clients') {
+          return Promise.resolve({ data: clientHits, error: null }).then(resolve, reject)
+        }
         if (fn !== 'search_products') return Promise.reject(new Error(`rpc inattendue : ${fn}`))
         const q = args?.q ?? ''
         queries.push(q)
@@ -204,6 +207,9 @@ let stock: Map<string, string>
  */
 let sourceDocument: unknown = null
 
+/* Ce que `search_clients()` rend quand le panneau client s'ouvre — E6-01. */
+let clientHits: Array<{ id: string; name: string; phone: string | null; city: string | null }>
+
 function answerSearch(q: string): Response {
   const needle = q.trim().toLowerCase()
   if (needle === '') return { data: CATALOGUE, error: null }
@@ -275,6 +281,8 @@ function defaultResponse(call: Call): Response {
 
   if (call.table === 'sale_line') return { data: null, error: null }
 
+  if (call.table === 'client' && call.op === 'insert') return { data: null, error: null }
+
   throw new Error(`appel inattendu : ${call.op} ${call.table}`)
 }
 
@@ -317,6 +325,7 @@ beforeEach(() => {
   stock = new Map()
   settings = []
   sourceDocument = null
+  clientHits = []
   printing.native = false
   printing.printTicket.mockReset()
   printing.printTicket.mockResolvedValue(undefined)
@@ -669,6 +678,91 @@ describe('l’enregistrement', () => {
 
     expect(await screen.findByText('Réseau indisponible')).toBeInTheDocument()
     expect(within(bon()).getAllByRole('listitem')).toHaveLength(2)
+  })
+})
+
+/* ========================================================================== */
+/* Le client — E6-01                                                           */
+/* ========================================================================== */
+
+const clientButton = () => screen.getByRole('button', { name: /^Client/ })
+
+describe('le client, choisi ou créé sans quitter l’écran', () => {
+  it('le bouton fermé dit « Aucun », et s’ouvre d’un tap', async () => {
+    renderSale()
+    await screen.findByText('Crème hydratante 200 ml')
+
+    expect(clientButton()).toHaveTextContent('Aucun')
+    await userEvent.click(clientButton())
+
+    expect(screen.getByLabelText('Rechercher un client')).toBeInTheDocument()
+  })
+
+  it('choisit un client trouvé par la recherche, et le pose sur le bon', async () => {
+    clientHits = [{ id: 'cli-1', name: 'Droguerie Centrale', phone: '0612345678', city: null }]
+    await addCreme()
+
+    await userEvent.click(clientButton())
+    await userEvent.type(screen.getByLabelText('Rechercher un client'), 'Drog')
+    await userEvent.click(await screen.findByText('Droguerie Centrale'))
+
+    expect(clientButton()).toHaveTextContent('Droguerie Centrale')
+
+    await userEvent.click(saveButton())
+    await screen.findByText(/BL-A-\d\d-00001/)
+
+    const draft = writes()[0]!.payload as Record<string, unknown>
+    expect(draft['client_id']).toBe('cli-1')
+  })
+
+  it('crée un client depuis le bon, d’un nom seul — sans route', async () => {
+    await addCreme()
+
+    await userEvent.click(clientButton())
+    await userEvent.type(screen.getByLabelText('Rechercher un client'), 'Nouvelle Droguerie')
+    await userEvent.click(screen.getByRole('button', { name: 'Créer « Nouvelle Droguerie »' }))
+
+    await waitFor(() => expect(clientButton()).toHaveTextContent('Nouvelle Droguerie'))
+    expect(calls.some((call) => call.table === 'client' && call.op === 'insert')).toBe(true)
+  })
+
+  it('un bon sans client enregistré n’envoie aucun client_id', async () => {
+    await addCreme()
+    await userEvent.click(saveButton())
+    await screen.findByText(/BL-A-\d\d-00001/)
+
+    const draft = writes()[0]!.payload as Record<string, unknown>
+    expect(draft).not.toHaveProperty('client_id')
+  })
+
+  it('« Retirer le client » revient à « aucun »', async () => {
+    clientHits = [{ id: 'cli-1', name: 'Droguerie Centrale', phone: null, city: null }]
+    await addCreme()
+
+    await userEvent.click(clientButton())
+    await userEvent.type(screen.getByLabelText('Rechercher un client'), 'Drog')
+    await userEvent.click(await screen.findByText('Droguerie Centrale'))
+    expect(clientButton()).toHaveTextContent('Droguerie Centrale')
+
+    await userEvent.click(clientButton())
+    await userEvent.click(screen.getByRole('button', { name: 'Retirer le client' }))
+
+    expect(clientButton()).toHaveTextContent('Aucun')
+  })
+
+  it('« Nouveau bon » repart sans le client du bon précédent', async () => {
+    clientHits = [{ id: 'cli-1', name: 'Droguerie Centrale', phone: null, city: null }]
+    await addCreme()
+
+    await userEvent.click(clientButton())
+    await userEvent.type(screen.getByLabelText('Rechercher un client'), 'Drog')
+    await userEvent.click(await screen.findByText('Droguerie Centrale'))
+
+    await userEvent.click(saveButton())
+    await screen.findByText(/BL-A-\d\d-00001/)
+    await userEvent.click(screen.getByRole('button', { name: 'Nouveau bon' }))
+
+    expect(clientButton()).toHaveTextContent('Aucun')
   })
 })
 

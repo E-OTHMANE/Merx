@@ -56,7 +56,7 @@ const tabBar = () => screen.queryByRole('navigation', { name: 'Navigation princi
 const backLinks = () => screen.queryAllByRole('link', { name: /^Retour : / })
 
 /** Les écrans de premier niveau : un onglet chacun, aucun retour. */
-const TOP_LEVEL: readonly string[] = ['/', '/sale', '/products']
+const TOP_LEVEL: readonly string[] = ['/', '/sale', '/products', '/clients']
 
 /** Les écrans de détail : leur retour, vers le parent désigné (BRAND-UI § 13). */
 const DETAIL: Readonly<Record<string, { visit: string; parent: string; label: string }>> = {
@@ -105,6 +105,13 @@ const DETAIL: Readonly<Record<string, { visit: string; parent: string; label: st
     parent: '/documents',
     label: 'Documents',
   },
+  /*
+   * E6-01. Écran de détail, comme la fiche produit : `manage_client` est
+   * accordée aux deux rôles, mais c'est un écran de création/modification,
+   * pas l'onglet lui-même.
+   */
+  '/clients/new': { visit: '/clients/new', parent: '/clients', label: 'Clients' },
+  '/clients/:id': { visit: '/clients/c-1', parent: '/clients', label: 'Clients' },
   '/users': { visit: '/users', parent: '/', label: 'Accueil' },
   '/users/new': { visit: '/users/new', parent: '/users', label: 'Employés' },
   '/devices': { visit: '/devices', parent: '/', label: 'Accueil' },
@@ -191,12 +198,12 @@ describe('la barre suit le rôle', () => {
    * employé.
    */
   it.each([['owner'], ['worker']])(
-    'offre Accueil, Vente et Produits à un %s',
+    'offre Accueil, Vente, Produits et Clients à un %s',
     async (role) => {
       renderAt('/', role)
 
       await waitFor(() => expect(tabBar()).toBeInTheDocument())
-      expect(tabs()).toEqual(['Accueil', 'Vente', 'Produits'])
+      expect(tabs()).toEqual(['Accueil', 'Vente', 'Produits', 'Clients'])
     },
   )
 

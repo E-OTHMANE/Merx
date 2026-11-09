@@ -70,7 +70,7 @@ Une exception n'est pas un précédent. **RÈGLE** — toute fonction `security 
 
 `row_tenant` n'est pas `current_tenant` déguisé : `new.tenant_id` est le commerce de la **ligne**, que le `with check` de `tenant_isolation` a déjà forcé à celui du jeton avant que le garde parle — alors qu'un garde de trigger filtrant sur `merx.current_tenant_id()` cesserait de garder le jour où une migration écrirait sans jeton. Et `auth_identity` existe parce que deux fonctions *trouvent* le commerce (`merx.current_app_user()`, `merx.custom_access_token()`) : s'y borner serait circulaire.
 
-Le registre compte **dix-huit** entrées à la fin d'E4-06 : six dans `public` (`create_tenant`, `create_worker`, `set_user_active`, `register_device`, `search_products`, `list_stock_movements`) et douze dans `merx` — sept gardes de trigger en `row_tenant`, deux fonctions en `argument_tenant`, deux en `auth_identity`, et `merx.log_audit()` en `current_tenant`. `conventions.test.ts` en tient la liste exacte : une entrée de plus se lit, elle ne s'ajoute pas en silence. *Dix-neuf depuis E4-07* : `public.list_sale_documents()` s'y ajoute, en `current_tenant` — la liste et le détail des documents rendent l'auteur et l'appareil que `app_user` et `device` refusent à l'employé, et la policy `OR merx.is_super_admin()` mettrait toute lecture directe en Seq Scan (BACKLOG E0-03, ouverte).
+Le registre compte **dix-huit** entrées à la fin d'E4-06 : six dans `public` (`create_tenant`, `create_worker`, `set_user_active`, `register_device`, `search_products`, `list_stock_movements`) et douze dans `merx` — sept gardes de trigger en `row_tenant`, deux fonctions en `argument_tenant`, deux en `auth_identity`, et `merx.log_audit()` en `current_tenant`. `conventions.test.ts` en tient la liste exacte : une entrée de plus se lit, elle ne s'ajoute pas en silence. *Dix-neuf depuis E4-07* : `public.list_sale_documents()` s'y ajoute, en `current_tenant` — la liste et le détail des documents rendent l'auteur et l'appareil que `app_user` et `device` refusent à l'employé, et la policy `OR merx.is_super_admin()` mettrait toute lecture directe en Seq Scan (BACKLOG E0-03, ouverte). *Vingt depuis E6-01* : `public.search_clients()`, en `current_tenant` — même obstacle et même forme que `search_products()`.
 
 ### 2.2 Noyau + packs
 
@@ -484,7 +484,7 @@ Le registre existe parce que le motif d'E4-01 ne se transpose pas : `sale_cancel
 `sale_document`
 `id, tenant_id, doc_type, doc_number, device_id, client_id, warehouse_id, status, subtotal, discount_total, total, notes, created_by, issued_at, cancellation_reason`
 
-- `client_id` arrive avec la table `client`, en E6-01, **avec sa clé composite dans le même geste** : posée avant, la colonne laisserait passer l'identifiant d'un autre commerce (§ 4).
+- `client_id` est arrivée avec la table `client`, en E6-01, **avec sa clé composite dans le même geste** : posée avant, la colonne aurait laissé passer l'identifiant d'un autre commerce (§ 4). Nullable — un bon sans client reste valable (§ 2.6).
 - `source_document_id` est le document dont celui-ci est **issu** — le devis d'une commande, la commande d'un bon. Nul pour un document né de la saisie. Auto-référence à clé composite sur `tenant_id`, **sans cascade** et **sans unicité** : un parent a plusieurs enfants (voir M3-4). Ajouté en E4-05.
 - `doc_number` et `issued_at` sont nuls tant que le document est un brouillon (RÈGLE M3-2).
 - `cancellation_reason` est le motif de l'annulation, obligatoire dès que `status = 'cancelled'` — en base, par `sale_document_cancellation_reason`, pas seulement à l'écran. Ajouté en E4-01 : sans lui une annulation par l'API serait anonyme, et l'entrée `document_cancellation` du journal n'aurait rien à retenir (même raisonnement que le motif d'un ajustement, § 7).
@@ -641,9 +641,33 @@ Contrairement au reste à livrer de la RÈGLE M3-4 — où rien ne compare les q
 ### M4 — Clients et crédit
 
 `client`
-`id, tenant_id, name, phone, city, address, credit_limit, ice, notes, is_active, deleted_at`
+`id, tenant_id, name, phone, phone_digits, search_text, city, address, credit_limit, ice, notes, is_active, deleted_at`
 
 - `ice` : nullable, masqué, inutilisé en V1.
+- `credit_limit` n'existe pas encore : posée en E6-03, avec son garde `owner`
+  seul. Une colonne nullable posée en avance serait écrite par un `worker` par
+  simple appel API pendant tout l'intervalle qui sépare les deux stories —
+  même raisonnement que `client_id` sur `sale_document` en E4-01. Arbitré en
+  E6-01.
+- `phone` : facultatif, saisi librement. Normalisé côté application quand la
+  saisie a la forme d'un numéro marocain (`normalizePhone()`, § 9 M8) ; sinon
+  conservé tel que tapé, bords retirés — un numéro étranger ou une faute de
+  frappe n'empêche jamais la création (§ 2.6). La base ne force aucune forme :
+  elle ne fait que le ménage qu'une écriture directe (API, import) ne ferait
+  pas elle-même. Deux clients peuvent partager un numéro ; aucune unicité.
+- `phone_digits` : colonne engendrée, `merx.phone_digits(phone)` — le cœur de
+  `normalizePhone()` sans sa validation finale, pour qu'un numéro illisible
+  reste cherchable par ses chiffres. Sert la recherche par téléphone.
+- `search_text` : colonne engendrée, le nom sous `merx.search_fold()` suivi de
+  `phone_digits`. Sert `search_clients()`.
+- Arbitré en E6-01.
+
+**Recherche — `public.search_clients(q)`.** Nom et téléphone, à une faute
+près, arabe compris — la forme de `search_products()` (§ 2.1, exception
+nommée ; § 6). Une requête « en forme de téléphone » (chiffres, espaces, `+`,
+`.`, `-`, parenthèses, deux chiffres au moins) est réduite à ses chiffres par
+`merx.phone_query_digits()` et cherchée en sous-chaîne de `phone_digits` ;
+sinon, recherche par mots du nom. Arbitré en E6-01.
 
 `client_ledger_entry`
 `id, tenant_id, client_id, entry_type, amount, source_type, source_id, entry_date, device_id, created_by`

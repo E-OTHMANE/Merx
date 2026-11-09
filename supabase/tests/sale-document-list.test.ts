@@ -66,6 +66,8 @@ interface Shop {
   deviceB: string
   /** Deux variantes, pour que les deux lignes d'un document diffèrent. */
   variants: [string, string]
+  /** Deux clients — E6-01, le filtre et le nom rendus par la liste. */
+  clients: [string, string]
 }
 
 const shops: { a: Shop; b: Shop } = {
@@ -76,6 +78,7 @@ const shops: { a: Shop; b: Shop } = {
     deviceA: '',
     deviceB: '',
     variants: ['', ''],
+    clients: ['', ''],
   },
   b: {
     tenant: '',
@@ -84,6 +87,7 @@ const shops: { a: Shop; b: Shop } = {
     deviceA: '',
     deviceB: '',
     variants: ['', ''],
+    clients: ['', ''],
   },
 }
 
@@ -141,6 +145,18 @@ async function makeShop(name: string): Promise<Shop> {
     )
   }
 
+  const clients: string[] = []
+  for (const clientName of [`Client 1 de ${name}`, `Client 2 de ${name}`]) {
+    clients.push(
+      (
+        await one<{ id: string }>(
+          'insert into public.client (tenant_id, name, created_by) values ($1, $2, $3) returning id',
+          [tenant, clientName, owner],
+        )
+      ).id,
+    )
+  }
+
   return {
     tenant,
     warehouse,
@@ -148,6 +164,7 @@ async function makeShop(name: string): Promise<Shop> {
     deviceA: devices[0]!,
     deviceB: devices[1]!,
     variants: [variants[0]!, variants[1]!],
+    clients: [clients[0]!, clients[1]!],
   }
 }
 
@@ -162,6 +179,8 @@ interface DocSpec {
   withLines?: boolean
   notes?: string
   reason?: string
+  /** `sale_document.client_id` — E6-01. Absent : un bon sans client. */
+  client?: string
 }
 
 /**
@@ -187,8 +206,8 @@ async function makeDoc(spec: DocSpec): Promise<string> {
 
   const created = await one<{ id: string }>(
     'insert into public.sale_document (tenant_id, doc_type, warehouse_id, device_id, created_by,' +
-      ' subtotal, total, notes, created_at)' +
-      ' values ($1, $2::public.sale_doc_type, $3, $4, $5, $6, $6, $7, $8::timestamptz) returning id',
+      ' subtotal, total, notes, created_at, client_id)' +
+      ' values ($1, $2::public.sale_doc_type, $3, $4, $5, $6, $6, $7, $8::timestamptz, $9) returning id',
     [
       shop.tenant,
       spec.type,
@@ -198,6 +217,7 @@ async function makeDoc(spec: DocSpec): Promise<string> {
       total,
       spec.notes ?? null,
       spec.at,
+      spec.client ?? null,
     ],
   )
 
@@ -267,10 +287,10 @@ beforeAll(async () => {
   shops.b = await makeShop('Documents B')
 
   const a = shops.a
-  docs['d1'] = await makeDoc({ shop: a, type: 'quote', device: 'A', seq: 1, status: 'confirmed', at: '2026-10-01T08:00:00Z', withLines: true })
+  docs['d1'] = await makeDoc({ shop: a, type: 'quote', device: 'A', seq: 1, status: 'confirmed', at: '2026-10-01T08:00:00Z', withLines: true, client: a.clients[0] })
   docs['d8'] = await makeDoc({ shop: a, type: 'quote', device: 'A', seq: 42, status: 'confirmed', at: '2026-10-01T09:00:00Z' })
-  docs['d2'] = await makeDoc({ shop: a, type: 'order', device: 'A', seq: 2, status: 'confirmed', at: '2026-10-02T08:00:00Z' })
-  docs['d3'] = await makeDoc({ shop: a, type: 'delivery_note', device: 'A', seq: 42, status: 'confirmed', at: '2026-10-03T08:00:00Z', withLines: true, notes: 'Livraison chantier' })
+  docs['d2'] = await makeDoc({ shop: a, type: 'order', device: 'A', seq: 2, status: 'confirmed', at: '2026-10-02T08:00:00Z', client: a.clients[0] })
+  docs['d3'] = await makeDoc({ shop: a, type: 'delivery_note', device: 'A', seq: 42, status: 'confirmed', at: '2026-10-03T08:00:00Z', withLines: true, notes: 'Livraison chantier', client: a.clients[1] })
   docs['d4'] = await makeDoc({ shop: a, type: 'delivery_note', device: 'B', seq: 42, status: 'delivered', at: '2026-10-04T08:00:00Z' })
   docs['d5'] = await makeDoc({ shop: a, type: 'delivery_note', device: 'A', seq: 43, status: 'cancelled', at: '2026-10-05T08:00:00Z', reason: 'client absent' })
   docs['d6'] = await makeDoc({ shop: a, type: 'delivery_note', device: 'A', seq: 0, status: 'draft', at: '2026-10-06T08:00:00Z' })
@@ -307,13 +327,15 @@ interface Listed {
   device_label: string | null
   device_prefix: string | null
   author_name: string | null
+  client_id: string | null
+  client_name: string | null
 }
 
 const COLUMNS =
   'id, doc_type::text as doc_type, doc_number, status::text as status, subtotal::text as subtotal,' +
   ' discount_total::text as discount_total, total::text as total, notes, cancellation_reason,' +
   ' issued_at::text as issued_at, sort_at::text as sort_at, device_label, device_prefix::text as device_prefix,' +
-  ' author_name'
+  ' author_name, client_id, client_name'
 
 /** Appelle la fonction avec des arguments nommés, sous la session courante. */
 async function list(args: Record<string, unknown> = {}): Promise<Listed[]> {
@@ -398,7 +420,7 @@ describe('list_sale_documents — premier garde : la capacité', () => {
     const fn = await one<{ secdef: boolean; volatility: string; config: string[] }>(
       "select prosecdef as secdef, provolatile::text as volatility, proconfig as config" +
         " from pg_proc where oid = 'public.list_sale_documents(timestamptz, timestamptz," +
-        " public.sale_doc_status, public.sale_doc_type, uuid, text, uuid, int)'::regprocedure",
+        " public.sale_doc_status, public.sale_doc_type, uuid, text, uuid, uuid, int)'::regprocedure",
     )
 
     expect(fn.secdef).toBe(true)
@@ -625,6 +647,59 @@ describe('list_sale_documents — chaque filtre', () => {
       const rows = await list({ p_doc_type: 'delivery_note', p_status: 'confirmed' })
 
       expect(ids(rows)).toEqual([docs['d7'], docs['d3']])
+    })
+  })
+})
+
+/* ========================================================================== */
+/* Le filtre par client — E6-01                                                */
+/* ========================================================================== */
+
+describe('list_sale_documents — filtre par client', () => {
+  it('filtre par client, et rend son nom', async () => {
+    await inCase(async () => {
+      await asA()
+
+      const rows = await list({ p_client_id: shops.a.clients[0] })
+
+      expect(ids(rows)).toEqual([docs['d2'], docs['d1']])
+      expect(rows.every((row) => row.client_id === shops.a.clients[0])).toBe(true)
+      expect(rows.every((row) => row.client_name === 'Client 1 de Documents A')).toBe(true)
+    })
+  })
+
+  it('un bon sans client reste dans la liste, client_id et client_name nuls', async () => {
+    await inCase(async () => {
+      await asA()
+
+      const [row] = await list({ p_document_id: docs['d8'] })
+
+      expect(row?.client_id).toBeNull()
+      expect(row?.client_name).toBeNull()
+    })
+  })
+
+  it('compose avec les autres filtres', async () => {
+    await inCase(async () => {
+      await asA()
+
+      expect(ids(await list({ p_client_id: shops.a.clients[0], p_doc_type: 'order' }))).toEqual([
+        docs['d2'],
+      ])
+    })
+  })
+
+  /*
+   * L'isolation vient de la clé composite de `client_id`, pas d'un filtre
+   * ajouté ici : un client du voisin n'est jamais un `client_id` d'un document
+   * de A, donc l'égalité ne rend rien — sans qu'il faille sonder la ligne du
+   * voisin pour le savoir.
+   */
+  it('le client du voisin ne filtre rien — aucun document de A ne le porte', async () => {
+    await inCase(async () => {
+      await asA()
+
+      expect(await list({ p_client_id: shops.b.clients[0] })).toEqual([])
     })
   })
 })

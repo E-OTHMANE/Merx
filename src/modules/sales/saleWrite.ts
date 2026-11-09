@@ -38,6 +38,11 @@
  * une commande ou un bon s'écrivent par le même chemin, et une transformation
  * n'est qu'un document neuf qui porte `source_document_id` (RÈGLE M3-4 —
  * l'original n'est jamais muté, et la base le tient de toute façon).
+ *
+ * **Le client, choisi ou créé depuis l'écran (E6-01), suit le même chemin que
+ * les totaux** : posé à la naissance du brouillon, réécrit avec eux à chaque
+ * retente — un bon sans client reste valable (SPEC § 2.6), donc son absence
+ * ne coûte aucun geste de plus.
  */
 
 import { MONEY_SCALE, QUANTITY_SCALE, parseDecimal, toSqlDecimal } from '@/lib/decimal'
@@ -76,6 +81,13 @@ export interface RecordSaleRequest {
    * Posé à la naissance du brouillon : il gèle avec lui à la confirmation.
    */
   sourceDocumentId?: string
+  /**
+   * Le client du bon, choisi ou créé depuis l'écran de vente (E6-01). Absent :
+   * un bon sans client reste valable (SPEC § 2.6). Posé à la naissance du
+   * brouillon, et réécrit avec les totaux à la retente — comme eux, il peut
+   * avoir changé entre deux tentatives d'une même saisie.
+   */
+  clientId?: string
   /** `installationId()` — la clé de cet appareil en base. */
   deviceId: string
   /** `cachedDevicePrefix()` — sa lettre. */
@@ -156,6 +168,7 @@ export async function recordSale(request: RecordSaleRequest): Promise<ConfirmedD
           ? {}
           : { source_document_id: request.sourceDocumentId }),
         ...(request.notes === undefined ? {} : { notes: request.notes }),
+        ...(request.clientId === undefined ? {} : { client_id: request.clientId }),
       })
       .select('id')
       .single()
@@ -174,6 +187,7 @@ export async function recordSale(request: RecordSaleRequest): Promise<ConfirmedD
         subtotal: totals.subtotal,
         discount_total: totals.discountTotal,
         total: totals.total,
+        client_id: request.clientId ?? null,
       })
       .eq('id', documentId)
       .eq('status', 'draft')

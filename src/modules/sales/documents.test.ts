@@ -99,6 +99,8 @@ const summaryRow = (n: number, overrides: Record<string, unknown> = {}): Record<
   device_label: 'Comptoir',
   device_prefix: 'A',
   author_name: 'Patron',
+  client_id: null,
+  client_name: null,
   ...overrides,
 })
 
@@ -115,6 +117,7 @@ describe('listArguments', () => {
       p_doc_type: null,
       p_device_id: null,
       p_search: null,
+      p_client_id: null,
       p_limit: 101,
     })
   })
