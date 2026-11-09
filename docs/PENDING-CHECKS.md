@@ -8,7 +8,7 @@ a été exécutée et que sa sortie a été lue, ou que l'utilisateur la retire.
 ## Ouvertes
 
 **Presque tout ce qui suit est désormais porté par une story.** `BACKLOG.md` E12
-— « Préparation de l'arrêt terrain » — reprend ces lignes, une story par
+— « Préparation du lancement » — reprend ces lignes, une story par
 chantier, avec ses critères :
 
 | Ligne ouverte | Story |
@@ -24,8 +24,24 @@ chantier, avec ses critères :
 | Toutes les lignes « à regarder à l'œil » et le chronomètre d'E4-03 | E12-12 |
 
 Restent **hors** d'E12, et c'est voulu : la procédure annuelle de Ramadan, qu'une
-annonce officielle déclenche et non l'arrêt terrain ; et les trois lignes de
+annonce officielle déclenche et non le lancement ; et les trois lignes de
 concurrence plus le plancher hors ligne, portés par **E9-03**.
+
+**Décidé le 2026-10-23 : pas d'arrêt terrain avant la fin de la V1.** Les premiers
+utilisateurs seront des proches, au lancement ; E12 est passée à la fin du backlog,
+étape 12. Trois conséquences pour ce fichier :
+
+- **Rien ici n'attend un hébergement, et il n'y en aura pas avant E12-01** : le
+  stack local reste la seule base, développement et essais sur appareil compris.
+  La ligne « balayage de fuseau contre la base hébergée » et tout ce qui touche à
+  la sauvegarde dorment donc jusqu'au lancement — et ne bloquent aucune étape.
+- **Trois lignes se ferment dès maintenant**, sans rien attendre : le PDF à l'œil
+  (E12-10), la ligne « Heure du Maroc » lue sur l'appareil (E12-11), le carnet du
+  comptoir (E12-12). Vous et un téléphone, avec l'APK du 2026-10-22 déjà installé.
+- **Une ligne ne peut pas attendre la fin : PowerSync dans la WebView** (E12-13).
+  Elle se mesure **avant l'ouverture d'E9**, l'étape 10, puisque c'est elle qui dit
+  si le SDK web tient — et E9 ne s'ouvre pas sans cette réponse. Elle ne dépend que
+  de la console distante (E12-03).
 
 
 ### Depuis E5-03 — le PDF A4
@@ -151,11 +167,11 @@ mesurable par la suite non plus.
       redémarrage de l'application. Si ça ne tient pas, le choix se fait entre
       le SDK React Native de PowerSync et un plugin SQLite natif — c'est-à-dire
       une décision d'architecture, et elle ne se prend pas le jour d'E9.
-- [ ] **La distribution et la mise à jour de l'APK, à trancher avant l'arrêt
-      terrain — pas à l'étape 10.** Les assets sont empaquetés dans l'APK
-      (décidé avec l'enveloppe) : la mise à jour automatique de la PWA ne joue
-      plus, et **chaque correctif pendant la visite des trois commerçants est un
-      APK à réinstaller à la main**. À décider : installation manuelle (APK
+- [ ] **La distribution et la mise à jour de l'APK, à trancher avant de distribuer
+      le premier APK (E12-08) — et non pendant E9.** Les assets sont empaquetés
+      dans l'APK (décidé avec l'enveloppe) : la mise à jour automatique de la PWA
+      ne joue plus, et **chaque correctif après le lancement est un APK à
+      réinstaller à la main**. À décider : installation manuelle (APK
       transmis, « sources inconnues » à autoriser sur chaque tablette) ou Play
       Store (compte éditeur, revue, délai), et si une mise à jour des seuls
       assets web mérite un mécanisme (Capgo et consorts) ou si l'APK suffit.

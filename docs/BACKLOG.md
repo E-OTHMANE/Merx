@@ -40,9 +40,11 @@ Treize épiques. Chaque story porte :
 | E9 | Hors-ligne | 10 |
 | E10 | Rapports | 11 |
 | E11 | Langues et interface | continu |
-| E12 | Préparation de l'arrêt terrain | 5 bis |
+| E12 | Préparation du lancement | 12 |
 
-**Arrêt obligatoire après E5.** Aller voir trois commerçants avant de démarrer E6. **E12 est ce qui se fait entre les deux** : mettre en ligne, sauvegarder, signer, diagnostiquer les deux défauts du 2026-10-22, et regarder l'application sur un vrai appareil.
+**Pas d'arrêt terrain avant la fin de la V1.** Décidé le 2026-10-23 : les étapes 6 à 11 s'enchaînent sans interruption, et les **premiers utilisateurs seront des proches, au lancement**. **E12 est la préparation de ce lancement**, et vient donc à la fin : mettre en ligne, sauvegarder, signer, diagnostiquer les deux défauts du 2026-10-22, et regarder l'application sur un vrai appareil.
+
+**Aucun hébergement d'ici là.** Le stack local reste la seule base — développement comme essais sur appareil. Ce que les étapes 6 à 11 arbitraient « par ce que diront trois commerçants » est arbitré par ce document, puis par l'usage des proches au lancement.
 
 ---
 
@@ -848,7 +850,7 @@ Elle est **posée par l'appareil, jamais recalculée à l'arrivée** : recalcule
 
 **Le plancher et l'arrondi d'E4-04 s'appliquent aux lignes copiées, et c'est voulu.** Une ligne copiée est une ligne neuve : un devis vieux d'un mois, passé sous un plancher relevé depuis, est refusé. Le refus tombe **au comptoir**, devant un vendeur qui a deux issues immédiates — faire forcer le prix par le patron, ou faire baisser le plancher. C'est l'inverse du cas hors ligne, où le même refus arrive des jours après une vente déjà faite, sans personne pour agir : celui-là est une décision en attente (`PENDING-CHECKS`, E9-03). Et la grille reprend la parole dès que la quantité change : une nouvelle quantité est une nouvelle vente, pas la reprise d'un prix promis.
 
-**Ce qui n'est pas gardé, et qui est une question pour l'arrêt terrain d'E6 :** rien ne compare les quantités des enfants à celles du parent. **Une commande de 100 peut donner deux bons de 100 chacun**, donc une livraison au-delà de la commande reste possible. Le garder exigerait de décider ce qu'on fait d'un reliquat, d'une commande révisée et d'un bon annulé — des règles de gestion qu'on ne devine pas depuis un écran. **À poser aux commerçants** : livre-t-on jamais plus que commandé, et si oui qu'est-ce que le papier doit dire ?
+**Ce qui n'est pas gardé, et qui est une question pour le lancement :** rien ne compare les quantités des enfants à celles du parent. **Une commande de 100 peut donner deux bons de 100 chacun**, donc une livraison au-delà de la commande reste possible. Le garder exigerait de décider ce qu'on fait d'un reliquat, d'une commande révisée et d'un bon annulé — des règles de gestion qu'on ne devine pas depuis un écran. **À poser aux premiers utilisateurs** : livre-t-on jamais plus que commandé, et si oui qu'est-ce que le papier doit dire ?
 
 **Côté écran, le minimum qui rende la chaîne atteignable.** Un choix de type (Devis / Commande / Bon) sur l'écran de vente — sans lui, aucun devis ne peut exister, donc la chaîne n'a pas de premier maillon —, sur le patron du `ViewSwitch` existant : BRAND-UI § 8 ne connaît que trois variantes de bouton et aucun « choix segmenté », rien de visuel n'est inventé. Et une route `/sale/from/:documentId` qui reprend les lignes dans ce même écran, où elles se modifient comme celles qu'on vient de taper : écran de **détail**, donc un retour vers Vente et aucune barre d'onglets (BRAND-UI § 13), classé dans `navigation.test.tsx`. **Aucune liste de documents n'est construite** : la recherche d'un bon et son détail sont E4-07, et c'est là que la filiation s'affichera.
 
@@ -1226,8 +1228,6 @@ d'accord sur le fuseau marocain à partir d'octobre 2026. Voir
 ---
 
 # E6 — Clients et crédit
-
-> **Arrêt terrain avant de démarrer cette épique.** Voir trois commerçants.
 
 ### E6-01 — Fiche client
 **Étape 6** · dépend de E0-02
@@ -1632,14 +1632,18 @@ Les deux gardes de `/products` se distinguent : l'onglet absent se lit à l'Accu
 
 ---
 
-# E12 — Préparation de l'arrêt terrain
+# E12 — Préparation du lancement
 
-L'étape 5 est close côté code. Cette épique est ce qui reste **avant** d'installer
-Merx chez trois commerçants : presque rien à construire, tout à mettre en ligne, à
-sauvegarder, à signer, à diagnostiquer et à regarder. Elle ramasse **toutes** les
-lignes que `docs/PENDING-CHECKS.md` attribue à ce moment-là ; une ligne de ce
-fichier ne se retire que lorsque la story qui la porte est close, et chaque story
-nomme les lignes qu'elle ferme.
+**Cette épique vient en dernier**, après E10 et E11 : c'est la préparation du
+lancement, et les premiers utilisateurs seront des proches. Il n'y a **pas d'arrêt
+terrain avant la fin de la V1** (décidé le 2026-10-23). Presque rien à construire,
+tout à mettre en ligne, à sauvegarder, à signer, à diagnostiquer et à regarder. Elle
+ramasse **toutes** les lignes que `docs/PENDING-CHECKS.md` attribue à ce moment-là ;
+une ligne de ce fichier ne se retire que lorsque la story qui la porte est close, et
+chaque story nomme les lignes qu'elle ferme.
+
+**Aucun hébergement avant E12-01.** Jusque-là, le stack local est la seule base :
+l'APK d'essai du 2026-10-22 vise l'IP du PC, et cela suffit à tout ce qui précède.
 
 **Quatre stories seulement produisent du code** — E12-04 (photo), E12-05 (scan),
 E12-06 (partage) et le workflow d'E12-07. Les autres sont des mises en ligne, des
@@ -1647,14 +1651,18 @@ décisions, ou des mesures faites à la main sur un appareil. Aucune ne se mesur
 `npm run test` seul : c'est la nature de cette épique, et la raison pour laquelle
 chaque critère dit **sur quoi** il se lit.
 
-**Ce qui ne demande que vous et un téléphone** : E12-10, E12-11, E12-12 — et elles
-peuvent se faire **dès maintenant**, avec l'APK du 2026-10-22 déjà installé, avant
-tout hébergement. E12-08 et l'arbitrage d'E12-01 ne demandent que vous, sans
-téléphone. E12-09 demande en plus une imprimante, E12-03 en plus un câble USB et un
-PC.
+**Quatre stories n'attendent pas la fin de la V1 — et une ne peut pas l'attendre.**
+E12-10, E12-11 et E12-12 ne demandent que vous et un téléphone, avec l'APK du
+2026-10-22 déjà installé : faisables **dès maintenant**, avant tout hébergement. Et
+**E12-13 doit passer avant l'ouverture d'E9**, l'étape 10 : c'est elle qui dit si le
+SDK web de PowerSync tient dans la WebView, elle ne dépend que d'E12-03, et la
+laisser à la fin ferait ouvrir E9 sans la réponse dont E9 a besoin. E12-08 et
+l'arbitrage d'E12-01 ne demandent que vous, sans téléphone. E12-09 demande en plus
+une imprimante, E12-03 en plus un câble USB et un PC.
 
-**Ordre.** E12-01 ouvre tout ce qui touche au serveur ; E12-07 est le goulot, il
-attend les trois correctifs. Les trois stories « téléphone seul » n'attendent rien.
+**Ordre.** E12-03 puis E12-13 d'abord, avant E9. Tout le reste au lancement :
+E12-01 ouvre ce qui touche au serveur ; E12-07 est le goulot, il attend les trois
+correctifs. Les trois stories « téléphone seul » n'attendent rien.
 
 | # | Story | Attend | Nature |
 |---|---|---|---|
@@ -1664,27 +1672,27 @@ attend les trois correctifs. Les trois stories « téléphone seul » n'attenden
 | 4 | E12-04 La photo | E12-03 | diagnostic + code |
 | 5 | E12-05 Le scan | E12-03 | diagnostic + code |
 | 6 | E12-06 Partage du PDF | — | code |
-| 7 | E12-07 APK des pilotes | 01, 04, 05, 06 | construction + signature |
+| 7 | E12-07 APK du lancement | 01, 04, 05, 06 | construction + signature |
 | 8 | E12-08 Distribution | E12-07 | décision |
 | 9 | E12-09 L'imprimante réelle | — | matériel |
 | 10 | E12-10 Le PDF à l'œil | — | **téléphone seul** |
 | 11 | E12-11 Heure du Maroc | — | **téléphone seul** |
 | 12 | E12-12 Le carnet du comptoir | — | **téléphone seul** |
-| 13 | E12-13 PowerSync en WebView | E12-03 | essai jetable |
+| 13 | E12-13 PowerSync en WebView | E12-03 | essai jetable, **avant E9** |
 
 **Ce que cette épique ne prend pas**, et pourquoi : la procédure annuelle de la
 bascule de Ramadan (`PENDING-CHECKS`, E0-06) est déclenchée par une annonce
-officielle, pas par l'arrêt terrain ; le harnais à deux connexions entrelacées et le
+officielle, pas par le lancement ; le harnais à deux connexions entrelacées et le
 plancher d'une vente faite hors ligne restent portés par **E9-03**, où ils sont déjà
 notés.
 
 ---
 
-### E12-01 — Hébergement tranché, et base des pilotes en ligne
-**Étape 5 bis** · dépend de E5-03
+### E12-01 — Hébergement tranché, et base de lancement en ligne
+**Étape 12** · dépend de E5-03
 
 **En tant que** éditeur de Merx, **je veux** une base que les trois commerces
-atteignent sans mon PC, **afin que** l'arrêt terrain ne dépende pas d'une machine
+atteignent sans mon PC, **afin que** le lancement ne dépende pas d'une machine
 allumée chez moi.
 
 **La décision est à l'utilisateur, et elle n'est écrite nulle part aujourd'hui** —
@@ -1722,17 +1730,17 @@ d'argent.
 - [ ] L'URL et la clé `anon` de l'hébergé notées là où le workflow d'E12-07 les lira
 
 **Notes** — Le stack local reste la machine de développement ; l'hébergé n'est que
-pour les pilotes. Garder les deux `.env` distincts, et remettre `.env.local` sur
+pour le lancement. Garder les deux `.env` distincts, et remettre `.env.local` sur
 `http://127.0.0.1:54521` après tout essai (`CLAUDE.md`).
 
 ---
 
 ### E12-02 — Sauvegarde nocturne hors de l'hébergeur, et restauration éprouvée
-**Étape 5 bis** · dépend de E12-01
+**Étape 12** · dépend de E12-01
 
 **En tant que** éditeur, **je veux** une copie des données des trois commerces
 ailleurs que chez l'hébergeur, **afin qu'**un compte suspendu ou une erreur de ma
-main ne coûte pas le travail de trois commerçants.
+main ne coûte pas le travail des premiers utilisateurs.
 
 **La sauvegarde n'est pas la propriété recherchée ; la restauration l'est.** Une
 sauvegarde dont personne n'a jamais relu le contenu est une case cochée, pas une
@@ -1759,7 +1767,7 @@ garantie.
 ---
 
 ### E12-03 — Console distante branchée sur la WebView
-**Étape 5 bis** · dépend de E5-01
+**Étape 12** · dépend de E5-01
 
 **En tant que** développeur, **je veux** lire la console de la WebView de l'APK sur
 un appareil réel, **afin de** diagnostiquer au lieu de deviner.
@@ -1772,7 +1780,7 @@ console distante branchée sur la WebView, sans quoi on devine ».
 - [ ] `chrome://inspect` sur le PC voit la WebView de l'APK installé, par USB
 - [ ] **La prise est éprouvée avant de s'en servir** : un `console.error` volontaire
       apparaît bien, et une requête réseau est lisible avec son statut
-- [ ] L'APK inspecté porte **le même code web** que celui des pilotes — si seule la
+- [ ] L'APK inspecté porte **le même code web** que celui du lancement — si seule la
       variante debug est inspectable, c'est écrit noir sur blanc, parce qu'un
       diagnostic fait sur un autre bundle ne conclut sur rien
 - [ ] La procédure est notée en quatre lignes dans cette story : options
@@ -1782,7 +1790,7 @@ console distante branchée sur la WebView, sans quoi on devine ».
 ---
 
 ### E12-04 — La photo d'un produit, diagnostiquée puis corrigée
-**Étape 5 bis** · dépend de E12-03, E12-01
+**Étape 12** · dépend de E12-03, E12-01
 
 **En tant que** commerçant, **je veux** voir la photo du produit que je viens de
 prendre, **afin de** reconnaître une référence sans lire son nom.
@@ -1816,7 +1824,7 @@ appels XHR en clair passaient, et une image est du contenu mixte *passif*.
 ---
 
 ### E12-05 — Le scan de code-barres, diagnostiqué puis corrigé
-**Étape 5 bis** · dépend de E12-03
+**Étape 12** · dépend de E12-03
 
 **En tant que** vendeur, **je veux** scanner un code-barres pour trouver un produit,
 **afin de** ne pas le chercher au clavier avec une main occupée.
@@ -1850,7 +1858,7 @@ WebView empaquetée doit encore accorder la demande de permission que la page é
 ---
 
 ### E12-06 — Partage natif du PDF, et WhatsApp au bout
-**Étape 5 bis** · dépend de E5-03
+**Étape 12** · dépend de E5-03
 
 **En tant que** commerçant, **je veux** envoyer le bon en PDF par WhatsApp,
 **afin que** le client l'ait sans papier.
@@ -1875,8 +1883,8 @@ WebView empaquetée doit encore accorder la demande de permission que la page é
 
 ---
 
-### E12-07 — APK des pilotes, signé, sans clair ni contenu mixte
-**Étape 5 bis** · dépend de E12-01, E12-04, E12-05, E12-06
+### E12-07 — APK du lancement, signé, sans clair ni contenu mixte
+**Étape 12** · dépend de E12-01, E12-04, E12-05, E12-06
 
 **En tant que** éditeur, **je veux** un APK que je peux laisser sur la tablette d'un
 commerçant, **afin de** ne pas lui installer une variante de debug dirigée sur mon
@@ -1897,7 +1905,7 @@ debug (`android/app/src/debug/AndroidManifest.xml` autorise le trafic en clair),
       `http://`, comme celui d'essai refuse déjà `127.0.0.1`
 - [ ] Clé de signature de publication engendrée une fois, hors du dépôt, avec **une
       copie de secours hors ligne** : une clé perdue, c'est l'impossibilité de mettre
-      à jour les tablettes des pilotes — il faut désinstaller, donc effacer
+      à jour les tablettes des premiers utilisateurs — il faut désinstaller, donc effacer
 - [ ] `versionCode` et `versionName` montent à chaque APK distribué, sinon Android
       refuse l'installation par-dessus le précédent
 - [ ] Clé `anon` seulement dans le bundle, vérifié en cherchant `service_role` dans
@@ -1909,13 +1917,13 @@ debug (`android/app/src/debug/AndroidManifest.xml` autorise le trafic en clair),
 ---
 
 ### E12-08 — Distribution et mise à jour de l'APK, tranchées
-**Étape 5 bis** · dépend de E12-07
+**Étape 12** · dépend de E12-07
 
 **En tant que** éditeur, **je veux** savoir comment un correctif arrive sur les trois
 tablettes, **afin de** ne pas découvrir pendant la visite que chaque correctif est un
 déplacement.
 
-**À trancher avant l'arrêt terrain, pas à l'étape 10** (`PENDING-CHECKS`). Les assets
+**À trancher avant de distribuer le premier APK** (`PENDING-CHECKS`), et non pendant E9. Les assets
 sont empaquetés dans l'APK : la mise à jour automatique de la PWA ne joue plus.
 
 **Critères d'acceptation**
@@ -1937,7 +1945,7 @@ sont empaquetés dans l'APK : la mise à jour automatique de la PWA ne joue plus
 ---
 
 ### E12-09 — L'imprimante réelle
-**Étape 5 bis** · dépend de E5-01, E5-02
+**Étape 12** · dépend de E5-01, E5-02
 
 **En tant que** commerçant, **je veux** que le ticket sorte sur l'imprimante que
 j'achète au souk, **afin de** remettre un papier au client.
@@ -1965,7 +1973,7 @@ pas. Elle ferme les critères non cochés d'E5-01 et **toute** E5-02.
 ---
 
 ### E12-10 — Le PDF à l'œil, et dans un lecteur ordinaire
-**Étape 5 bis** · dépend de E5-03
+**Étape 12** · dépend de E5-03
 
 **En tant que** commerçant, **je veux** un PDF lisible sur un téléphone et ouvrable
 partout, **afin que** le client n'ait rien à faire pour le lire.
@@ -1996,7 +2004,7 @@ visionneuse sur la machine de développement.
 ---
 
 ### E12-11 — La ligne « Heure du Maroc » lue sur l'appareil
-**Étape 5 bis** · dépend de E0-06
+**Étape 12** · dépend de E0-06
 
 **En tant que** développeur, **je veux** savoir ce que la WebView de la tablette
 croit de l'heure du Maroc, **afin de** ne pas découvrir un décalage d'une heure sur
@@ -2021,7 +2029,7 @@ lecture ne décide plus rien, elle renseigne.
 ---
 
 ### E12-12 — Le carnet du comptoir : l'œil, la main, le chronomètre
-**Étape 5 bis** · dépend de E4-03, E4-07, E5-01, E11-04
+**Étape 12** · dépend de E4-03, E4-07, E5-01, E11-04
 
 **En tant que** éditeur, **je veux** avoir jugé l'application debout, une main
 occupée, avant de la montrer à un commerçant, **afin de** ne pas apprendre devant
@@ -2054,15 +2062,16 @@ clavier, du réseau et de la main.
 ---
 
 ### E12-13 — PowerSync dans la WebView : essai court et jetable
-**Étape 5 bis** · dépend de E12-03
+**Étape 12** · dépend de E12-03
 
 **En tant que** éditeur, **je veux** savoir si le SDK web de PowerSync tient dans une
 WebView Android, **afin de** ne pas découvrir une décision d'architecture le jour où
 E9 ouvre.
 
-**Hors du chemin critique de l'arrêt terrain**, et dans cette épique pour une seule
-raison : c'est le moment où un APK est sur le banc et où la console distante est
-branchée. `PENDING-CHECKS` l'appelle « le risque le plus grave de ce fichier » — tout
+**Hors du chemin critique du lancement, mais pas après E9 : cette story passe avant
+l'étape 10**, et c'est la seule de l'épique à sortir ainsi par anticipation. Elle est
+rangée ici pour une seule raison : c'est le moment où un APK est sur le banc et où la
+console distante est branchée. `PENDING-CHECKS` l'appelle « le risque le plus grave de ce fichier » — tout
 le hors-ligne en dépend (SPEC § 2.5, E9), et le SDK s'appuie sur OPFS et `wa-sqlite`,
 dont la prise en charge dans la WebView empaquetée n'est pas celle de Chrome.
 
